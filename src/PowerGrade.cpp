@@ -791,24 +791,35 @@ void PowerGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OF
     GroupParamDescriptor* gHelp = p_Desc.defineGroupParam("gHelp");
     gHelp->setLabels("8  Setup / Help", "8  Setup / Help", "8  Setup / Help");
     gHelp->setOpen(false);
-    auto helpLine = [&](const char* name, const char* label, const char* text) {
+    // The panel truncates these strings, so `text` must stay short enough to read at the
+    // default OpenFX panel width (~45 chars) and carry the instruction on its own; the
+    // full explanation goes in the hint, which the host shows on hover.
+    auto helpLine = [&](const char* name, const char* label, const char* text,
+                        const char* hint = nullptr) {
         StringParamDescriptor* s = p_Desc.defineStringParam(name);
         s->setLabels(label, label, label);
         s->setStringType(eStringTypeLabel);
         s->setDefault(text);
+        s->setHint(hint ? hint : text);
         s->setEnabled(false);
         s->setParent(*gHelp);
         page->addChild(*s);
     };
-    helpLine("help0", "Requires", "Project > Color Management set to (not color managed):");
+    helpLine("help0", "Requires", "Project > Color Management, NOT color managed:");
     helpLine("help1", "Color Science", "DaVinci YRGB");
-    helpLine("help2", "Timeline Color Space", "Rec.709 (Scene). On macOS this is REQUIRED for the viewer to match QuickTime and YouTube - it is not tied to Output Encode below. Windows/Linux: unverified, start by matching Output Encode.");
+    helpLine("help2", "Timeline Color Space", "Rec.709 (Scene)  - required on macOS",
+             "Rec.709 (Scene). On macOS this is REQUIRED for Resolve's viewer to match QuickTime and YouTube: macOS reads a Rec.709 tag via the scene OETF, and this is the only timeline setting under which the viewer agrees. It is NOT tied to Output Encode - leave that on your delivery curve. Windows/Linux: unverified, start by matching Output Encode.");
     helpLine("help3", "Output Color Space", "Same as Timeline");
-    helpLine("help4", "macOS Preference", "Preferences > General > 'Use Mac display color profiles for viewers' ON - it enables 'Viewers match QuickTime player when using Rec.709 Scene'.");
-    helpLine("help5", "Clips", "Leave at camera raw/log defaults - no input CST or LUT before this node.");
-    helpLine("help6", "Camera control", "Default Rec.2100 PQ = the creative smooth decode the presets use. Pick your camera's real log for a colorimetric transform instead.");
-    helpLine("help7", "Output Encode", "Your DELIVERY curve, baked into the render - independent of Timeline Color Space, do not change it to match. Rec.709 (Gamma 2.2) (default, web/YouTube), Gamma 2.4 (broadcast), Rec.709 (Scene).");
-    helpLine("help8", "Monitor", "Calibrate it and have Resolve show your delivery space; check the grade on a second screen.");
+    helpLine("help4", "macOS Preference", "'Use Mac display color profiles' = ON",
+             "Preferences > General > 'Use Mac display color profiles for viewers' ON. That enables its sub-option 'Viewers match QuickTime player when using Rec.709 Scene', which only engages on a Rec.709 Scene timeline - see Timeline Color Space above.");
+    helpLine("help5", "Clips", "Camera raw/log defaults - no CST or LUT first",
+             "Leave clips at their camera raw/log defaults - no input CST or LUT before this node. PowerGrade does the camera transform itself.");
+    helpLine("help6", "Camera control", "Default Rec.2100 PQ = smooth decode",
+             "Default Rec.2100 PQ is the creative smooth decode the presets use, not a camera match. Pick your camera's real log for a colorimetric transform instead.");
+    helpLine("help7", "Output Encode", "Delivery curve - NOT the Timeline setting",
+             "Your DELIVERY curve, baked into the render. Independent of Timeline Color Space - do NOT change it to match. Rec.709 (Gamma 2.2) is the default (web/YouTube); Gamma 2.4 for broadcast; Rec.709 (Scene) for a scene-referred hand-off.");
+    helpLine("help8", "Monitor", "Calibrate; check on a second screen",
+             "Calibrate your monitor and have Resolve show your delivery space; check the grade on a second screen before committing.");
 }
 
 ImageEffect* PowerGradeFactory::createInstance(OfxImageEffectHandle p_Handle, ContextEnum /*p_Context*/)
