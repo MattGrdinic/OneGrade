@@ -36,11 +36,37 @@ your clips. In **Project Settings → Color Management**:
 | Setting | Value |
 |---|---|
 | Color Science | **DaVinci YRGB** (not Color Managed / not ACES) |
-| Timeline Color Space | **Rec.709 Gamma 2.2** (matches the plugin's default Output Encode — the gamma web platforms like YouTube assume) — or **Rec.709 Gamma 2.4** for broadcast / **Rec.709 (Scene)** for a scene-referred timeline; set Output Encode to match. How gamma works and how to choose: [docs/GAMMA.md](docs/GAMMA.md) |
+| Timeline Color Space | **Rec.709 (Scene)** — see the macOS note below. This is *not* tied to the plugin's Output Encode |
 | Output Color Space | Same as Timeline |
 
 Leave your clips at their **camera raw / log defaults** — don't put a CST or input LUT
 before this node. (This guidance is also in the plugin's **Setup / Help** section.)
+
+### macOS: what you see vs. what you deliver
+
+Also turn on **DaVinci Resolve → Preferences → General → "Use Mac display color profiles
+for viewers"**, which enables its sub-option *"Viewers match QuickTime player when using
+Rec.709 Scene"*.
+
+macOS interprets a Rec.709 tag using the **scene OETF**, not a pure power curve —
+QuickTime, Safari/Chrome/Firefox and YouTube playback all do this. **Rec.709 (Scene) is
+the only Timeline Color Space under which Resolve's viewer adopts that same
+interpretation.** Set the timeline to anything else and the viewer shows you a picture no
+other application on the machine will reproduce: your export looks different in
+QuickTime, and different again on YouTube, while the file itself is perfectly correct.
+
+With both settings in place the chain matches end to end — Resolve viewer → ProRes/H.264
+export → QuickTime → YouTube — verified by measurement on macOS, 2026-07-29.
+
+**This is independent of Output Encode.** Timeline Color Space governs how Resolve
+*interprets* the picture for the viewer; Output Encode governs the curve the plugin
+*bakes into the render*. Timeline **Rec.709 (Scene)** with Output Encode **Rec.709
+(Gamma 2.2)** is the correct, intended combination — it looks like a contradiction and
+isn't. Leave Output Encode on its default unless you're delivering for broadcast.
+
+*Windows/Linux:* the viewer-matching preference is macOS-only and this chain has not been
+verified there. Match Timeline Color Space to your Output Encode as a starting point, and
+check an export against your player before trusting the viewer.
 
 ## Add it
 
@@ -111,12 +137,16 @@ preset — is documented in [docs/CREATING-LUTS.md](docs/CREATING-LUTS.md).
   **Gamma** pivots both. Matches Resolve's primary wheels.
 
 **5 · Output**
-- **Output Encode** — match your Timeline Color Space. With the setup above, leave it on
-  **Rec.709 (Gamma 2.2)** (the default — what web/streaming delivery like YouTube assumes);
-  use **Rec.709 (Gamma 2.4)** for a broadcast/reference timeline or **Rec.709 (Scene)** for
-  a scene-referred timeline. (Also: Cineon Log, DaVinci Intermediate, Linear.) The
-  Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you pick, so they read linearly
-  on that timeline's scope. How gamma works, end to end: [docs/GAMMA.md](docs/GAMMA.md).
+- **Output Encode** — the curve baked into the render, i.e. your **delivery** target.
+  Leave it on **Rec.709 (Gamma 2.2)** (the default — what web/streaming delivery like
+  YouTube assumes); use **Rec.709 (Gamma 2.4)** for broadcast/reference delivery, or
+  **Rec.709 (Scene)** for a scene-referred hand-off. (Also: Cineon Log, DaVinci
+  Intermediate, Linear.) The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you
+  pick, so a wheel move reads linearly in that curve.
+  **Do not change this to match Timeline Color Space** — on macOS the timeline is set to
+  Rec.709 (Scene) for viewer-matching reasons that have nothing to do with the encode
+  (see [Project setup](#macos-what-you-see-vs-what-you-deliver)). How gamma works, end to
+  end: [docs/GAMMA.md](docs/GAMMA.md).
 
 **6 · Look / Film LUT** — a LUT applied inside the node. The two paths are mutually
 exclusive (they use different transforms):

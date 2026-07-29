@@ -231,9 +231,24 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
 - **Can't auto-read the timeline colorspace** from OFX without becoming color-managed (which
   would make Resolve override our CST). So Output Encode is manual; default Rec.709 (Gamma 2.2).
 - HDR (HLG/PQ) is a **normalize, not a tone-map** — highlights can clip; a real shoulder is future work.
+- **Timeline Color Space is a MONITORING setting, not an encode setting** (macOS, measured
+  2026-07-29 — the docs said the opposite until then and it was the cause of a week-long
+  "YouTube looks wrong" hunt). macOS resolves a Rec.709 tag via the **scene OETF** (≈1.96
+  effective) — QuickTime, Safari/Chrome/Firefox, YouTube all do. Resolve's
+  Preferences → General → *"Use Mac display color profiles for viewers"* has a sub-option
+  *"Viewers match QuickTime player when using Rec.709 Scene"* that **only engages on a
+  Rec.709 Scene timeline**. With the timeline on Gamma 2.2, playback measured a clean
+  **^0.815 ≈ 1.96/2.4** power law vs the viewer, uniform from 0.40 to 0.94, identical
+  across three browser engines and invariant to the display ICC profile. Timeline →
+  Rec.709 (Scene) + that preference ON makes viewer/QuickTime/YouTube agree to ~0.01.
+  **The file was never wrong — the viewer was**: clips at 2.2, 2.4 and the film path all
+  converged at once, which an encode fix could not do. So Output Encode default stays 2.2;
+  the two params are orthogonal and the docs must say so (users will otherwise "fix" the
+  encode to match the timeline — the trap the old wording built). Windows/Linux: no such
+  preference, **unverified**. Explainer: `docs/GAMMA.md` §4.
 - Required project setup (also in the plugin's Setup/Help group): DaVinci YRGB, Timeline
-  set to match Output Encode (default Rec.709 Gamma 2.2), clips left at camera log, no
-  CST/LUT before this node.
+  **Rec.709 (Scene)** on macOS (+ the viewer preference above) regardless of Output Encode,
+  clips left at camera log, no CST/LUT before this node.
 - **Don't expect a pixel match against Resolve's "Gen 5 Film to Video" LUT** — "to Video"
   bakes in Blackmagic's contrast/tone curve, not a plain colorimetric conversion. The right
   neutral reference is a CST node (Gen 5 Film → Rec.709 / Gamma 2.4, tone mapping off).

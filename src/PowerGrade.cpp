@@ -722,7 +722,7 @@ void PowerGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OF
     gOut->setLabels("5  Output", "5  Output", "5  Output");
     ChoiceParamDescriptor* enc = p_Desc.defineChoiceParam("outEncode");
     enc->setLabels("Output Encode", "Output Encode", "Output Encode");
-    enc->setHint("Match your project's Timeline Color Space. Rec.709 (Gamma 2.2) is the default — it matches what web/streaming platforms like YouTube assume, where most exports end up. Pick Rec.709 (Gamma 2.4) for a broadcast/reference-monitor timeline, or Rec.709 (Scene) for a scene-referred timeline. The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you pick, so they read linearly on that timeline's scope. Applies when LUT Mode = None; a LUT auto-sets it (Film Look -> Cineon, Custom Look -> Rec.709 Scene).");
+    enc->setHint("Your delivery curve — the transfer function baked into the render. Rec.709 (Gamma 2.2) is the default: it matches what web/streaming platforms like YouTube assume, where most exports end up. Pick Rec.709 (Gamma 2.4) for broadcast/reference delivery, or Rec.709 (Scene) for a scene-referred hand-off. This is NOT the same setting as the project's Timeline Color Space and should not be changed to match it — on macOS the timeline must be Rec.709 (Scene) so Resolve's viewer agrees with QuickTime/YouTube, whatever you deliver in (see Setup / Help). The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you pick, so a wheel move reads linearly in that curve. Applies when LUT Mode = None; a LUT auto-sets it (Film Look -> Cineon, Custom Look -> Rec.709 Scene).");
     enc->appendOption("Rec.709 (Scene)");
     enc->appendOption("Rec.709 (Gamma 2.2)");
     enc->appendOption("Rec.709 (Gamma 2.4)");
@@ -802,12 +802,13 @@ void PowerGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OF
     };
     helpLine("help0", "Requires", "Project > Color Management set to (not color managed):");
     helpLine("help1", "Color Science", "DaVinci YRGB");
-    helpLine("help2", "Timeline Color Space", "Rec.709 Gamma 2.2 (matches the default Output Encode); Gamma 2.4 for broadcast, Rec.709 (Scene) for scene-referred.");
+    helpLine("help2", "Timeline Color Space", "Rec.709 (Scene). On macOS this is REQUIRED for the viewer to match QuickTime and YouTube - it is not tied to Output Encode below. Windows/Linux: unverified, start by matching Output Encode.");
     helpLine("help3", "Output Color Space", "Same as Timeline");
-    helpLine("help4", "Clips", "Leave at camera raw/log defaults - no input CST or LUT before this node.");
-    helpLine("help5", "Camera control", "Default Rec.2100 PQ = the creative smooth decode the presets use. Pick your camera's real log for a colorimetric transform instead.");
-    helpLine("help6", "Output Encode", "Match the Timeline Color Space above: Rec.709 (Gamma 2.2) (default, web/YouTube), Gamma 2.4 (broadcast) or Rec.709 (Scene).");
-    helpLine("help7", "Monitor", "Calibrate it and have Resolve show your delivery space; check the grade on a second screen.");
+    helpLine("help4", "macOS Preference", "Preferences > General > 'Use Mac display color profiles for viewers' ON - it enables 'Viewers match QuickTime player when using Rec.709 Scene'.");
+    helpLine("help5", "Clips", "Leave at camera raw/log defaults - no input CST or LUT before this node.");
+    helpLine("help6", "Camera control", "Default Rec.2100 PQ = the creative smooth decode the presets use. Pick your camera's real log for a colorimetric transform instead.");
+    helpLine("help7", "Output Encode", "Your DELIVERY curve, baked into the render - independent of Timeline Color Space, do not change it to match. Rec.709 (Gamma 2.2) (default, web/YouTube), Gamma 2.4 (broadcast), Rec.709 (Scene).");
+    helpLine("help8", "Monitor", "Calibrate it and have Resolve show your delivery space; check the grade on a second screen.");
 }
 
 ImageEffect* PowerGradeFactory::createInstance(OfxImageEffectHandle p_Handle, ContextEnum /*p_Context*/)
