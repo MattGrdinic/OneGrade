@@ -101,8 +101,9 @@ names call out which LUT path they drive (Film Emulation = Resolve print stocks,
 path; Custom LUT = our built-in looks, Rec.709 path). Film Emulation presets share the
 user-validated Cinematic Film recipe (see below); Fuji falls back to Kodak when the
 stock is missing (`filmLutIndex()` by name fragment, -1 when absent). Custom LUT preset 3
-(Cinematic Landscape) is neutral except Offset Temp -0.14 — the user's measured "happy
-medium" cool offset for the PQ path. Preset 4 (Teal Orange) has its own on-footage recipe
+(Cinematic Landscape) is neutral except Offset Temp -0.112 — the user's measured "happy
+medium" cool offset for the PQ path — plus a light trim (post-exp +0.023, contrast 0.965),
+retuned on footage 2026-07-21 (the offset had been left at a much stronger -0.7 in code). Preset 4 (Teal Orange) has its own on-footage recipe
 (user-tuned in Resolve, 2026-07-16): Offset Temp -0.073, Density -0.15, Lift 0.059,
 Gamma 1.222, Gain 1.691 — density backed off so the split-tone doesn't oversaturate,
 grade lifted + brightened into the look. The PQ smooth-decode trick was discovered when the camera renumber made
@@ -169,8 +170,10 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 ## Deploy / release (tag-driven)
 CI = `.github/workflows/ci.yml`. Every push builds+tests macOS + Windows. Pushing a
 **`v*` tag** additionally runs the `release` job → packages per-OS zip (bundle + installer
-from `install/`) → publishes a GitHub Release. First release not cut yet; plugin internal
-version is `kPluginVersionMajor/Minor` in `src/PowerGrade.cpp` (still 1.0 — bump to match tags).
+from `install/`) → publishes a GitHub Release. Shipping since v0.1.0; tags so far v0.1.0,
+v0.2.0, v1.0.0, v1.0.1, v1.0.2, **v1.0.3** (current). Plugin internal version is
+`kPluginVersionMajor/Minor` in `src/PowerGrade.cpp` — OFX carries only major/minor, so 1.0
+covers the whole v1.0.x line; bump it when major/minor moves.
 
 ## Git workflow
 Branch per change → push → user opens PR and merges on GitHub (they do the merge, not us).
@@ -228,9 +231,24 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
 - **Can't auto-read the timeline colorspace** from OFX without becoming color-managed (which
   would make Resolve override our CST). So Output Encode is manual; default Rec.709 (Gamma 2.2).
 - HDR (HLG/PQ) is a **normalize, not a tone-map** — highlights can clip; a real shoulder is future work.
+- **Timeline Color Space is a MONITORING setting, not an encode setting** (macOS, measured
+  2026-07-29 — the docs said the opposite until then and it was the cause of a week-long
+  "YouTube looks wrong" hunt). macOS resolves a Rec.709 tag via the **scene OETF** (≈1.96
+  effective) — QuickTime, Safari/Chrome/Firefox, YouTube all do. Resolve's
+  Preferences → General → *"Use Mac display color profiles for viewers"* has a sub-option
+  *"Viewers match QuickTime player when using Rec.709 Scene"* that **only engages on a
+  Rec.709 Scene timeline**. With the timeline on Gamma 2.2, playback measured a clean
+  **^0.815 ≈ 1.96/2.4** power law vs the viewer, uniform from 0.40 to 0.94, identical
+  across three browser engines and invariant to the display ICC profile. Timeline →
+  Rec.709 (Scene) + that preference ON makes viewer/QuickTime/YouTube agree to ~0.01.
+  **The file was never wrong — the viewer was**: clips at 2.2, 2.4 and the film path all
+  converged at once, which an encode fix could not do. So Output Encode default stays 2.2;
+  the two params are orthogonal and the docs must say so (users will otherwise "fix" the
+  encode to match the timeline — the trap the old wording built). Windows/Linux: no such
+  preference, **unverified**. Explainer: `docs/GAMMA.md` §4.
 - Required project setup (also in the plugin's Setup/Help group): DaVinci YRGB, Timeline
-  set to match Output Encode (default Rec.709 Gamma 2.2), clips left at camera log, no
-  CST/LUT before this node.
+  **Rec.709 (Scene)** on macOS (+ the viewer preference above) regardless of Output Encode,
+  clips left at camera log, no CST/LUT before this node.
 - **Don't expect a pixel match against Resolve's "Gen 5 Film to Video" LUT** — "to Video"
   bakes in Blackmagic's contrast/tone curve, not a plain colorimetric conversion. The right
   neutral reference is a CST node (Gen 5 Film → Rec.709 / Gamma 2.4, tone mapping off).
@@ -244,9 +262,9 @@ or a scene-linear shoulder before encode instead of (or blended with) the displa
 **CUDA colour A/B (opened 2026-07-16):** the CUDA path is now live and fast on the user's
 5090, but only *perf* was checked — its output has never been compared against the
 validated Metal/CPU result. `CudaKernel.cu` was written blind and had never even been
-compiled before this. Worth a same-frame A/B (mac vs Windows) before `v0.1.0`.
+compiled before this. Worth a same-frame A/B (mac vs Windows) — still open at v1.0.3.
 
-Cut `v0.1.0`; validate OpenCL on real HW; per-camera gamut validation; HDR tone-map
+Validate OpenCL inside Resolve on an AMD card; per-camera gamut validation; HDR tone-map
 (highlight roll-off). (Done: Rec.709 Gamma 2.4 output with grade-space-following LGG,
 branch `feature/rec709-gamma24` — validated in Resolve. In progress: camera 0 Blackmagic
 Gen 5 Film — now the default camera, list reordered so both Blackmagic entries lead —

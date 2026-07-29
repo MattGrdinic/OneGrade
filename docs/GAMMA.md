@@ -104,16 +104,55 @@ The LUT paths override the encode at render time (`setupAndProcess()` in
 forces Rec.709 Scene (0), because that's the input space those LUTs are built for
 (see `docs/LUTS.md`).
 
-## 4. Matching the timeline
+## 4. Timeline Color Space is a *monitoring* setting, not an encode setting
 
 Resolve cannot tell the plugin the timeline space — reading it from OFX would require
 becoming color-managed, which would let Resolve override the plugin's own CST. So Output
-Encode is a manual choice, and the project's **Timeline Color Space must be set to
-match it** (Setup/Help group repeats this). If the two disagree, the scopes lie to you:
-the node encodes one curve while Resolve interprets the timeline as another.
+Encode is a manual choice. The intuitive follow-on — "therefore set Timeline Color Space
+to match it" — is what this doc used to say, and on macOS **it is wrong**.
 
-Choosing between the Rec.709 curves is a *viewing-environment* question, not a
-right-vs-wrong one:
+### The macOS finding (measured 2026-07-29)
+
+macOS resolves a Rec.709 tag using the **scene OETF**, not a pure power curve. QuickTime,
+Safari, Chrome, Firefox and YouTube playback all do it; the effective decode is ≈1.96
+rather than 2.2 or 2.4. Blackmagic knows: Preferences → General has *"Viewers match
+QuickTime player when using Rec.709 Scene"*, nested under *"Use Mac display color
+profiles for viewers"* — and, as the label says, it only engages when the timeline is
+Rec.709 Scene.
+
+With the timeline on Rec.709 Gamma 2.2 and a 2.2-encoded master, playback measured a
+clean power law of **≈0.815 ≈ 1.96/2.4** against Resolve's viewer — a uniform lift
+holding from 0.40 to 0.94, i.e. a genuine transfer-function mismatch rather than
+clipping, resampling or a range error. Three browser engines produced the identical
+exponent, and it was invariant to the display ICC profile, so it is not display
+calibration.
+
+Setting **Timeline Color Space = Rec.709 (Scene)** with the preference on makes Resolve's
+viewer adopt the same ≈1.96 interpretation as everything else on the machine, and the
+chain agrees end to end: viewer → ProRes/H.264 export → QuickTime → YouTube, matching to
+within ~0.01 per channel.
+
+Crucially the **fix is in the monitoring path, not the file**. The tell: clips encoded at
+2.2, at 2.4, and through the film-look path all converged at once. An encode problem
+would have fixed one and broken the others. Exports were correct all along — the viewer
+was the thing lying.
+
+So the two settings are orthogonal, and the pairing that looks like a contradiction is
+the correct one:
+
+| Setting | What it controls | macOS value |
+|---|---|---|
+| Timeline Color Space | how Resolve *interprets* the picture for the viewer | **Rec.709 (Scene)** — always |
+| Output Encode | the curve the plugin *bakes into the render* | your delivery target, default **Rec.709 (Gamma 2.2)** |
+
+Windows and Linux have no equivalent preference and this chain is **unverified** there;
+matching Timeline Color Space to Output Encode remains the starting point, checked
+against a real export.
+
+### Choosing the Output Encode
+
+Which delivery curve to bake is a *viewing-environment* question, not a right-vs-wrong
+one:
 
 - **Gamma 2.2** — matches sRGB-ish desktop/laptop/phone displays in bright
   surroundings, i.e. web and streaming playback (YouTube et al.). The plugin default.
@@ -124,5 +163,6 @@ right-vs-wrong one:
 
 Grade against one gamma and play back on a display honoring another and the picture
 shifts: shown on a *lighter* response (2.4-graded material on a 2.2 display) shadows
-lift and contrast flattens; on a *darker* response the reverse. Matching encode,
-timeline, and the audience's actual display is the whole game.
+lift and contrast flattens; on a *darker* response the reverse. Matching the encode to
+the audience's actual display is the whole game — and getting a viewer that honestly
+predicts it (§4) is the precondition for judging any of it.
