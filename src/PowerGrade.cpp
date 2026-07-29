@@ -807,7 +807,7 @@ void PowerGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OF
     };
     helpLine("help0", "Requires", "Project > Color Management, NOT color managed:");
     helpLine("help1", "Color Science", "DaVinci YRGB");
-    helpLine("help2", "Timeline Color Space", "Rec.709 (Scene)  - required on macOS",
+    helpLine("help2", "Timeline Color Space", "Rec.709 (Scene) - required on macOS",
              "Rec.709 (Scene). On macOS this is REQUIRED for Resolve's viewer to match QuickTime and YouTube: macOS reads a Rec.709 tag via the scene OETF, and this is the only timeline setting under which the viewer agrees. It is NOT tied to Output Encode - leave that on your delivery curve. Windows/Linux: unverified, start by matching Output Encode.");
     helpLine("help3", "Output Color Space", "Same as Timeline");
     helpLine("help4", "macOS Preference", "'Use Mac display color profiles' = ON",
