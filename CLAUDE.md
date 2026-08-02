@@ -117,9 +117,19 @@ Test 12 guards it. **4-file edit** per the golden rule — all four mirror.
 Role is enforced **at render** (`setupAndProcess`), not just greyed in the UI: params the
 role doesn't own are forced neutral, so a role switch or an old project can't double-apply
 the look. `changedParam` stamps the implied values but only on `eChangeUserEdit`, same
-guard as presets. **Not yet verified inside Resolve** — open question is whether Resolve
-passes unclamped float (negatives, >1) between group levels; if it clamps at the boundary
-the DI hand-off loses highlights and the approach needs rethinking.
+guard as presets.
+
+**VALIDATED in Resolve (macOS/Metal, 2026-08-02).** Pre-Clip Input Transform + Post-Clip
+Output Transform is visually identical to a single Full Grade node on footage, and
+**Resolve does NOT clamp float between group grading levels** — out-of-gamut negatives
+survive the boundary (checked on the RGB Parade with the Post-Clip node disabled, trace
+visibly below the 0 line). So DI is a safe hand-off and no offset/Cineon fallback is
+needed. Panel greying and the forced-encode behavior both confirmed.
+
+**Why DI has so much headroom:** `di_encode` maps linear **100 → code 1.0** and mid-gray
+0.18 → **0.336**, i.e. ~9 stops over mid-gray fit inside [0,1]. Even a hypothetical [0,1]
+clamp at a group boundary would barely touch real footage — the exposed end was always the
+negatives, not the highlights. Worth remembering when picking any future hand-off encode.
 
 ## Presets (param layer only — no pipeline/kernel involvement)
 `preset` choice param (group "0 Preset"): 0 None/Reset · 1 Cinematic Film Emulation
@@ -216,6 +226,8 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
 
 ## Validation status / gotchas
 - **Validated in Resolve:** Metal + CPU on the user's M3 Max, Rec.709 (Scene) / DaVinci YRGB project.
+  Node Role group split (Pre-Clip + Post-Clip) validated 2026-08-02, incl. no float clamp
+  between group levels — see the Node Role section above.
   CUDA perf on the user's Windows box (Ryzen + RTX 5090, 2026-07-16) — real-time; colour
   output not yet A/B'd against the Metal path.
 - **OpenCL:** kernel checked against `pg::process` on real HW (2026-07-16) on both an
