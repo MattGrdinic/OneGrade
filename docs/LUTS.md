@@ -17,10 +17,50 @@ different input spaces:
 | None | — | — | user's Output Encode used unchanged |
 
 The coupling lives in `setupAndProcess()` ([src/OneGrade.cpp](../src/OneGrade.cpp)):
-the *rendered* encode is overridden from `lutMode` every frame, so the pre-LUT encoding
-and the LUT can never mismatch — picking a film stock without remembering to switch the
-encode to Cineon simply cannot produce the wrong pipeline. The Output Encode dropdown
-still shows the user's choice; it just isn't consulted while a LUT is active.
+the *rendered* encode is overridden every frame, so the pre-LUT encoding and the LUT can
+never mismatch — picking a film stock without remembering to switch the encode to Cineon
+simply cannot produce the wrong pipeline.
+
+**The override follows the LUT, not LUT Mix.** `lutMix` blends the un-LUTted and LUTted
+picture *within* the LUT's encode — the encode is the domain the blend happens in, not one
+of the things being blended. Gating the override on `mix > 0` was tried on 2026-08-02 and
+reverted the same day: it makes the encode discontinuous at the first nudge off zero
+(0.000 renders your delivery curve, 0.001 snaps to Rec.709 Scene), which is a far worse
+slider than the one it was trying to fix. **A selected LUT owns Output Encode at every Mix
+value, 0 included** — Mix 0 shows you the curve the blend happens in.
+
+**Both paths take the output curve with them, which is why Output Encode greys rather
+than merely being ignored.** Custom Look emits the Rec.709 (Scene) its LUTs were authored
+in (`luts/generate_luts.py`: input *and* output are Rec.709 Scene); Film Look emits
+display-referred Rec.709 with the print stock's tone curve baked in. So the user's
+delivery choice has no effect on the rendered curve while a LUT is on — for the film path
+there was never a choice to honour (the stock owns the curve), but for Custom Look it is a
+real gap: you cannot deliver Gamma 2.2 through that path today. Closing it would mean a
+post-LUT re-encode (decode the LUT's output space, re-encode to the user's pick) plus
+knowing each LUT's output convention, which for third-party `.cube` files we don't.
+
+Related, same assumption: the Custom Look path always feeds Rec.709 (Scene) *in*. Fine for
+our six built-ins; a third-party look authored against Gamma 2.4 or a log domain will be
+subtly off. Probably a slice of the "different than using the DaVinci LUTs directly" the
+github issue mentioned.
+
+What *is* gated is `lutOk`: the LUT has to actually resolve and load. A `.cube` that failed
+to parse, or a Film list that came up empty (the pre-2026-07-16 Windows bug), used to
+re-encode the picture anyway — so a missing print stock rendered flat Cineon with no LUT
+and no error.
+
+**The panel has to carry the override, because the render can't.** This is what the
+github issue actually exposed: Output Encode stayed enabled showing "Rec.709 (Gamma 2.2)"
+while the render used Rec.709 (Scene), so selecting a Look LUT read as the node
+inexplicably blowing the contrast out. Two halves to the fix:
+
+- `lutSelected()` mirrors the render's `lutOk` (it path-resolves rather than parsing the
+  file — no file I/O from a param callback) and `setEnabledness()` greys Output Encode
+  whenever a LUT is selected. `lutMode`, `lookGroup`, `lookLut` and `filmLut` all re-run
+  `setEnabledness` from `changedParam`; `lutMix` deliberately does not.
+- Greying alone is only half the truth — a greyed dropdown still displays the *old* value.
+  The **`encodeNote`** label under it ("In effect") states what is actually being rendered:
+  the forced encode and what forced it (LUT or Node Role), blank when nothing is overriding.
 
 ## 2. Discovery: where the lists come from
 

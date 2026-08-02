@@ -80,6 +80,32 @@ they're applied.
 > carry over**; the installers remove the old bundle so you don't end up with a dead
 > duplicate in the Effects list.
 
+## This plugin is opinionated
+
+Worth knowing before you compare it to anything: **OneGrade is a look-first tool, not a
+colorimetry reference.** A neutral OneGrade node is not the same picture as a neutral CST
+node, and it isn't meant to be.
+
+- **The camera transforms are published math, applied uniformly.** Resolve's own decode
+  for a specific camera can go further — the Camera RAW tab's default color science path
+  applies a **camera-specific technical LUT** (e.g. for a Pyxis 6K), which bakes in
+  per-model tuning on top of the log/gamut transform. OneGrade can't reproduce that: no
+  sensor metadata reaches an OFX plugin, so all it has is the camera's published log curve
+  and gamut. Expect a family resemblance to the RAW-tab default, not a match.
+- **The default Camera isn't a camera match at all.** Rec.2100 PQ is a deliberate creative
+  choice — a compressive *smooth decode* that flatters log footage with a near-perfect
+  highlight rolloff. It's the happy path the presets are built on. If you want a
+  colorimetric starting point, pick your actual camera from the list.
+- **Don't A/B it against "Gen 5 Film to Video" either.** That LUT bakes in Blackmagic's
+  contrast and tone curve; it isn't a plain colorimetric conversion. The fair neutral
+  reference is a CST node with tone mapping off.
+- **The grade wheels follow the output curve, and the LUT paths pin it.** Both are
+  deliberate (see Output Encode below) and both are things a raw CST chain doesn't do.
+
+None of this is a limitation you need to work around — it's the trade. You get one node,
+one set of controls, and a look that lands close on the first move. If your job is to
+match a reference transform exactly, use a CST node for that part.
+
 ## The controls
 
 **0 · Node Role** — which part of the pipeline this node does. Leave it on **Full Grade
@@ -141,8 +167,8 @@ preset — is documented in [docs/CREATING-LUTS.md](docs/CREATING-LUTS.md).
   **Rec.2100 PQ**, is not a camera match: it's a deliberately compressive *smooth
   decode* that flatters log footage (near-perfect highlight rolloff, smooth color, rich
   texture) — the happy path the presets build on. For a colorimetric transform instead,
-  pick the real camera: Blackmagic Gen 5 Film (Pocket 4K/6K, URSA, Pyxis), Blackmagic
-  (DWG/DI), Sony S-Log3, ARRI LogC3/LogC4, Canon Log3, RED Log3G10, DJI D-Log,
+  pick the real camera: Blackmagic Gen 5 Film (Pocket 4K/6K, URSA, Pyxis), DaVinci Wide
+  Gamut / Intermediate, Sony S-Log3, ARRI LogC3/LogC4, Canon Log3, RED Log3G10, DJI D-Log,
   Fuji F-Log2, Panasonic V-Log, or **Rec.2100 HLG / PQ** for genuine HDR clips.
 
 **2 · Balance** — white balance, in linear. *Open the Vectorscope while adjusting.*
@@ -163,9 +189,13 @@ preset — is documented in [docs/CREATING-LUTS.md](docs/CREATING-LUTS.md).
 - **Output Encode** — the curve baked into the render, i.e. your **delivery** target.
   Leave it on **Rec.709 (Gamma 2.2)** (the default — what web/streaming delivery like
   YouTube assumes); use **Rec.709 (Gamma 2.4)** for broadcast/reference delivery, or
-  **Rec.709 (Scene)** for a scene-referred hand-off. (Also: Cineon Log, DaVinci
-  Intermediate, Linear.) The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you
-  pick, so a wheel move reads linearly in that curve.
+  **Rec.709 (Scene)** for a scene-referred hand-off. (Also: Cineon Log, DaVinci Wide
+  Gamut / Intermediate, Linear.) The Lift/Gamma/Gain wheels grade in whichever Rec.709
+  curve you pick, so a wheel move reads linearly in that curve.
+  **An active LUT takes this control over** and greys it out — a LUT can only be fed the
+  curve it was authored for (Film Look → Cineon, Custom Look → Rec.709 Scene). The
+  *In effect* line underneath always names what is actually being rendered. LUT Mix does
+  not hand it back (see below); set LUT Mode to None for that.
   **Do not change this to match Timeline Color Space** — on macOS the timeline is set to
   Rec.709 (Scene) for viewer-matching reasons that have nothing to do with the encode
   (see [Project setup](#macos-what-you-see-vs-what-you-deliver)). How gamma works, end to
@@ -176,8 +206,14 @@ exclusive (they use different transforms):
 - **Film Look** → set **LUT Mode = Film Look**, pick from **Film Look LUT** (Resolve's
   built-in print emulations: Kodak 2383, Fuji 3513DI…). Output auto-switches to Cineon.
 - **Custom Look** → set **LUT Mode = Custom Look**, choose a **Look LUT Group** then a
-  **Look LUT** (any `.cube` from Resolve's LUT folder). Output stays Rec.709.
-- **LUT Mix** — strength / output level, like Key Output (0 = off, 1 = full).
+  **Look LUT** (any `.cube` from Resolve's LUT folder). Output switches to Rec.709 (Scene).
+  Note this path always feeds the LUT **Rec.709 (Scene)**, which is what OneGrade's own
+  built-in looks are authored for. A third-party `.cube` expecting Rec.709 Gamma 2.4 or a
+  log input will render, but not quite as its author intended.
+- **LUT Mix** — strength / output level, like Key Output (0 = off, 1 = full). Mix blends
+  the LUT in and out *inside the LUT's own encode*, so a selected LUT still owns Output
+  Encode at Mix 0 — what you see at 0 is the curve the blend happens in. (Tying the encode
+  to Mix instead would put a contrast cliff between 0.000 and 0.001.)
 
 **7 · Trim (after LUT)**
 - **Exposure / Contrast** — final trims applied *after* the LUT. Film emulations darken

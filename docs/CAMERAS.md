@@ -30,7 +30,7 @@ Exposure acts, which is why it matches that control nearly exactly.
 | Index | Camera | Curve | Gamut matrix |
 |---|---|---|---|
 | 0 | Blackmagic Gen 5 Film | Gen 5 Film log (white paper) | BMD Wide Gamut Gen 4/5 |
-| 1 | Blackmagic (DWG/DI) | DaVinci Intermediate | DaVinci Wide Gamut |
+| 1 | DaVinci Wide Gamut / Intermediate | DaVinci Intermediate | DaVinci Wide Gamut |
 | 2 | Sony S-Log3 | S-Log3 | S-Gamut3 |
 | 3 | ARRI LogC3 (EI800) | LogC3 | ARRI Wide Gamut 3 |
 | 4 | ARRI LogC4 | LogC4 | ARRI Wide Gamut 4 |

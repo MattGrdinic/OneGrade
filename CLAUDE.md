@@ -132,6 +132,41 @@ needed. Panel greying and the forced-encode behavior both confirmed.
 clamp at a group boundary would barely touch real footage — the exposed end was always the
 negatives, not the highlights. Worth remembering when picking any future hand-off encode.
 
+## The LUT encode override — visible, not conditional (2026-08-02, github issue)
+A LUT pins the pre-LUT encode (Film -> Cineon, Custom Look -> Rec.709 Scene) in
+`setupAndProcess`. A user on a **color-managed DWG/I timeline** (not our supported setup —
+we need DaVinci YRGB) with Output Encode = DI picked a Look LUT and got a huge contrast
+jump. The override was doing its job; **the panel was lying about it** — Output Encode
+stayed enabled showing the user's pick while the render used something else.
+
+**Dead end, tried and reverted the same day: do NOT gate the override on `lutMix > 0`.**
+It looks like the obvious fix ("Mix 0 should be a bypass") and it wrecks the slider: the
+encode then jumps between 0.000 and 0.001, so the first nudge off zero is a contrast
+cliff. Mix blends the un-LUTted and LUTted picture **within** the LUT's encode — the encode
+is the *domain* of the blend, not a term in it. A selected LUT owns Output Encode at every
+Mix value. (Caught on footage by the user, not by tests — the CPU tests don't touch
+`OneGrade.cpp` param logic at all.)
+
+What shipped instead:
+- render gate is `lutOk` (LUT resolved **and** loaded), not `lutMode` — a missing/corrupt
+  `.cube` no longer re-encodes with no LUT (the old silent-degradation shape, cf. the
+  Windows Film-list bug: that combination rendered flat Cineon with no print LUT).
+- `lutSelected()` (UI mirror of `lutOk`, path-resolves only — no file I/O from a param
+  callback) + `setEnabledness()` greys Output Encode whenever a LUT is selected;
+  `lutMode`/`lookGroup`/`lookLut`/`filmLut` re-run it from `changedParam`, `lutMix` doesn't.
+- **`encodeNote`** string-label param ("In effect") under Output Encode names what's
+  actually being rendered. Greying alone is only half the truth — a greyed dropdown still
+  shows the stale value. Keep these strings **short (~45 chars) and ASCII**, same panel
+  truncation rule as the `helpLine` block.
+
+**General rule, third instance: a silent override is a bug even when the math is right.**
+(CUDA CPU-fallback, Windows LUT dir, this.)
+
+Same issue also flagged **two names for one space**: camera option 1 was "Blackmagic
+(DWG/DI)", encode option 4 "DaVinci Intermediate". Both are now
+**"DaVinci Wide Gamut / Intermediate"** (labels only — choice params save by index, so no
+project breakage). `DWG/DI` survives as prose shorthand in docs/comments, not in the UI.
+
 ## Presets (param layer only — no pipeline/kernel involvement)
 `preset` choice param (group "0 Preset"): 0 None/Reset · 1 Cinematic Film Emulation
 (Kodak 2383 D60) · 2 Cinematic Film Emulation (Fujifilm 3513DI D60) · 3 Custom LUT -
@@ -212,9 +247,11 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 CI = `.github/workflows/ci.yml`. Every push builds+tests macOS + Windows. Pushing a
 **`v*` tag** additionally runs the `release` job → packages per-OS zip (bundle + installer
 from `install/`) → publishes a GitHub Release. Shipping since v0.1.0; tags so far v0.1.0,
-v0.2.0, v1.0.0, v1.0.1, v1.0.2, v1.0.3, **v1.1.0** (current — the OneGrade rename).
+v0.2.0, v1.0.0, v1.0.1, v1.0.2, v1.0.3, v1.1.0 (the OneGrade rename), **v1.1.1** (current —
+the LUT encode-override visibility fix + the DWG/I naming unification).
 Plugin internal version is `kPluginVersionMajor/Minor` in `src/OneGrade.cpp` — OFX carries
-only major/minor, so 1.1 covers the whole v1.1.x line; bump it when major/minor moves.
+only major/minor, so 1.1 covers the whole v1.1.x line (no bump for v1.1.1); bump it when
+major/minor moves.
 
 ## The rename (2026-08-02) — PowerGrade → OneGrade
 Renamed because **"PowerGrade" already means something else in Resolve**: the stills album
@@ -238,7 +275,9 @@ build time — that's why the rename needs a GPU smoke test, not just a green `m
 
 ## Git workflow
 Branch per change → push → user opens PR and merges on GitHub (they do the merge, not us).
-**ALWAYS check `git branch --show-current` before committing** — the user merges PRs
+**Branch naming:** work off `main` starts with a **`feature/<release version>`** branch
+(e.g. `feature/1.1.1` for the 1.1.1 line); the branch for an individual task is cut off
+*that*, not off `main`. **ALWAYS check `git branch --show-current` before committing** — the user merges PRs
 mid-session, so the local checkout can silently be sitting on `main` (this bit us once:
 d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never again).
 `main` is protected-in-practice; don't commit to it directly. Commits end with a
@@ -315,6 +354,12 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
 - **Don't expect a pixel match against Resolve's "Gen 5 Film to Video" LUT** — "to Video"
   bakes in Blackmagic's contrast/tone curve, not a plain colorimetric conversion. The right
   neutral reference is a CST node (Gen 5 Film → Rec.709 / Gamma 2.4, tone mapping off).
+  Nor against the **Camera RAW tab's default color-science path**, which applies a
+  **camera-specific technical LUT** (per-model tuning, e.g. Pyxis 6K) on top of the log/gamut
+  transform — we can't reproduce it, no sensor metadata reaches an OFX plugin. README §"This
+  plugin is opinionated" says this to users out loud (added 2026-08-02, user's call): it's a
+  look-first tool, family resemblance to a CST/RAW-tab neutral, not a match. Say this when
+  users report "it doesn't look like a plain CST".
 
 ## Likely next tasks
 **Rolloff smoothness on Gen 5 (user's active thread):** the Highlight Rolloff softclip is

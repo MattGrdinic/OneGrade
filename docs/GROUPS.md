@@ -59,7 +59,7 @@ Clip level) is still worth having alongside the group split.
 |---|---|---|---|
 | **0 Full Grade** (default) | everything | your pick | your pick |
 | **1 Input Transform** | camera decode + RAW exposure/temp | your pick | pinned to **DaVinci Intermediate** |
-| **2 Output Transform** | balance, density, LGG, LUT, trim, delivery | pinned to **Blackmagic (DWG/DI)** | your pick |
+| **2 Output Transform** | balance, density, LGG, LUT, trim, delivery | pinned to **DaVinci Wide Gamut / Intermediate** | your pick |
 
 Chained, **role 1 → role 2 reproduces role 0.** Put an Input Transform node in Group
 Pre-Clip, grade shots normally at Clip level, put an Output Transform node in Group
@@ -80,7 +80,7 @@ over values you've since tweaked.
 
 The two nodes have to meet in some encoding, and DI is the right one for three reasons.
 
-**It's an exact inverse pair.** Camera index 1 (`Blackmagic DWG/DI`) decodes with
+**It's an exact inverse pair.** Camera index 1 (`DaVinci Wide Gamut / Intermediate`) decodes with
 
 ```
 A=0.0075  B=7.0  C=0.07329248  M=10.44426855
