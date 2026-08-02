@@ -158,6 +158,11 @@ What shipped instead:
   actually being rendered. Greying alone is only half the truth — a greyed dropdown still
   shows the stale value. Keep these strings **short (~45 chars) and ASCII**, same panel
   truncation rule as the `helpLine` block.
+  **VALIDATED in Resolve (macOS/Metal, 2026-08-02):** a `setValue` on an
+  `eStringTypeLabel` param from `setEnabledness()` **does** update the panel live — the
+  line switches between "Look LUT owns this: Rec.709 (Scene)" and "Film LUT owns this:
+  Cineon in, 709 out" as LUT Mode changes, no reload. So a read-only status line driven
+  from `changedParam` is a working pattern here; reuse it rather than re-deriving it.
 
 **General rule, third instance: a silent override is a bug even when the math is right.**
 (CUDA CPU-fallback, Windows LUT dir, this.)
