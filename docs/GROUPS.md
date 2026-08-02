@@ -29,9 +29,27 @@ The conventional colorist setup is an input transform in Pre-Clip, per-shot work
 level, and the output transform in Post-Clip. One place to change the delivery curve for
 a whole group; per-shot grading untouched.
 
-**One constraint matters:** a clip can belong to only **one** group at a time. So you
-group by camera (to share an input transform) *or* by scene/look (to share a look), not
-both. That tension is inherent to the structure, not to any plugin.
+**One constraint matters, and it has teeth.** A clip belongs to exactly **one** group at a
+time. The clip's context menu (Groups → *group name* → Assign to Group) checkmarks the one
+group it's in, and assigning it to another **moves** it — there is no confirmation and no
+warning.
+
+Tested directly (2026-08-02): a clip sitting in a group whose Pre-Clip graph held a
+PowerGrade Input Transform was assigned to a second group. **The PowerGrade node was gone
+from that clip** — it inherited the new group's (empty) pre-clip graph instead. The old
+group still exists and still lists in the menu; it just no longer applies to that shot.
+
+Two consequences for how you organise a job:
+
+- You can group by **camera** (to share an input transform) *or* by **scene/look** (to
+  share a look), not both. On a mixed-source job those two axes pull against each other.
+- Regrouping a shot for look reasons **silently changes which input transform it gets**.
+  On a single-camera job that's harmless; on a mixed-source one it's a way to lose a
+  camera decode without noticing.
+
+Neither is a plugin problem — it's inherent to how Resolve models groups. But it's the
+main reason a per-clip input transform (Full Grade role, or an Input Transform node at
+Clip level) is still worth having alongside the group split.
 
 ## 2. What the three roles do
 
