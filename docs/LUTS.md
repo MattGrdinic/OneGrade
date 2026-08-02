@@ -29,6 +29,21 @@ reverted the same day: it makes the encode discontinuous at the first nudge off 
 slider than the one it was trying to fix. **A selected LUT owns Output Encode at every Mix
 value, 0 included** — Mix 0 shows you the curve the blend happens in.
 
+**Both paths take the output curve with them, which is why Output Encode greys rather
+than merely being ignored.** Custom Look emits the Rec.709 (Scene) its LUTs were authored
+in (`luts/generate_luts.py`: input *and* output are Rec.709 Scene); Film Look emits
+display-referred Rec.709 with the print stock's tone curve baked in. So the user's
+delivery choice has no effect on the rendered curve while a LUT is on — for the film path
+there was never a choice to honour (the stock owns the curve), but for Custom Look it is a
+real gap: you cannot deliver Gamma 2.2 through that path today. Closing it would mean a
+post-LUT re-encode (decode the LUT's output space, re-encode to the user's pick) plus
+knowing each LUT's output convention, which for third-party `.cube` files we don't.
+
+Related, same assumption: the Custom Look path always feeds Rec.709 (Scene) *in*. Fine for
+our six built-ins; a third-party look authored against Gamma 2.4 or a log domain will be
+subtly off. Probably a slice of the "different than using the DaVinci LUTs directly" the
+github issue mentioned.
+
 What *is* gated is `lutOk`: the LUT has to actually resolve and load. A `.cube` that failed
 to parse, or a Film list that came up empty (the pre-2026-07-16 Windows bug), used to
 re-encode the picture anyway — so a missing print stock rendered flat Cineon with no LUT

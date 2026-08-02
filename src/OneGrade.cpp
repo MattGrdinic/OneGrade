@@ -452,7 +452,11 @@ void OneGrade::setEnabledness()
 
     // Input Transform pins the encode to DaVinci Wide Gamut / Intermediate — the hand-off
     // to the clip-level grade — so it isn't the user's to pick. An active LUT pins it too
-    // (Film Look needs Cineon in, Custom Look needs Rec.709 Scene in). Both overrides were
+    // (Film Look needs Cineon in, Custom Look needs Rec.709 Scene in) — and because what
+    // comes OUT is then the LUT's own output convention, not the user's pick: a print
+    // stock emits display-referred Rec.709 with its tone curve baked in, our built-in
+    // looks emit the Rec.709 (Scene) they were authored in. The param genuinely has no
+    // effect on the rendered curve while a LUT is on. Both overrides were
     // invisible until 2026-08-02: the dropdown stayed enabled showing a value the render
     // wasn't using, so picking a LUT read as the node silently blowing the contrast out
     // (github issue). Grey it AND spell out what is actually being rendered — a greyed
@@ -462,8 +466,8 @@ void OneGrade::setEnabledness()
     if (!look)
         m_EncodeNote->setValue("Pinned by Node Role: DaVinci Intermediate");
     else if (lutOn)
-        m_EncodeNote->setValue(mode == 2 ? "Forced to Cineon Log by Film Look LUT"
-                                         : "Forced to Rec.709 (Scene) by Look LUT");
+        m_EncodeNote->setValue(mode == 2 ? "Film LUT owns this: Cineon in, 709 out"
+                                         : "Look LUT owns this: Rec.709 (Scene)");
     else if (mode != 0)
         m_EncodeNote->setValue("No LUT found - the encode above is used");
     else

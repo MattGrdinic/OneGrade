@@ -207,6 +207,9 @@ exclusive (they use different transforms):
   built-in print emulations: Kodak 2383, Fuji 3513DI…). Output auto-switches to Cineon.
 - **Custom Look** → set **LUT Mode = Custom Look**, choose a **Look LUT Group** then a
   **Look LUT** (any `.cube` from Resolve's LUT folder). Output switches to Rec.709 (Scene).
+  Note this path always feeds the LUT **Rec.709 (Scene)**, which is what OneGrade's own
+  built-in looks are authored for. A third-party `.cube` expecting Rec.709 Gamma 2.4 or a
+  log input will render, but not quite as its author intended.
 - **LUT Mix** — strength / output level, like Key Output (0 = off, 1 = full). Mix blends
   the LUT in and out *inside the LUT's own encode*, so a selected LUT still owns Output
   Encode at Mix 0 — what you see at 0 is the curve the blend happens in. (Tying the encode
