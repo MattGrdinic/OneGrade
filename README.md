@@ -409,7 +409,7 @@ git push origin v1.1.0                 # this push is what triggers the release
 **What it does** (`.github/workflows/ci.yml`, the `release` job — it's skipped on normal
 pushes and only runs for `refs/tags/v*`):
 
-1. Builds and **tests** on macOS **and** Windows (the same `build` matrix as every push).
+1. Builds and **tests** on macOS **and** Windows (the same `build` matrix every PR runs).
 2. Packages a zip per OS — each contains `OneGrade.ofx.bundle` **plus its installer**
    (`install-macos.command` / `install-windows.bat`).
 3. Publishes a **GitHub Release** named for the tag, attaches both zips, and

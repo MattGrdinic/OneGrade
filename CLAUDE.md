@@ -249,7 +249,13 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 ```
 
 ## Deploy / release (tag-driven)
-CI = `.github/workflows/ci.yml`. Every push builds+tests macOS + Windows. Pushing a
+CI = `.github/workflows/ci.yml`. Builds+tests macOS + Windows on **PRs (any target) and
+pushes to `main`** — not on every branch push (2026-08-02): `push: ["**"]` plus
+`pull_request` fired twice for one commit on a PR'd branch, and every working branch here
+ends up in a PR anyway. Consequence to know: **a branch with no PR open gets no CI at
+all.** `pull_request` stays unfiltered on purpose so the task-branch -> `feature/<release>`
+hop is checked too; in-flight runs are auto-cancelled for PR events only, never for `main`
+or a `v*` tag (a cancelled tag run = no release artifacts). Pushing a
 **`v*` tag** additionally runs the `release` job → packages per-OS zip (bundle + installer
 from `install/`) → publishes a GitHub Release. Shipping since v0.1.0; tags so far v0.1.0,
 v0.2.0, v1.0.0, v1.0.1, v1.0.2, v1.0.3, v1.1.0 (the OneGrade rename), **v1.1.1** (current —
