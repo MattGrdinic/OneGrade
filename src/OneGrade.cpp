@@ -178,6 +178,22 @@ static void scanLuts()
     // std::map already sorts group names alphabetically.
 }
 
+// Path of the LUT the given mode + dropdown indices select, "" if the selection resolves
+// to nothing (mode None, or an empty/absent LUT folder). Shared by the panel and the
+// render so the two can't disagree about whether a LUT is actually in play.
+static std::string resolveLutPath(int p_Mode, int p_Group, int p_Look, int p_Film)
+{
+    if (p_Mode == 1) {          // Custom Look — group -> LUT cascade
+        if (p_Group >= 0 && p_Group < (int)s_LookGroups.size()) {
+            const LutList& luts = s_LookGroups[p_Group].second;
+            if (p_Look >= 0 && p_Look < (int)luts.size()) return luts[p_Look].second;
+        }
+    } else if (p_Mode == 2) {   // Film Look — flat list
+        if (p_Film >= 0 && p_Film < (int)s_FilmLuts.size()) return s_FilmLuts[p_Film].second;
+    }
+    return std::string();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 class OneGradeProcessor : public OFX::ImageProcessor
@@ -310,6 +326,7 @@ public:
     virtual void render(const OFX::RenderArguments& p_Args);
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName);
     void setEnabledness();
+    bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
     void setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
@@ -332,6 +349,7 @@ private:
     OFX::DoubleParam* m_Gamma;
     OFX::DoubleParam* m_Gain;
     OFX::ChoiceParam* m_Encode;
+    OFX::StringParam* m_EncodeNote;   // says what the encode actually is when it's overridden
     OFX::DoubleParam* m_PostExp;
     OFX::DoubleParam* m_PostCon;
     OFX::DoubleParam* m_Rolloff;
@@ -364,6 +382,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_Gamma   = fetchDoubleParam("gamma");
     m_Gain    = fetchDoubleParam("gain");
     m_Encode  = fetchChoiceParam("outEncode");
+    m_EncodeNote = fetchStringParam("encodeNote");
     m_PostExp = fetchDoubleParam("postExp");
     m_PostCon = fetchDoubleParam("postCon");
     m_Rolloff = fetchDoubleParam("rolloff");
@@ -386,6 +405,22 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
 //   1 Input Transform — camera decode only, out to DaVinci Intermediate. Group Pre-Clip.
 //   2 Output Transform— takes DWG/DI in, applies look + delivery encode. Group Post-Clip.
 // Roles 1+2 chained reproduce role 0 to well under an 8-bit code value (test/pipeline_test).
+// Panel-side mirror of the render's `lutOk`: does a LUT actually resolve behind the
+// current mode? Mix is deliberately not consulted — Mix blends within the LUT's encode,
+// it doesn't decide which encode is used, so a LUT at Mix 0 still owns Output Encode.
+// This path-resolves rather than parsing the .cube (no file I/O from a param callback),
+// so a corrupt LUT greys a control the render then honours — an error state where the
+// LUT dropdown is the louder tell anyway.
+bool OneGrade::lutSelected()
+{
+    int mode = 0, gi = 0, li = 0, fi = 0;
+    m_LutMode->getValue(mode);
+    m_LookGroup->getValue(gi);
+    m_LookLut->getValue(li);
+    m_FilmLut->getValue(fi);
+    return !resolveLutPath(mode, gi, li, fi).empty();
+}
+
 void OneGrade::setEnabledness()
 {
     int role = 0, mode = 0;
@@ -415,9 +450,24 @@ void OneGrade::setEnabledness()
     m_Rolloff->setEnabled(look);
     m_LutMode->setEnabled(look);
 
-    // Input Transform pins the encode to DaVinci Intermediate — the hand-off to the
-    // clip-level grade — so it isn't the user's to pick.
-    m_Encode->setEnabled(look);
+    // Input Transform pins the encode to DaVinci Wide Gamut / Intermediate — the hand-off
+    // to the clip-level grade — so it isn't the user's to pick. An active LUT pins it too
+    // (Film Look needs Cineon in, Custom Look needs Rec.709 Scene in). Both overrides were
+    // invisible until 2026-08-02: the dropdown stayed enabled showing a value the render
+    // wasn't using, so picking a LUT read as the node silently blowing the contrast out
+    // (github issue). Grey it AND spell out what is actually being rendered — a greyed
+    // control still showing the old value is only half the truth.
+    const bool lutOn = lutSelected();
+    m_Encode->setEnabled(look && !lutOn);
+    if (!look)
+        m_EncodeNote->setValue("Pinned by Node Role: DaVinci Intermediate");
+    else if (lutOn)
+        m_EncodeNote->setValue(mode == 2 ? "Forced to Cineon Log by Film Look LUT"
+                                         : "Forced to Rec.709 (Scene) by Look LUT");
+    else if (mode != 0)
+        m_EncodeNote->setValue("No LUT found - the encode above is used");
+    else
+        m_EncodeNote->setValue("");
 
     m_FilmLut->setEnabled(look && mode == 2);
     m_LookGroup->setEnabled(look && mode == 1);
@@ -525,8 +575,13 @@ void OneGrade::applyPreset(int p)
 
 void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName)
 {
-    if (p_ParamName == "lutMode") setEnabledness();
-    else if (p_ParamName == "lookGroup") { populateLookLut(); m_LookLut->setValue(0); }
+    // Anything that can flip "is a LUT selected" has to re-run setEnabledness, since that
+    // decides whether Output Encode is the user's to pick and what the note under it says.
+    // LUT Mix is NOT in that set: it blends within the LUT's encode, it doesn't hand the
+    // encode back at 0.
+    if (p_ParamName == "lutMode" || p_ParamName == "lookLut" ||
+        p_ParamName == "filmLut") setEnabledness();
+    else if (p_ParamName == "lookGroup") { populateLookLut(); m_LookLut->setValue(0); setEnabledness(); }
     // Node Role: stamp the transform the role implies so the panel shows the truth.
     // Guarded like the preset — a project load must not overwrite stored values. Render
     // enforces the same rules regardless (see setupAndProcess), so a stale stored value
@@ -592,11 +647,33 @@ void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArgum
         camera = 1;
     }
 
+    // Resolve the active LUT (path from mode) and load it (cached by path). This has to
+    // happen BEFORE the encode coupling below, which is only legitimate when a LUT is
+    // really going to be applied.
+    int lookGroup = 0, lookLut = 0, filmLut = 0;
+    m_LookGroup->getValueAtTime(p_Args.time, lookGroup);
+    m_LookLut->getValueAtTime(p_Args.time, lookLut);
+    m_FilmLut->getValueAtTime(p_Args.time, filmLut);
+    const std::string lutPath = resolveLutPath(lutMode, lookGroup, lookLut, filmLut);
+    const float lutMix = (float)m_LutMix->getValueAtTime(p_Args.time);
+    const bool lutOk   = !lutPath.empty() && m_Lut.load(lutPath);
+
     // Couple the pre-LUT encoding to the LUT path so the two can't mismatch:
     //   Film Look LUTs require Cineon log input; Custom look LUTs use Rec.709.
-    if (lutMode == 2)      encode = 3;   // Film Look  -> Cineon Log
-    else if (lutMode == 1) encode = 0;   // Custom Look -> Rec.709 (Scene)
-    // lutMode == 0 (None) -> user's Output Encode is used unchanged
+    //
+    // Keyed on the LUT RESOLVING, deliberately NOT on LUT Mix. Mix blends the un-LUTted
+    // and LUTted picture *within the LUT's encode*; the encode is the domain the blend
+    // happens in, not part of the blend. Tying it to Mix was tried (2026-08-02) and is
+    // wrong: it puts a cliff at the first nudge off zero — 0.000 renders your delivery
+    // curve, 0.001 snaps to the LUT's. Mix 0 with a LUT selected shows the LUT's working
+    // curve, which is the honest preview of what the slider blends between.
+    //
+    // The `lutOk` gate (rather than lutMode alone) is the one real change: a .cube that
+    // failed to load or a Film list that came up empty used to re-encode the picture
+    // anyway, so a missing print stock rendered flat Cineon with no LUT and no error.
+    if (lutOk) encode = (lutMode == 2) ? 3    // Film Look  -> Cineon Log
+                                       : 0;   // Custom Look -> Rec.709 (Scene)
+    // no LUT -> user's Output Encode is used unchanged
 
     float params[kParamCount];
     params[0] = (float)m_Temp->getValueAtTime(p_Args.time);
@@ -623,23 +700,6 @@ void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArgum
     } else if (role == 2) {     // Output Transform: RAW stage already happened upstream
         params[10]=0.f; params[11]=6500.f;                        // rawExp, rawTemp
     }
-
-    // Resolve the active LUT (path from mode) and load it (cached by path).
-    std::string lutPath;
-    if (lutMode == 1) {
-        int gi = 0, li = 0;
-        m_LookGroup->getValueAtTime(p_Args.time, gi);
-        m_LookLut->getValueAtTime(p_Args.time, li);
-        if (gi >= 0 && gi < (int)s_LookGroups.size()) {
-            const LutList& luts = s_LookGroups[gi].second;
-            if (li >= 0 && li < (int)luts.size()) lutPath = luts[li].second;
-        }
-    } else if (lutMode == 2) {
-        int idx = 0; m_FilmLut->getValueAtTime(p_Args.time, idx);
-        if (idx >= 0 && idx < (int)s_FilmLuts.size()) lutPath = s_FilmLuts[idx].second;
-    }
-    bool lutOk = (lutMode != 0) && !lutPath.empty() && m_Lut.load(lutPath);
-    float lutMix = (float)m_LutMix->getValueAtTime(p_Args.time);
 
     p_Proc.setDstImg(dst.get());
     p_Proc.setSrcImg(src.get());
@@ -756,9 +816,12 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     gInput->setLabels("1  Input Transform", "1  Input Transform", "1  Input Transform");
     ChoiceParamDescriptor* cam = p_Desc.defineChoiceParam("camera");
     cam->setLabels("Camera", "Camera", "Camera");
-    cam->setHint("Source camera log/gamut, decoded to DaVinci Wide Gamut linear working space. The default, Rec.2100 PQ, is NOT a camera match: it's a deliberately compressive smooth decode that flatters log footage (near-perfect highlight rolloff, smooth color) — the happy path all presets build on. For a colorimetric starting point instead, pick the real camera: e.g. Blackmagic Gen 5 Film for Pocket/URSA/Pyxis clips, Blackmagic (DWG/DI) for clips already in DaVinci Wide Gamut / Intermediate.");
+    cam->setHint("Source camera log/gamut, decoded to DaVinci Wide Gamut linear working space. The default, Rec.2100 PQ, is NOT a camera match: it's a deliberately compressive smooth decode that flatters log footage (near-perfect highlight rolloff, smooth color) — the happy path all presets build on. For a colorimetric starting point instead, pick the real camera: e.g. Blackmagic Gen 5 Film for Pocket/URSA/Pyxis clips, DaVinci Wide Gamut / Intermediate for clips already in that space.");
     cam->appendOption("Blackmagic Gen 5 Film");
-    cam->appendOption("Blackmagic (DWG/DI)");
+    // Same space, same words as Output Encode's option 4 — this pair used to read
+    // "Blackmagic (DWG/DI)" here and "DaVinci Intermediate" there, which looked like two
+    // different things (github issue).
+    cam->appendOption("DaVinci Wide Gamut / Intermediate");
     cam->appendOption("Sony S-Log3");
     cam->appendOption("ARRI LogC3");
     cam->appendOption("ARRI LogC4");
@@ -814,16 +877,32 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     gOut->setLabels("5  Output", "5  Output", "5  Output");
     ChoiceParamDescriptor* enc = p_Desc.defineChoiceParam("outEncode");
     enc->setLabels("Output Encode", "Output Encode", "Output Encode");
-    enc->setHint("Your delivery curve — the transfer function baked into the render. Rec.709 (Gamma 2.2) is the default: it matches what web/streaming platforms like YouTube assume, where most exports end up. Pick Rec.709 (Gamma 2.4) for broadcast/reference delivery, or Rec.709 (Scene) for a scene-referred hand-off. This is NOT the same setting as the project's Timeline Color Space and should not be changed to match it — on macOS the timeline must be Rec.709 (Scene) so Resolve's viewer agrees with QuickTime/YouTube, whatever you deliver in (see Setup / Help). The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you pick, so a wheel move reads linearly in that curve. Applies when LUT Mode = None; a LUT auto-sets it (Film Look -> Cineon, Custom Look -> Rec.709 Scene).");
+    enc->setHint("Your delivery curve — the transfer function baked into the render. Rec.709 (Gamma 2.2) is the default: it matches what web/streaming platforms like YouTube assume, where most exports end up. Pick Rec.709 (Gamma 2.4) for broadcast/reference delivery, or Rec.709 (Scene) for a scene-referred hand-off. This is NOT the same setting as the project's Timeline Color Space and should not be changed to match it — on macOS the timeline must be Rec.709 (Scene) so Resolve's viewer agrees with QuickTime/YouTube, whatever you deliver in (see Setup / Help). The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you pick, so a wheel move reads linearly in that curve. An active LUT takes this over and greys it out, because the LUT can only be fed the curve it was authored for (Film Look -> Cineon, Custom Look -> Rec.709 Scene) — the 'In effect' line below always names what is actually being rendered. LUT Mix does not hand it back: Mix blends the LUT in and out within that curve, so Mix 0 still previews the curve the blend happens in. Set LUT Mode to None to get the choice back.");
     enc->appendOption("Rec.709 (Scene)");
     enc->appendOption("Rec.709 (Gamma 2.2)");
     enc->appendOption("Rec.709 (Gamma 2.4)");
     enc->appendOption("Cineon Log (feed film LUT)");
-    enc->appendOption("DaVinci Intermediate");
+    enc->appendOption("DaVinci Wide Gamut / Intermediate");   // same wording as Camera option 1
     enc->appendOption("Linear");
     enc->setDefault(1);   // Rec.709 (Gamma 2.2) — web/YouTube delivery, where most exports land
     enc->setParent(*gOut);
     page->addChild(*enc);
+
+    // Both Node Role and an active LUT override the encode above. Greying the dropdown
+    // isn't enough on its own — a greyed control still shows the *old* value, so the panel
+    // keeps reading "Rec.709 (Gamma 2.2)" while the render uses Rec.709 (Scene). This line
+    // states what is actually being rendered, and is empty when nothing is overridden.
+    // Kept short and ASCII: the panel truncates labels around ~45 characters.
+    {
+        StringParamDescriptor* note = p_Desc.defineStringParam("encodeNote");
+        note->setLabels("In effect", "In effect", "In effect");
+        note->setStringType(eStringTypeLabel);
+        note->setDefault("");
+        note->setHint("What the node is actually encoding to. Blank when the Output Encode above is what's used; otherwise it names the override (an active LUT, or the Node Role) and why.");
+        note->setEnabled(false);
+        note->setParent(*gOut);
+        page->addChild(*note);
+    }
 
     // ---- 6. Look / Film LUT ----
     scanLuts();

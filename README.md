@@ -141,8 +141,8 @@ preset — is documented in [docs/CREATING-LUTS.md](docs/CREATING-LUTS.md).
   **Rec.2100 PQ**, is not a camera match: it's a deliberately compressive *smooth
   decode* that flatters log footage (near-perfect highlight rolloff, smooth color, rich
   texture) — the happy path the presets build on. For a colorimetric transform instead,
-  pick the real camera: Blackmagic Gen 5 Film (Pocket 4K/6K, URSA, Pyxis), Blackmagic
-  (DWG/DI), Sony S-Log3, ARRI LogC3/LogC4, Canon Log3, RED Log3G10, DJI D-Log,
+  pick the real camera: Blackmagic Gen 5 Film (Pocket 4K/6K, URSA, Pyxis), DaVinci Wide
+  Gamut / Intermediate, Sony S-Log3, ARRI LogC3/LogC4, Canon Log3, RED Log3G10, DJI D-Log,
   Fuji F-Log2, Panasonic V-Log, or **Rec.2100 HLG / PQ** for genuine HDR clips.
 
 **2 · Balance** — white balance, in linear. *Open the Vectorscope while adjusting.*
@@ -163,9 +163,13 @@ preset — is documented in [docs/CREATING-LUTS.md](docs/CREATING-LUTS.md).
 - **Output Encode** — the curve baked into the render, i.e. your **delivery** target.
   Leave it on **Rec.709 (Gamma 2.2)** (the default — what web/streaming delivery like
   YouTube assumes); use **Rec.709 (Gamma 2.4)** for broadcast/reference delivery, or
-  **Rec.709 (Scene)** for a scene-referred hand-off. (Also: Cineon Log, DaVinci
-  Intermediate, Linear.) The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you
-  pick, so a wheel move reads linearly in that curve.
+  **Rec.709 (Scene)** for a scene-referred hand-off. (Also: Cineon Log, DaVinci Wide
+  Gamut / Intermediate, Linear.) The Lift/Gamma/Gain wheels grade in whichever Rec.709
+  curve you pick, so a wheel move reads linearly in that curve.
+  **An active LUT takes this control over** and greys it out — a LUT can only be fed the
+  curve it was authored for (Film Look → Cineon, Custom Look → Rec.709 Scene). The
+  *In effect* line underneath always names what is actually being rendered. LUT Mix does
+  not hand it back (see below); set LUT Mode to None for that.
   **Do not change this to match Timeline Color Space** — on macOS the timeline is set to
   Rec.709 (Scene) for viewer-matching reasons that have nothing to do with the encode
   (see [Project setup](#macos-what-you-see-vs-what-you-deliver)). How gamma works, end to
@@ -176,8 +180,11 @@ exclusive (they use different transforms):
 - **Film Look** → set **LUT Mode = Film Look**, pick from **Film Look LUT** (Resolve's
   built-in print emulations: Kodak 2383, Fuji 3513DI…). Output auto-switches to Cineon.
 - **Custom Look** → set **LUT Mode = Custom Look**, choose a **Look LUT Group** then a
-  **Look LUT** (any `.cube` from Resolve's LUT folder). Output stays Rec.709.
-- **LUT Mix** — strength / output level, like Key Output (0 = off, 1 = full).
+  **Look LUT** (any `.cube` from Resolve's LUT folder). Output switches to Rec.709 (Scene).
+- **LUT Mix** — strength / output level, like Key Output (0 = off, 1 = full). Mix blends
+  the LUT in and out *inside the LUT's own encode*, so a selected LUT still owns Output
+  Encode at Mix 0 — what you see at 0 is the curve the blend happens in. (Tying the encode
+  to Mix instead would put a contrast cliff between 0.000 and 0.001.)
 
 **7 · Trim (after LUT)**
 - **Exposure / Contrast** — final trims applied *after* the LUT. Film emulations darken
