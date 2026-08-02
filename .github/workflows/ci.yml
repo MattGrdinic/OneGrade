@@ -1,10 +1,27 @@
 name: CI
 
+# Two triggers only, by design (user's call, 2026-08-02): the gate into `main`, and the
+# release. `push: ["**"]` plus an unfiltered `pull_request` fired twice for one commit on
+# a PR'd branch — the v1.1.1 tag produced 7 runs where 3 were wanted.
+#
+# What this deliberately does NOT build, so nobody re-adds it as a "fix":
+#   - pushes to working branches (task branches and feature/<version>)
+#   - PRs into feature/<version>, i.e. the first hop of the branch flow
+#   - the merge commit on `main` — `main` is green because its PR was green
+# So a sub-feature is verified when its release branch opens a PR into `main`, not before.
+# Run `make test` locally while working; that's the fast loop anyway.
 on:
   push:
-    branches: ["**"]
-    tags: ["v*"]
+    tags: ["v*"]          # the release trigger — see "Cutting a release" in README.md
   pull_request:
+    branches: [main]      # the gate into main: build + test before it can merge
+
+# A new push to a PR makes the in-flight run for that branch obsolete; cancel it rather
+# than let both finish. Never cancels main or a tag: a killed `v*` run means no release
+# artifacts, and the concurrency key alone can't tell those apart.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

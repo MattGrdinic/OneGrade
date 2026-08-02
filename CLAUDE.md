@@ -249,7 +249,14 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 ```
 
 ## Deploy / release (tag-driven)
-CI = `.github/workflows/ci.yml`. Every push builds+tests macOS + Windows. Pushing a
+CI = `.github/workflows/ci.yml`. Builds+tests macOS + Windows on exactly two events
+(user's call, 2026-08-02): **PRs into `main`**, and **`v*` tags**. Nothing else — not
+branch pushes, not PRs into `feature/<version>`, not the merge commit on `main` (it's
+green because its PR was). `push: ["**"]` plus an unfiltered `pull_request` used to fire
+twice for one commit; v1.1.1 produced 7 runs where 3 were wanted. **Consequence: a
+sub-feature is only CI-verified when its release branch PRs into `main`** — run
+`make test` locally while working. In-flight runs auto-cancel for PR events only, never
+for a `v*` tag (a cancelled tag run = no release artifacts). Pushing a
 **`v*` tag** additionally runs the `release` job → packages per-OS zip (bundle + installer
 from `install/`) → publishes a GitHub Release. Shipping since v0.1.0; tags so far v0.1.0,
 v0.2.0, v1.0.0, v1.0.1, v1.0.2, v1.0.3, v1.1.0 (the OneGrade rename), **v1.1.1** (current —
@@ -279,10 +286,19 @@ runtime from strings**, so a prefix typo there would only surface inside Resolve
 build time — that's why the rename needs a GPU smoke test, not just a green `make test`.
 
 ## Git workflow
-Branch per change → push → user opens PR and merges on GitHub (they do the merge, not us).
-**Branch naming:** work off `main` starts with a **`feature/<release version>`** branch
-(e.g. `feature/1.1.1` for the 1.1.1 line); the branch for an individual task is cut off
-*that*, not off `main`. **ALWAYS check `git branch --show-current` before committing** — the user merges PRs
+**The branch flow (user's, follow it exactly):**
+1. Every version gets a branch off `main` named **`feature/<version_number>`** — e.g.
+   `feature/1.2.0`. This is the integration branch for the whole release.
+2. Each sub-feature gets its **own branch off that** — never off `main`.
+3. When a sub-feature is done, **ASK whether to roll it into the release branch.** Do not
+   assume. Sometimes yes, sometimes not — it depends on testing, on-footage validation,
+   whether the user wants to sit on it. The answer is theirs, not ours.
+4. On a yes, it merges back into `feature/<version>`. Repeat from 2 for the next
+   sub-feature. The release branch PRs into `main` when the version is done.
+
+The user opens PRs and merges on GitHub (they do the merge, not us; `gh` is NOT installed
+on this machine, so hand them a `compare/` URL instead of trying to automate it).
+**ALWAYS check `git branch --show-current` before committing** — the user merges PRs
 mid-session, so the local checkout can silently be sitting on `main` (this bit us once:
 d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never again).
 `main` is protected-in-practice; don't commit to it directly. Commits end with a
