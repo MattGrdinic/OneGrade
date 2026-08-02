@@ -247,9 +247,11 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 CI = `.github/workflows/ci.yml`. Every push builds+tests macOS + Windows. Pushing a
 **`v*` tag** additionally runs the `release` job → packages per-OS zip (bundle + installer
 from `install/`) → publishes a GitHub Release. Shipping since v0.1.0; tags so far v0.1.0,
-v0.2.0, v1.0.0, v1.0.1, v1.0.2, v1.0.3, **v1.1.0** (current — the OneGrade rename).
+v0.2.0, v1.0.0, v1.0.1, v1.0.2, v1.0.3, v1.1.0 (the OneGrade rename), **v1.1.1** (current —
+the LUT encode-override visibility fix + the DWG/I naming unification).
 Plugin internal version is `kPluginVersionMajor/Minor` in `src/OneGrade.cpp` — OFX carries
-only major/minor, so 1.1 covers the whole v1.1.x line; bump it when major/minor moves.
+only major/minor, so 1.1 covers the whole v1.1.x line (no bump for v1.1.1); bump it when
+major/minor moves.
 
 ## The rename (2026-08-02) — PowerGrade → OneGrade
 Renamed because **"PowerGrade" already means something else in Resolve**: the stills album
