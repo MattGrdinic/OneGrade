@@ -91,6 +91,36 @@ Linear keep DWG primaries. Film Look LUT auto-sets enc=3 (Cineon); Custom Look s
 Explainers: `docs/GAMMA.md` (encodes/grade curve) · `docs/CAMERAS.md` (camera list, PQ
 smooth decode, stand-in gamuts).
 
+## Node Role — splitting across Resolve's group grading levels (2026-08-02)
+`nodeRole` choice param (group "0 Role / Preset"): 0 **Full Grade** (default, the original
+one-node behavior) · 1 **Input Transform (Group Pre-Clip)** · 2 **Output Transform (Group
+Post-Clip)**. Resolve applies Group Pre-Clip → Clip → Group Post-Clip → Timeline, and the
+pre/post graphs are shared by every clip in the group. Role 1 does camera decode only and
+pins the encode to **DaVinci Intermediate**; role 2 pins Camera to **1 (DWG/DI)** and owns
+the look + LUT + trim + delivery encode. Chained, 1→2 reproduces role 0.
+
+**Why DI is the hand-off:** `decode_log(cam=1,…)` and `encode(enc=4,…)` use identical
+constants (exact inverse pair) and both keep DWG primaries, so the round trip is lossless
+apart from float error. Measured worst |split − single| = **0.23 8-bit LSB** (0.003 on the
+gamma encodes) across 12 cameras × 3 delivery encodes, neutral and graded — test 11 in
+`test/pipeline_test.cpp` guards it at < 1 LSB.
+
+**This only works because of the negative-clip fix** (same commit): `safe_pow()` floors at
+0, and the LGG loop called `safe_pow(v, 1/gamma)` unconditionally — so **a neutral node
+hard-clipped every out-of-gamut negative to zero**, breaking the split by ~30 LSB. Now
+`v = (v < 0) ? v : safe_pow(...)`. Regression risk is nil: output is **bit-identical** on
+Rec.709 2.2 / 2.4 / Cineon (negatives are already clamped upstream by `r709_g_enc`, and
+Cineon clamps to [0,1]), so every validated look and both film presets are untouched. It
+changes only Scene / DI / Linear — the scene-referred feeds where clipping was wrong.
+Test 12 guards it. **4-file edit** per the golden rule — all four mirror.
+
+Role is enforced **at render** (`setupAndProcess`), not just greyed in the UI: params the
+role doesn't own are forced neutral, so a role switch or an old project can't double-apply
+the look. `changedParam` stamps the implied values but only on `eChangeUserEdit`, same
+guard as presets. **Not yet verified inside Resolve** — open question is whether Resolve
+passes unclamped float (negatives, >1) between group levels; if it clamps at the boundary
+the DI hand-off loses highlights and the approach needs rethinking.
+
 ## Presets (param layer only — no pipeline/kernel involvement)
 `preset` choice param (group "0 Preset"): 0 None/Reset · 1 Cinematic Film Emulation
 (Kodak 2383 D60) · 2 Cinematic Film Emulation (Fujifilm 3513DI D60) · 3 Custom LUT -

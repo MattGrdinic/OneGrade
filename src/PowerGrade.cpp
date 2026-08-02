@@ -318,6 +318,7 @@ private:
     OFX::Clip* m_DstClip;
     OFX::Clip* m_SrcClip;
 
+    OFX::ChoiceParam* m_NodeRole;   // 0 full grade, 1 input transform, 2 output transform
     OFX::ChoiceParam* m_Preset;
     OFX::ChoiceParam* m_Camera;
     OFX::DoubleParam* m_RawExp;
@@ -349,6 +350,7 @@ PowerGrade::PowerGrade(OfxImageEffectHandle p_Handle)
     m_DstClip = fetchClip(kOfxImageEffectOutputClipName);
     m_SrcClip = fetchClip(kOfxImageEffectSimpleSourceClipName);
 
+    m_NodeRole= fetchChoiceParam("nodeRole");
     m_Preset  = fetchChoiceParam("preset");
     m_Camera  = fetchChoiceParam("camera");
     m_RawExp  = fetchDoubleParam("rawExp");
@@ -376,15 +378,51 @@ PowerGrade::PowerGrade(OfxImageEffectHandle p_Handle)
     setEnabledness();
 }
 
-// Mutually exclusive: Film Look and Custom Look can't be used together.
+// Grey out whatever the current Node Role doesn't own, then apply the LUT-mode rule
+// (Film Look and Custom Look are mutually exclusive) on top.
+//
+// Role splits the pipeline across Resolve's group grading levels:
+//   0 Full Grade      — one node does everything (the original, and the default).
+//   1 Input Transform — camera decode only, out to DaVinci Intermediate. Group Pre-Clip.
+//   2 Output Transform— takes DWG/DI in, applies look + delivery encode. Group Post-Clip.
+// Roles 1+2 chained reproduce role 0 to well under an 8-bit code value (test/pipeline_test).
 void PowerGrade::setEnabledness()
 {
-    int mode = 0;
+    int role = 0, mode = 0;
+    m_NodeRole->getValue(role);
     m_LutMode->getValue(mode);
-    m_FilmLut->setEnabled(mode == 2);
-    m_LookGroup->setEnabled(mode == 1);
-    m_LookLut->setEnabled(mode == 1);
-    m_LutMix->setEnabled(mode != 0);
+
+    const bool input  = (role == 1);
+    const bool output = (role == 2);
+    const bool look   = !input;    // look/grade layer belongs to Full + Output Transform
+    const bool src    = !output;   // camera + RAW belong to Full + Input Transform
+
+    m_Camera->setEnabled(src);
+    m_RawExp->setEnabled(src);
+    m_RawTemp->setEnabled(src);
+
+    m_Preset->setEnabled(look);
+    m_Temp->setEnabled(look);
+    m_Tint->setEnabled(look);
+    m_OffTemp->setEnabled(look);
+    m_OffTint->setEnabled(look);
+    m_Density->setEnabled(look);
+    m_Lift->setEnabled(look);
+    m_Gamma->setEnabled(look);
+    m_Gain->setEnabled(look);
+    m_PostExp->setEnabled(look);
+    m_PostCon->setEnabled(look);
+    m_Rolloff->setEnabled(look);
+    m_LutMode->setEnabled(look);
+
+    // Input Transform pins the encode to DaVinci Intermediate — the hand-off to the
+    // clip-level grade — so it isn't the user's to pick.
+    m_Encode->setEnabled(look);
+
+    m_FilmLut->setEnabled(look && mode == 2);
+    m_LookGroup->setEnabled(look && mode == 1);
+    m_LookLut->setEnabled(look && mode == 1);
+    m_LutMix->setEnabled(look && mode != 0);
 }
 
 // Rebuild the Look LUT dropdown to list only the currently selected group's LUTs.
@@ -489,6 +527,25 @@ void PowerGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std:
 {
     if (p_ParamName == "lutMode") setEnabledness();
     else if (p_ParamName == "lookGroup") { populateLookLut(); m_LookLut->setValue(0); }
+    // Node Role: stamp the transform the role implies so the panel shows the truth.
+    // Guarded like the preset — a project load must not overwrite stored values. Render
+    // enforces the same rules regardless (see setupAndProcess), so a stale stored value
+    // can't produce a wrong picture, only a stale-looking dropdown.
+    else if (p_ParamName == "nodeRole") {
+        if (p_Args.reason == OFX::eChangeUserEdit) {
+            int role = 0; m_NodeRole->getValue(role);
+            if (role == 1) {            // Input Transform -> hand off in DaVinci Intermediate
+                m_Encode->setValue(4);
+                m_LutMode->setValue(0);
+                applyPreset(0);         // neutral look; leaves Camera and RAW alone
+            } else if (role == 2) {     // Output Transform -> takes the pre-clip's DWG/DI
+                m_Camera->setValue(1);
+                m_RawExp->setValue(0.0);
+                m_RawTemp->setValue(6500.0);
+            }
+        }
+        setEnabledness();
+    }
     // Only on a real user edit — project load / plugin edits must not re-stamp the preset
     // over values the user has since tweaked.
     else if (p_ParamName == "preset" && p_Args.reason == OFX::eChangeUserEdit) {
@@ -519,10 +576,21 @@ void PowerGrade::setupAndProcess(PowerGradeProcessor& p_Proc, const OFX::RenderA
     if ((src->getPixelDepth() != dst->getPixelDepth()) || (src->getPixelComponents() != dst->getPixelComponents()))
         OFX::throwSuiteStatusException(kOfxStatErrValue);
 
-    int camera = 0, encode = 0, lutMode = 0;
+    int role = 0, camera = 0, encode = 0, lutMode = 0;
+    m_NodeRole->getValueAtTime(p_Args.time, role);
     m_Camera->getValueAtTime(p_Args.time, camera);
     m_Encode->getValueAtTime(p_Args.time, encode);
     m_LutMode->getValueAtTime(p_Args.time, lutMode);
+
+    // Node Role is authoritative at render time, not just in the UI: a grade saved in one
+    // role and switched to another (or loaded from an older project) must still render the
+    // role it is set to, never a half-applied mix of the two.
+    if (role == 1) {            // Input Transform: camera decode only, out to DWG/DI
+        encode  = 4;
+        lutMode = 0;
+    } else if (role == 2) {     // Output Transform: input is the pre-clip node's DWG/DI
+        camera = 1;
+    }
 
     // Couple the pre-LUT encoding to the LUT path so the two can't mismatch:
     //   Film Look LUTs require Cineon log input; Custom look LUTs use Rec.709.
@@ -544,6 +612,17 @@ void PowerGrade::setupAndProcess(PowerGradeProcessor& p_Proc, const OFX::RenderA
     params[10] = (float)m_RawExp->getValueAtTime(p_Args.time);
     params[11] = (float)m_RawTemp->getValueAtTime(p_Args.time);
     params[12] = (float)m_Rolloff->getValueAtTime(p_Args.time);
+
+    // Force the params the role doesn't own to neutral, so the two nodes chain cleanly:
+    // the look must be applied once (on the output node), the RAW/WB stage once (input).
+    if (role == 1) {            // Input Transform: no look at all
+        params[0]=0.f; params[1]=0.f; params[2]=0.f;              // temp, tint, density
+        params[3]=0.f; params[4]=1.f; params[5]=1.f;              // lift, gamma, gain
+        params[6]=0.f; params[7]=0.f;                             // offset temp/tint
+        params[8]=0.f; params[9]=1.f; params[12]=0.f;             // trim exp/contrast/rolloff
+    } else if (role == 2) {     // Output Transform: RAW stage already happened upstream
+        params[10]=0.f; params[11]=6500.f;                        // rawExp, rawTemp
+    }
 
     // Resolve the active LUT (path from mode) and load it (cached by path).
     std::string lutPath;
@@ -644,9 +723,22 @@ void PowerGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OF
 
     PageParamDescriptor* page = p_Desc.definePageParam("Controls");
 
-    // ---- 0. Preset ----  one-shot look starting points (see PowerGrade::applyPreset)
+    // ---- 0. Role + Preset ----
     GroupParamDescriptor* gPreset = p_Desc.defineGroupParam("gPreset");
-    gPreset->setLabels("0  Preset", "0  Preset", "0  Preset");
+    gPreset->setLabels("0  Role / Preset", "0  Role / Preset", "0  Role / Preset");
+
+    // Node Role splits the pipeline across Resolve's group grading levels. See
+    // PowerGrade::setEnabledness / setupAndProcess — the role is enforced at render.
+    ChoiceParamDescriptor* role = p_Desc.defineChoiceParam("nodeRole");
+    role->setLabels("Node Role", "Node Role", "Node Role");
+    role->setHint("Which part of the pipeline this node does. Full Grade (the default) does everything in one node. The other two split it across Resolve's group grading levels so a whole group shares one setup: put an Input Transform node in the Group Pre-Clip graph (camera decode only, handed off in DaVinci Intermediate), grade your shots normally at the Clip level, then put an Output Transform node in the Group Post-Clip graph (look, LUT, trim and the delivery encode). Chained, the two match a single Full Grade node. Controls the role doesn't own are greyed out and forced neutral at render, so the look is never applied twice.");
+    role->appendOption("Full Grade (single node)");
+    role->appendOption("Input Transform (Group Pre-Clip)");
+    role->appendOption("Output Transform (Group Post-Clip)");
+    role->setDefault(0);
+    role->setParent(*gPreset);
+    page->addChild(*role);
+
     ChoiceParamDescriptor* preset = p_Desc.defineChoiceParam("preset");
     preset->setLabels("Preset", "Preset", "Preset");
     preset->setHint("One-click starting points on the happy path: every preset sets Camera to Rec.2100 PQ (the smooth decode, also the default) plus Balance, Density, Lift/Gamma/Gain, LUT and Trim — every slider stays live to tweak per clip; RAW and Output Encode are never touched. Film Emulation presets drive Resolve's print-film stocks (swap in Film Look LUT); Custom LUT presets drive PowerGrade's built-in looks, shipped inside the plugin (swap in Look LUT; six looks available). Trim any LUT with LUT Mix. None / Reset Look returns the look params to neutral (Camera stays put).");

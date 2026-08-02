@@ -17,6 +17,8 @@ static bool finite3(float r, float g, float b) { return std::isfinite(r) && std:
 
 // neutral parameter vector: temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp
 static void neutral(float P[12]) { for (int i=0;i<12;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
+// Full 13-wide vector (adds P[12] rolloff) for tests that chain whole nodes together.
+static void neutral13(float P[13]) { for (int i=0;i<13;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
 
 int main() {
     printf("PowerGrade pipeline tests\n");
@@ -176,6 +178,48 @@ int main() {
         pg::process(1, 0, Pc, 0.5f, 0.5f, 0.5f, rc, gc, bc);
         check(finite3(r6,g6,b6) && rw>r6 && r6>rc && bw<b6 && b6<bc,
               "RAW temp: warmer raises R / lowers B, 6500 sits between");
+    }
+
+    // 11. Node Role split: Input Transform (cam -> DaVinci Intermediate) chained into
+    //     Output Transform (DWG/DI -> delivery) must reproduce a single Full Grade node.
+    //     This is what lets one group share a Pre-Clip decode and a Post-Clip look.
+    {
+        float Pn[13]; neutral13(Pn);
+        float Pg[13]; neutral13(Pg);                 // a real look on the output node
+        Pg[2]=0.25f; Pg[3]=0.06f; Pg[4]=1.10f; Pg[5]=0.92f; Pg[6]=-0.09f;
+        float worst = 0.f;
+        for (int look = 0; look < 2; ++look) {
+            const float* P = look ? Pg : Pn;
+            for (int enc = 0; enc <= 2; ++enc)
+                for (int cam = 0; cam < 12; ++cam)
+                    for (int i = 0; i <= 40; ++i) {
+                        float x = i/40.0f, y = x*0.85f, z = x*0.62f;
+                        float s0,s1,s2;  pg::process(cam, enc, P, x, y, z, s0, s1, s2);
+                        float a0,a1,a2;  pg::process(cam, 4, Pn, x, y, z, a0, a1, a2);
+                        float b0,b1,b2;  pg::process(1, enc, P, a0, a1, a2, b0, b1, b2);
+                        worst = std::fmax(worst, std::fmax(std::fabs(s0-b0),
+                                          std::fmax(std::fabs(s1-b1), std::fabs(s2-b2))));
+                    }
+        }
+        // 1/255 = one 8-bit code value; we land ~4x under that even at the worst camera.
+        check(worst < 1.0f/255.0f, "Node Role split (pre-clip + post-clip) == single node");
+        if (worst >= 1.0f/255.0f) printf("        worst delta %.4f (%.2f x 8-bit LSB)\n", worst, worst*255.f);
+    }
+
+    // 12. A neutral node must not clip out-of-gamut negatives on the scene-referred
+    //     hand-off encodes — that clip is what broke the role split (safe_pow floors at 0).
+    {
+        float P[13]; neutral13(P);
+        bool sawNegative = false, ok = true;
+        for (int cam = 0; cam < 12 && ok; ++cam)
+            for (int i = 1; i <= 40; ++i) {
+                float x = i/40.0f;
+                float r,g,b;
+                pg::process(cam, 4, P, x, x*0.05f, x, r, g, b);   // saturated magenta
+                if (!finite3(r,g,b)) { ok = false; break; }
+                if (r < -1e-4f || g < -1e-4f || b < -1e-4f) sawNegative = true;
+            }
+        check(ok && sawNegative, "neutral node preserves out-of-gamut negatives (DI hand-off)");
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");

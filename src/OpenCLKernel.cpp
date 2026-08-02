@@ -75,7 +75,7 @@ const char* KernelSource = "\n" \
 "inline float pg_r709d(float V){ return (V<0.081f)?(V/4.5f):pg_pow((V+0.099f)/1.099f,1.0f/0.45f); }             \n" \
 "inline float pg_r709ge(float L, float g){ return pg_pow(L,1.0f/g); }                                           \n" \
 "inline float pg_r709gd(float V, float g){ return pg_pow(V,g); }                                                \n" \
-"inline float pg_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?pg_r709ge(L,dg):pg_r709e(L); v=v*gain; v=v+lift*(1.0f-fmin(v,1.0f)); v=pg_pow(v,1.0f/gamma); return (dg>0.0f)?pg_r709gd(v,dg):pg_r709d(v); } \n" \
+"inline float pg_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?pg_r709ge(L,dg):pg_r709e(L); v=v*gain; v=v+lift*(1.0f-fmin(v,1.0f)); v=(v<0.0f)?v:pg_pow(v,1.0f/gamma); return (dg>0.0f)?pg_r709gd(v,dg):pg_r709d(v); } \n" \
 "inline float pg_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2(x+A)+B)*C):(x*M); } \n" \
 "inline float pg_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2(x/C-B)-A):(x/M); } \n" \
 "inline float pg_enc(int enc, float x){                                                                         \n" \

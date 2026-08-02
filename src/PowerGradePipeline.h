@@ -315,7 +315,11 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
         float v = (dg > 0.f) ? r709_g_enc(outc[i], dg) : r709_enc(outc[i]);
         v = v * gain;
         v = v + lift * (1.0f - (v < 1.0f ? v : 1.0f));
-        v = safe_pow(v, 1.0f/gamma);
+        // Negatives pass through untouched: safe_pow() floors at 0, which would hard-clip
+        // out-of-gamut values even at neutral gamma and destroy the scene-referred
+        // Scene/DI/Linear feeds. No-op for the display encodes (2.2/2.4/Cineon already
+        // clamp negatives upstream of here).
+        v = (v < 0.f) ? v : safe_pow(v, 1.0f/gamma);
         outc[i] = (dg > 0.f) ? r709_g_dec(v, dg) : r709_dec(v);
     }
 
