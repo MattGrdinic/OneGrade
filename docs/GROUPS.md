@@ -1,10 +1,10 @@
-# Node Role: PowerGrade across Resolve's group grading levels
+# Node Role: OneGrade across Resolve's group grading levels
 
-PowerGrade normally does the whole job in one node: camera decode, balance, density,
+OneGrade normally does the whole job in one node: camera decode, balance, density,
 grade, output encode, LUT, trim. That's the **Full Grade** role, and it's the default.
 
 But Resolve gives every clip four grading levels, and colorists working at volume lean on
-them heavily. **Node Role** lets one PowerGrade node be split in two so it fits that
+them heavily. **Node Role** lets one OneGrade node be split in two so it fits that
 structure instead of fighting it. This doc covers how the levels work, what the split
 does, why DaVinci Intermediate is the hand-off, and the clipping bug the design exposed.
 
@@ -35,7 +35,7 @@ group it's in, and assigning it to another **moves** it — there is no confirma
 warning.
 
 Tested directly (2026-08-02): a clip sitting in a group whose Pre-Clip graph held a
-PowerGrade Input Transform was assigned to a second group. **The PowerGrade node was gone
+OneGrade Input Transform was assigned to a second group. **The OneGrade node was gone
 from that clip** — it inherited the new group's (empty) pre-clip graph instead. The old
 group still exists and still lists in the menu; it just no longer applies to that shot.
 
@@ -66,7 +66,7 @@ Pre-Clip, grade shots normally at Clip level, put an Output Transform node in Gr
 Post-Clip, and the result matches a single Full Grade node.
 
 Controls a role doesn't own are greyed out in the panel **and forced neutral at render**
-(`PowerGrade::setupAndProcess`). The render-time enforcement is the important half: it
+(`OneGrade::setupAndProcess`). The render-time enforcement is the important half: it
 means switching roles, or loading a project saved under a different role, can never
 double-apply the look or apply the RAW stage twice. The UI greying is a convenience; the
 render path is the guarantee.
@@ -87,7 +87,7 @@ A=0.0075  B=7.0  C=0.07329248  M=10.44426855
 ```
 
 and output encode 4 (DaVinci Intermediate) encodes with *the same constants*
-([PowerGradePipeline.h](../src/PowerGradePipeline.h), `decode_log` and `encode`). One is
+([OneGradePipeline.h](../src/OneGradePipeline.h), `decode_log` and `encode`). One is
 the algebraic inverse of the other, so the round trip costs only float rounding.
 
 **Primaries don't move.** Encodes 0–3 (Scene, 2.2, 2.4, Cineon) convert to Rec.709
@@ -131,7 +131,7 @@ the 0 line. No offset or Cineon fallback hand-off is needed.
 The split failed on its first test by about **30 8-bit code values**, and the cause turned
 out to be a defect that had nothing to do with groups.
 
-[PowerGradePipeline.h](../src/PowerGradePipeline.h) defines
+[OneGradePipeline.h](../src/OneGradePipeline.h) defines
 
 ```c
 static inline float safe_pow(float b, float e) { return powf(b < 0.f ? 0.f : b, e); }
@@ -145,7 +145,7 @@ v = safe_pow(v, 1.0f/gamma);
 ```
 
 With gamma at its neutral 1.0 that is still a hard clamp. So **a completely neutral
-PowerGrade node clipped every negative value to zero.** Out-of-gamut negatives are normal
+OneGrade node clipped every negative value to zero.** Out-of-gamut negatives are normal
 and expected after a camera-gamut → DWG conversion; they were being destroyed on every
 frame.
 
@@ -191,10 +191,10 @@ the DI hand-off for saturated out-of-gamut input.
 **Group setup, start to finish:**
 
 1. Color page → select the clips → right-click → *Add into a New Group*.
-2. Node Editor mode selector → **Group Pre-Clip**. Add PowerGrade, set
+2. Node Editor mode selector → **Group Pre-Clip**. Add OneGrade, set
    **Node Role → Input Transform**, set **Camera** to your source.
-3. Mode selector → **Clip**. Grade shots normally. PowerGrade isn't involved.
-4. Mode selector → **Group Post-Clip**. Add PowerGrade, set
+3. Mode selector → **Clip**. Grade shots normally. OneGrade isn't involved.
+4. Mode selector → **Group Post-Clip**. Add OneGrade, set
    **Node Role → Output Transform**, then pick a Preset or set **Output Encode** to your
    delivery curve.
 

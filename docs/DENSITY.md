@@ -1,6 +1,6 @@
 # How the Density control works
 
-Density is PowerGrade's one-slider answer to "make the colors richer without making the
+Density is OneGrade's one-slider answer to "make the colors richer without making the
 picture brighter or shifting hue." It is a **saturation gain applied in HSV, computed in
 DaVinci Intermediate log** — and the log part is the whole trick.
 
@@ -19,8 +19,8 @@ space.
 
 ## 2. The math
 
-Step 4 of `pg::process()` in
-[src/PowerGradePipeline.h](../src/PowerGradePipeline.h) (mirrored in the three kernels):
+Step 4 of `og::process()` in
+[src/OneGradePipeline.h](../src/OneGradePipeline.h) (mirrored in the three kernels):
 
 ```c
 if (density != 0.0f) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PowerGrade — generator for the built-in look LUTs (shipped in the bundle's
+# OneGrade — generator for the built-in look LUTs (shipped in the bundle's
 # Contents/Resources/LUTs). Pure Python, no dependencies. Regenerate after tuning:
 #
 #   python3 luts/generate_luts.py
@@ -29,7 +29,7 @@ def smoothstep(e0, e1, v):
 
 
 def softclip(v, amt):
-    """Same shoulder as pg::softclip — identity below the knee, asymptote 1.0."""
+    """Same shoulder as og::softclip — identity below the knee, asymptote 1.0."""
     if amt <= 0.0 or v <= 0.0:
         return v
     k = 1.0 - 0.6 * amt
@@ -124,7 +124,7 @@ def write_cube(path, title, p):
 LOOKS = {
     # Pale mid-day desert -> pop: warm bias, solid S-curve, rich global color,
     # deeper teal-leaning skies, richer oranges in the ground tones.
-    "PowerGrade Desert Day": dict(
+    "OneGrade Desert Day": dict(
         warm=0.03,
         toe=0.0,
         contrast=0.35,
@@ -138,7 +138,7 @@ LOOKS = {
     ),
     # Creamy outdoor look: lifted soft shadows, early smooth shoulder, gentle
     # contrast, greens enriched, low-chroma toe. "Smooth, not punchy."
-    "PowerGrade Cinematic Landscape": dict(
+    "OneGrade Cinematic Landscape": dict(
         warm=0.015,
         toe=0.04,
         contrast=0.12,
@@ -153,7 +153,7 @@ LOOKS = {
     # Low-sun amber glow: strong warmth into gently magenta-warm shadows, early soft
     # shoulder, golds enriched, skies calmed. Romantic, glowy — nothing like the
     # punchy Desert Day.
-    "PowerGrade Golden Hour": dict(
+    "OneGrade Golden Hour": dict(
         warm=0.055,
         toe=0.02,
         contrast=0.10,
@@ -168,7 +168,7 @@ LOOKS = {
     ),
     # The blockbuster split: teal shadows vs warm highlights/skin, solid contrast,
     # pinned blacks. Punchy and modern.
-    "PowerGrade Teal Orange": dict(
+    "OneGrade Teal Orange": dict(
         warm=0.0,
         toe=0.0,
         contrast=0.30,
@@ -183,7 +183,7 @@ LOOKS = {
     ),
     # Skip-bleach: silver and gritty — strong contrast, heavily muted color, faintly
     # cool cast, controlled whites. The desaturated corner of the look-space.
-    "PowerGrade Silver Bleach": dict(
+    "OneGrade Silver Bleach": dict(
         warm=-0.01,
         toe=0.0,
         contrast=0.45,
@@ -194,7 +194,7 @@ LOOKS = {
     ),
     # Cool low-key mood: blue cast deepening in the shadows, muted warms, blues kept
     # alive. Night exteriors, thrillers, blue-hour city.
-    "PowerGrade Midnight Blue": dict(
+    "OneGrade Midnight Blue": dict(
         warm=-0.045,
         toe=0.0,
         contrast=0.25,

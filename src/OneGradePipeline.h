@@ -1,4 +1,4 @@
-// PowerGrade — shared CPU-side color pipeline (single source of truth for the math).
+// OneGrade — shared CPU-side color pipeline (single source of truth for the math).
 // The GPU kernels (Metal/OpenCL/CUDA) mirror this exact math.
 // SPDX-License-Identifier: BSD-3-Clause
 //
@@ -22,7 +22,7 @@
 #include <cmath>
 #include <algorithm>
 
-namespace pg {
+namespace og {
 
 static inline float safe_pow(float b, float e) { return powf(b < 0.f ? 0.f : b, e); }
 static inline float clamp01(float x) { return x < 0.f ? 0.f : (x > 1.f ? 1.f : x); }

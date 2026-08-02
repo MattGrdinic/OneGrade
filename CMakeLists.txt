@@ -1,13 +1,13 @@
-# PowerGrade — cross-platform OpenFX plugin build (macOS / Windows / Linux).
+# OneGrade — cross-platform OpenFX plugin build (macOS / Windows / Linux).
 # SPDX-License-Identifier: BSD-3-Clause
 #
 #   cmake -S . -B build-cmake [-DBUILD_CUDA=ON]
 #   cmake --build build-cmake --config Release
 #   ctest --test-dir build-cmake
 #
-# Output: build-cmake/PowerGrade.ofx.bundle
+# Output: build-cmake/OneGrade.ofx.bundle
 cmake_minimum_required(VERSION 3.20)
-project(PowerGrade LANGUAGES CXX)
+project(OneGrade LANGUAGES CXX)
 
 option(BUILD_CUDA "Compile the CUDA kernel and advertise CUDA render" OFF)
 
@@ -29,7 +29,7 @@ set(SUPPORT_SRCS
   ${SDK}/Support/Library/ofxsProperty.cpp
   ${SDK}/Support/Library/ofxsPropertyValidation.cpp)
 
-set(PLUGIN_SRCS src/PowerGrade.cpp src/OpenCLKernel.cpp)
+set(PLUGIN_SRCS src/OneGrade.cpp src/OpenCLKernel.cpp)
 
 find_package(OpenCL REQUIRED)
 
@@ -57,45 +57,45 @@ if(BUILD_CUDA)
   list(APPEND PLUGIN_SRCS src/CudaKernel.cu)
 endif()
 
-add_library(PowerGrade MODULE ${PLUGIN_SRCS} ${SUPPORT_SRCS})
-target_include_directories(PowerGrade PRIVATE
+add_library(OneGrade MODULE ${PLUGIN_SRCS} ${SUPPORT_SRCS})
+target_include_directories(OneGrade PRIVATE
   ${SDK}/include ${SDK}/Support/include ${SDK}/Support/Plugins/include src)
 # OPENCL, not just OPENGL: the two are unrelated flags and the near-identical
 # names hid a real bug. OFX_SUPPORTS_OPENCLRENDER guards the body of
 # processImagesOpenCL(), so leaving it undefined compiles the OpenCL render to
 # an empty function while the plugin still advertises OpenCL support.
 # OpenCLKernel.cpp and OpenCL::OpenCL are always built, so this is unconditional.
-target_compile_definitions(PowerGrade PRIVATE OFX_SUPPORTS_OPENGLRENDER OFX_SUPPORTS_OPENCLRENDER)
-target_link_libraries(PowerGrade PRIVATE OpenCL::OpenCL)
+target_compile_definitions(OneGrade PRIVATE OFX_SUPPORTS_OPENGLRENDER OFX_SUPPORTS_OPENCLRENDER)
+target_link_libraries(OneGrade PRIVATE OpenCL::OpenCL)
 
-set_target_properties(PowerGrade PROPERTIES PREFIX "" SUFFIX ".ofx" OUTPUT_NAME "PowerGrade")
+set_target_properties(OneGrade PROPERTIES PREFIX "" SUFFIX ".ofx" OUTPUT_NAME "OneGrade")
 
 if(APPLE)
-  target_link_libraries(PowerGrade PRIVATE "-framework Metal" "-framework AppKit")
+  target_link_libraries(OneGrade PRIVATE "-framework Metal" "-framework AppKit")
 endif()
 if(BUILD_CUDA)
-  target_compile_definitions(PowerGrade PRIVATE OFX_SUPPORTS_CUDARENDER)
+  target_compile_definitions(OneGrade PRIVATE OFX_SUPPORTS_CUDARENDER)
   # Whole-program (not CUDA_SEPARABLE_COMPILATION): CudaKernel.cu is one TU with
   # no cross-TU device calls, and the -rdc=true device-link that separable
   # compilation forces would strip the fatbinary's PTX, costing forward compat.
 endif()
 
 # ---- assemble the .ofx.bundle next to the built module ----
-set(BUNDLE "${CMAKE_BINARY_DIR}/PowerGrade.ofx.bundle")
-add_custom_command(TARGET PowerGrade POST_BUILD
+set(BUNDLE "${CMAKE_BINARY_DIR}/OneGrade.ofx.bundle")
+add_custom_command(TARGET OneGrade POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "${BUNDLE}/Contents/${ARCHDIR}"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:PowerGrade>" "${BUNDLE}/Contents/${ARCHDIR}/PowerGrade.ofx"
+  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:OneGrade>" "${BUNDLE}/Contents/${ARCHDIR}/OneGrade.ofx"
   COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/src/Info.plist" "${BUNDLE}/Contents/Info.plist"
   COMMAND ${CMAKE_COMMAND} -E make_directory "${BUNDLE}/Contents/Resources/LUTs"
   COMMAND ${CMAKE_COMMAND} -E copy
-          "${CMAKE_SOURCE_DIR}/luts/PowerGrade Desert Day.cube"
-          "${CMAKE_SOURCE_DIR}/luts/PowerGrade Cinematic Landscape.cube"
-          "${CMAKE_SOURCE_DIR}/luts/PowerGrade Golden Hour.cube"
-          "${CMAKE_SOURCE_DIR}/luts/PowerGrade Teal Orange.cube"
-          "${CMAKE_SOURCE_DIR}/luts/PowerGrade Silver Bleach.cube"
-          "${CMAKE_SOURCE_DIR}/luts/PowerGrade Midnight Blue.cube"
+          "${CMAKE_SOURCE_DIR}/luts/OneGrade Desert Day.cube"
+          "${CMAKE_SOURCE_DIR}/luts/OneGrade Cinematic Landscape.cube"
+          "${CMAKE_SOURCE_DIR}/luts/OneGrade Golden Hour.cube"
+          "${CMAKE_SOURCE_DIR}/luts/OneGrade Teal Orange.cube"
+          "${CMAKE_SOURCE_DIR}/luts/OneGrade Silver Bleach.cube"
+          "${CMAKE_SOURCE_DIR}/luts/OneGrade Midnight Blue.cube"
           "${BUNDLE}/Contents/Resources/LUTs/"
-  COMMENT "Assembling PowerGrade.ofx.bundle")
+  COMMENT "Assembling OneGrade.ofx.bundle")
 
 # ---- CPU unit tests ----
 enable_testing()

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>PowerGrade</string>
+    <string>OneGrade</string>
     <key>CFBundleDisplayName</key>
-    <string>PowerGrade</string>
+    <string>OneGrade</string>
     <key>CFBundleIdentifier</key>
-    <string>com.mattgrdinic.PowerGrade</string>
+    <string>com.mattgrdinic.OneGrade</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
@@ -15,6 +15,6 @@
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleExecutable</key>
-    <string>PowerGrade.ofx</string>
+    <string>OneGrade.ofx</string>
 </dict>
 </plist>

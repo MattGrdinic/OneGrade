@@ -1,13 +1,13 @@
-// PowerGrade — cross-platform OpenFX color grade plugin for DaVinci Resolve.
+// OneGrade — cross-platform OpenFX color grade plugin for DaVinci Resolve.
 // SPDX-License-Identifier: BSD-3-Clause
 #pragma once
 
 #include "ofxsImageEffect.h"
 
-class PowerGradeFactory : public OFX::PluginFactoryHelper<PowerGradeFactory>
+class OneGradeFactory : public OFX::PluginFactoryHelper<OneGradeFactory>
 {
 public:
-    PowerGradeFactory();
+    OneGradeFactory();
     virtual void load() {}
     virtual void unload() {}
     virtual void describe(OFX::ImageEffectDescriptor& p_Desc);

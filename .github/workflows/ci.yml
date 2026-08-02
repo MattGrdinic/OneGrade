@@ -64,7 +64,7 @@ jobs:
       - name: Verify CUDA kernel is in the bundle (Windows)
         if: runner.os == 'Windows'
         run: |
-          $ofx = "build\PowerGrade.ofx.bundle\Contents\Win64\PowerGrade.ofx"
+          $ofx = "build\OneGrade.ofx.bundle\Contents\Win64\OneGrade.ofx"
           $elf = & "$env:CUDA_PATH\bin\cuobjdump.exe" --list-elf $ofx
           Write-Host $elf
           if (-not ($elf | Select-String -Quiet 'sm_120')) {
@@ -76,18 +76,18 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cp install/install-macos.command build/
-          ( cd build && zip -r -y PowerGrade-macos.zip PowerGrade.ofx.bundle install-macos.command )
+          ( cd build && zip -r -y OneGrade-macos.zip OneGrade.ofx.bundle install-macos.command )
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
           Copy-Item install\install-windows.bat build\
-          Compress-Archive -Path build\PowerGrade.ofx.bundle,build\install-windows.bat -DestinationPath build\PowerGrade-windows.zip
+          Compress-Archive -Path build\OneGrade.ofx.bundle,build\install-windows.bat -DestinationPath build\OneGrade-windows.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PowerGrade-${{ matrix.name }}
-          path: build/PowerGrade-${{ matrix.name }}.zip
+          name: OneGrade-${{ matrix.name }}
+          path: build/OneGrade-${{ matrix.name }}.zip
           if-no-files-found: error
 
   release:

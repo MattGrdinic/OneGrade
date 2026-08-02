@@ -1,4 +1,4 @@
-// PowerGrade — minimal .cube 3D LUT parser (host side).
+// OneGrade — minimal .cube 3D LUT parser (host side).
 // SPDX-License-Identifier: BSD-3-Clause
 #pragma once
 #include <string>
