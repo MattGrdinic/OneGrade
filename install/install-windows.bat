@@ -1,12 +1,12 @@
 @echo off
-REM PowerGrade - Windows installer. Right-click > Run as administrator.
-REM Copies PowerGrade.ofx.bundle into the common OFX plugin folder.
+REM OneGrade - Windows installer. Right-click > Run as administrator.
+REM Copies OneGrade.ofx.bundle into the common OFX plugin folder.
 setlocal
-set "SRC=%~dp0PowerGrade.ofx.bundle"
+set "SRC=%~dp0OneGrade.ofx.bundle"
 set "DEST=%CommonProgramFiles%\OFX\Plugins"
 
 if not exist "%SRC%" (
-  echo PowerGrade.ofx.bundle not found next to this installer.
+  echo OneGrade.ofx.bundle not found next to this installer.
   pause & exit /b 1
 )
 
@@ -17,9 +17,12 @@ if %errorlevel% neq 0 (
 )
 
 if not exist "%DEST%" mkdir "%DEST%"
+if exist "%DEST%\OneGrade.ofx.bundle" rmdir /s /q "%DEST%\OneGrade.ofx.bundle"
+REM Remove the old PowerGrade bundle - same plugin, renamed. Leaving both installed
+REM just shows a dead duplicate. Grades saved with PowerGrade will NOT carry over.
 if exist "%DEST%\PowerGrade.ofx.bundle" rmdir /s /q "%DEST%\PowerGrade.ofx.bundle"
-xcopy /E /I /Y "%SRC%" "%DEST%\PowerGrade.ofx.bundle" >nul
+xcopy /E /I /Y "%SRC%" "%DEST%\OneGrade.ofx.bundle" >nul
 
-echo PowerGrade installed to "%DEST%".
-echo Restart DaVinci Resolve, then find it under Effects ^> OpenFX ^> Power Grade.
+echo OneGrade installed to "%DEST%".
+echo Restart DaVinci Resolve, then find it under Effects ^> OpenFX ^> OneGrade.
 pause

@@ -1,4 +1,4 @@
-# CLAUDE.md — PowerGrade working notes
+# CLAUDE.md — OneGrade working notes
 
 Operational memory for resuming work. User-facing usage + architecture live in
 `README.md`; this file is the "how we work on it and why it's built this way" layer.
@@ -6,7 +6,7 @@ Operational memory for resuming work. User-facing usage + architecture live in
 ## What it is
 A **compiled OpenFX plugin** (`.ofx.bundle`) for DaVinci Resolve — one node that does
 camera CST → balance → density → exposure → output encode → look/film LUT → trim, on the
-GPU (Metal/OpenCL/CUDA) with a CPU fallback. Repo: `github.com/MattGrdinic/PowerGrade`.
+GPU (Metal/OpenCL/CUDA) with a CPU fallback. Repo: `github.com/MattGrdinic/OneGrade`.
 
 **History / dead ends (don't retry):** we started as a **DCTL**, then a scripting panel —
 both abandoned. DCTL can't do CST/`.cube` LUTs/multi-node; the Resolve scripting API
@@ -17,10 +17,11 @@ when touching the matching code): `GAMMA.md` (transfer functions, grade curve, e
 `CAMERAS.md` (input transforms, working space) · `BALANCE.md` (RAW WB + gain/offset
 balance) · `DENSITY.md` (HSV-in-DI-log saturation) · `LUTS.md` (discovery, parsing,
 sampling, built-ins) · `FILM-EMULATION.md` (Cineon → print-stock path + preset recipe) ·
-`CREATING-LUTS.md` (authoring new built-in looks).
+`CREATING-LUTS.md` (authoring new built-in looks) · `GROUPS.md` (Node Role, the
+pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed).
 
 ## The golden rule
-`src/PowerGradePipeline.h` (namespace `pg`, CPU) is the **single source of truth** for all
+`src/OneGradePipeline.h` (namespace `pg`, CPU) is the **single source of truth** for all
 color math. The three GPU kernels **mirror it exactly**:
 - `src/MetalKernel.mm`  (Apple — the one path validated in Resolve)
 - `src/OpenCLKernel.cpp` (kernel is a C string; CI-green on Windows, not correctness-tested on HW)
@@ -31,7 +32,7 @@ cleanly. Param-count changes also need: Metal `setBytes` length, OpenCL `clSetKe
 loop count + kernel signature, CUDA `cudaMalloc`/`cudaMemcpy` size.
 
 ## Pipeline order + SPACES (the crux — took many iterations, do NOT regress)
-Per pixel, in `pg::process()`:
+Per pixel, in `og::process()`:
 0. **RAW** (Camera-RAW-tab analogs, so that tab can be left alone):
    - **RAW Exposure** = linear gain in stops on scene light, right after `decode_log`, before
      the CST. This *is* what RAW exposure does (sensor-linear multiply) → near-exact match.
@@ -55,16 +56,16 @@ Per pixel, in `pg::process()`:
    - **Gain** = multiply, pivots **black**
    - **Lift** = `lift*(1 - min(v,1))`, pivots **white**, clamped so **superwhites aren't amplified**
    - **Gamma** = power, pivots **black & white**
-   Matches Resolve's timeline primary wheels. `pg_lgg(...,dg)` helper.
+   Matches Resolve's timeline primary wheels. `og_lgg(...,dg)` helper.
 7. output encode: **Rec.709 (Scene)** = scene OETF (linear toe), so Lift's taper reads
    linearly on a Rec.709 (Scene) timeline. **Rec.709 (Gamma 2.2)** = pure 2.2 power for
    web/YouTube delivery — the **param default** since 2026-07-16 (user call: that's where
    most exports land). **Rec.709 (Gamma 2.4)** = pure 2.4 power for broadcast/BT.1886;
-   the grade curve in step 6 follows whichever is picked. (`encode`/`pg_enc`)
+   the grade curve in step 6 follows whichever is picked. (`encode`/`og_enc`)
    Explainer: `docs/GAMMA.md` (how-it-works only — the why-2.2 rationale lives HERE).
 8. LUT + trilinear sample + mix (done in processor/kernels, after encode)
 9. post-LUT **Trim**: exposure (stops) + contrast about 0.5 + **Highlight Rolloff**
-   (`pg::softclip`, per-channel display-space soft clip, asymptote 1.0 — saturated
+   (`og::softclip`, per-channel display-space soft clip, asymptote 1.0 — saturated
    practicals converge to white instead of clipping "neon"; gated to display-referred
    output only: `enc <= 2 || active LUT` — never distorts Cineon/DI/Linear feeds)
 
@@ -90,6 +91,46 @@ re-forces Cineon at render.) **709 primaries for enc ≤ 3** (Scene/2.2/2.4/Cine
 Linear keep DWG primaries. Film Look LUT auto-sets enc=3 (Cineon); Custom Look sets enc=0.
 Explainers: `docs/GAMMA.md` (encodes/grade curve) · `docs/CAMERAS.md` (camera list, PQ
 smooth decode, stand-in gamuts).
+
+## Node Role — splitting across Resolve's group grading levels (2026-08-02)
+`nodeRole` choice param (group "0 Role / Preset"): 0 **Full Grade** (default, the original
+one-node behavior) · 1 **Input Transform (Group Pre-Clip)** · 2 **Output Transform (Group
+Post-Clip)**. Resolve applies Group Pre-Clip → Clip → Group Post-Clip → Timeline, and the
+pre/post graphs are shared by every clip in the group. Role 1 does camera decode only and
+pins the encode to **DaVinci Intermediate**; role 2 pins Camera to **1 (DWG/DI)** and owns
+the look + LUT + trim + delivery encode. Chained, 1→2 reproduces role 0.
+
+**Why DI is the hand-off:** `decode_log(cam=1,…)` and `encode(enc=4,…)` use identical
+constants (exact inverse pair) and both keep DWG primaries, so the round trip is lossless
+apart from float error. Measured worst |split − single| = **0.23 8-bit LSB** (0.003 on the
+gamma encodes) across 12 cameras × 3 delivery encodes, neutral and graded — test 11 in
+`test/pipeline_test.cpp` guards it at < 1 LSB.
+
+**This only works because of the negative-clip fix** (same commit): `safe_pow()` floors at
+0, and the LGG loop called `safe_pow(v, 1/gamma)` unconditionally — so **a neutral node
+hard-clipped every out-of-gamut negative to zero**, breaking the split by ~30 LSB. Now
+`v = (v < 0) ? v : safe_pow(...)`. Regression risk is nil: output is **bit-identical** on
+Rec.709 2.2 / 2.4 / Cineon (negatives are already clamped upstream by `r709_g_enc`, and
+Cineon clamps to [0,1]), so every validated look and both film presets are untouched. It
+changes only Scene / DI / Linear — the scene-referred feeds where clipping was wrong.
+Test 12 guards it. **4-file edit** per the golden rule — all four mirror.
+
+Role is enforced **at render** (`setupAndProcess`), not just greyed in the UI: params the
+role doesn't own are forced neutral, so a role switch or an old project can't double-apply
+the look. `changedParam` stamps the implied values but only on `eChangeUserEdit`, same
+guard as presets.
+
+**VALIDATED in Resolve (macOS/Metal, 2026-08-02).** Pre-Clip Input Transform + Post-Clip
+Output Transform is visually identical to a single Full Grade node on footage, and
+**Resolve does NOT clamp float between group grading levels** — out-of-gamut negatives
+survive the boundary (checked on the RGB Parade with the Post-Clip node disabled, trace
+visibly below the 0 line). So DI is a safe hand-off and no offset/Cineon fallback is
+needed. Panel greying and the forced-encode behavior both confirmed.
+
+**Why DI has so much headroom:** `di_encode` maps linear **100 → code 1.0** and mid-gray
+0.18 → **0.336**, i.e. ~9 stops over mid-gray fit inside [0,1]. Even a hypothetical [0,1]
+clamp at a group boundary would barely touch real footage — the exposed end was always the
+negatives, not the highlights. Worth remembering when picking any future hand-off encode.
 
 ## Presets (param layer only — no pipeline/kernel involvement)
 `preset` choice param (group "0 Preset"): 0 None/Reset · 1 Cinematic Film Emulation
@@ -122,7 +163,7 @@ generated by
 assembly (**explicit file list — new LUTs must be added there by name**).
 `bundleLutDir()` resolves them from the plugin binary's own path (dladdr /
 GetModuleFileName) and `scanLuts()` surfaces them as the FIRST Look group,
-"PowerGrade (built-in)" — zero external installs, works on any render machine. The old
+"OneGrade (built-in)" — zero external installs, works on any render machine. The old
 Sedona-LUT dependency is gone (was a third-party download — too much to ask of users).
 Desert Day + Cinematic Landscape were authored numerically and **user-validated on
 footage first try** (2026-07-14). The other four (Golden Hour · Teal Orange (uses the generator's
@@ -133,7 +174,7 @@ recipe compensating around the LUT — see Preset mechanics above). Full authori
 reference: `docs/CREATING-LUTS.md` (LOOKS entry → regenerate → CMake copy list →
 optional preset via `findLookLut()`; user plans to add more looks over time).
 
-Preset mechanics: applied in `PowerGrade::applyPreset()` from `changedParam`, **guarded
+Preset mechanics: applied in `OneGrade::applyPreset()` from `changedParam`, **guarded
 on `eChangeUserEdit`** so project loads don't re-stamp the preset over user tweaks.
 Presets set Camera (→ PQ, see above) + look params (balance temp/tint + offsets, density,
 LGG, lutMode/filmLut/lookGroup/lookLut/lutMix, postExp/postCon, rolloff) — never RAW or
@@ -146,14 +187,14 @@ tuning requests.
 
 ## Build / test / install (macOS, the dev machine)
 ```bash
-make                 # -> PowerGrade.ofx.bundle (universal arm64+x86_64)
+make                 # -> OneGrade.ofx.bundle (universal arm64+x86_64)
 make test            # CPU unit tests (test/pipeline_test.cpp) — must stay green
 cmake -S . -B build-cmake && cmake --build build-cmake   # cross-platform path
 # install for testing in Resolve (needs sudo; Resolve does NOT follow symlinks — copy real files):
-sudo cp -fr PowerGrade.ofx.bundle /Library/OFX/Plugins/
+sudo cp -fr OneGrade.ofx.bundle /Library/OFX/Plugins/
 ```
 After installing, the user restarts Resolve and checks Color page → Effects → OpenFX →
-Power Grade. Only the user can visually verify in Resolve; we can't from here.
+OneGrade. Only the user can visually verify in Resolve; we can't from here.
 
 **The user's Windows box** (Ryzen + RTX 5090) has no cmake/vcpkg on PATH — use VS Build
 Tools' bundled copy, and note the CUDA toolkit supplies OpenCL, so vcpkg isn't needed
@@ -162,8 +203,8 @@ elevation, which we don't have — shell out via `Start-Process -Verb RunAs` and
 clicks the UAC prompt.
 ```powershell
 $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-& $cmake -S c:\src\PowerGrade -B c:\src\PowerGrade\build-cuda -G "Visual Studio 17 2022" -A x64 -DBUILD_CUDA=ON
-& $cmake --build c:\src\PowerGrade\build-cuda --config Release   # -> build-cuda\PowerGrade.ofx.bundle
+& $cmake -S c:\src\OneGrade -B c:\src\OneGrade\build-cuda -G "Visual Studio 17 2022" -A x64 -DBUILD_CUDA=ON
+& $cmake --build c:\src\OneGrade\build-cuda --config Release   # -> build-cuda\OneGrade.ofx.bundle
 # install target: %CommonProgramFiles%\OFX\Plugins\  (NOT the macOS /Library/OFX/Plugins)
 ```
 
@@ -171,9 +212,29 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 CI = `.github/workflows/ci.yml`. Every push builds+tests macOS + Windows. Pushing a
 **`v*` tag** additionally runs the `release` job → packages per-OS zip (bundle + installer
 from `install/`) → publishes a GitHub Release. Shipping since v0.1.0; tags so far v0.1.0,
-v0.2.0, v1.0.0, v1.0.1, v1.0.2, **v1.0.3** (current). Plugin internal version is
-`kPluginVersionMajor/Minor` in `src/PowerGrade.cpp` — OFX carries only major/minor, so 1.0
-covers the whole v1.0.x line; bump it when major/minor moves.
+v0.2.0, v1.0.0, v1.0.1, v1.0.2, v1.0.3, **v1.1.0** (current — the OneGrade rename).
+Plugin internal version is `kPluginVersionMajor/Minor` in `src/OneGrade.cpp` — OFX carries
+only major/minor, so 1.1 covers the whole v1.1.x line; bump it when major/minor moves.
+
+## The rename (2026-08-02) — PowerGrade → OneGrade
+Renamed because **"PowerGrade" already means something else in Resolve**: the stills album
+in the Gallery. In a room full of colorists "I added it to PowerGrade" parses as Resolve's
+feature before it parses as ours — a real problem for a plugin about to be discussed on the
+Blackmagic forum.
+
+**It is a deliberate breaking change.** `kPluginIdentifier` went from
+`com.mattgrdinic.PowerGrade` to `com.mattgrdinic.OneGrade`, which is the string Resolve
+uses to find the plugin in saved projects — so **grades saved with PowerGrade do not carry
+over**. User's call, made because adoption was still low enough that a clean break beat
+carrying a stale ID forever. Both installers now delete a leftover `PowerGrade.ofx.bundle`
+so nobody ends up with a dead duplicate in the Effects list.
+
+Scope: 9 files renamed (`src/OneGrade.{cpp,h}`, `src/OneGradePipeline.h`, six
+`luts/OneGrade *.cube`), and the internal namespace/prefix went `pg` → `og` throughout
+(`og::process`, `og_lgg`, …). Occurrence counts were checked before and after and matched
+exactly (41 `og::`, 235 `og_`, 1 `namespace og`). **The three GPU kernels are compiled at
+runtime from strings**, so a prefix typo there would only surface inside Resolve, not at
+build time — that's why the rename needs a GPU smoke test, not just a green `make test`.
 
 ## Git workflow
 Branch per change → push → user opens PR and merges on GitHub (they do the merge, not us).
@@ -186,9 +247,11 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
 
 ## Validation status / gotchas
 - **Validated in Resolve:** Metal + CPU on the user's M3 Max, Rec.709 (Scene) / DaVinci YRGB project.
+  Node Role group split (Pre-Clip + Post-Clip) validated 2026-08-02, incl. no float clamp
+  between group levels — see the Node Role section above.
   CUDA perf on the user's Windows box (Ryzen + RTX 5090, 2026-07-16) — real-time; colour
   output not yet A/B'd against the Metal path.
-- **OpenCL:** kernel checked against `pg::process` on real HW (2026-07-16) on both an
+- **OpenCL:** kernel checked against `og::process` on real HW (2026-07-16) on both an
   RTX 5090 and an AMD gfx1036 iGPU, all 12 cameras x 6 encodes: worst deviation
   ~1.7e-3 in display space (under half an 8-bit code value), which is float rounding, not
   a mirror bug — see the Log3G10 note below. **Still not validated inside Resolve on an

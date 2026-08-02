@@ -1,18 +1,18 @@
 # Creating built-in look LUTs
 
-How PowerGrade's shipped looks (Desert Day, Cinematic Landscape) were made, and the
+How OneGrade's shipped looks (Desert Day, Cinematic Landscape) were made, and the
 process for adding more. The short version: every look is a handful of numbers in one
 Python dict — edit, regenerate, rebuild, eyeball in Resolve, repeat.
 
 ## How the built-in LUTs work
 
 - The `.cube` files live in `luts/` (checked in) and are copied into
-  `PowerGrade.ofx.bundle/Contents/Resources/LUTs` at build time — by the `bundle-luts`
+  `OneGrade.ofx.bundle/Contents/Resources/LUTs` at build time — by the `bundle-luts`
   target in the Makefile (globs `luts/*.cube`) and by the bundle-assembly step in
   `CMakeLists.txt` (**explicit file list — new LUTs must be added there by name**).
 - At runtime the plugin resolves that folder from its own binary path
-  (`bundleLutDir()` in `src/PowerGrade.cpp`) and lists it as the first **Look LUT
-  Group**, named **PowerGrade (built-in)**. Nothing is installed into Resolve's LUT
+  (`bundleLutDir()` in `src/OneGrade.cpp`) and lists it as the first **Look LUT
+  Group**, named **OneGrade (built-in)**. Nothing is installed into Resolve's LUT
   folder; the looks travel with the plugin.
 - LUTs run on the **Custom Look** path: input *and* output are display-referred
   **Rec.709 (Scene OETF)** values in [0,1]. Design for that space — no log, no linear.
@@ -40,7 +40,7 @@ instead of holding full chroma — the film-like behavior we want everywhere.
 
 ## Adding a new look
 
-1. Add an entry to `LOOKS` in `luts/generate_luts.py`. Name it `PowerGrade <Name>` —
+1. Add an entry to `LOOKS` in `luts/generate_luts.py`. Name it `OneGrade <Name>` —
    the file stem is both the dropdown label and what presets search for.
 2. Regenerate and sanity-probe before ever opening Resolve:
    ```bash
@@ -52,7 +52,7 @@ instead of holding full chroma — the film-like behavior we want everywhere.
    python3 -c "
    import sys; sys.path.insert(0,'luts')
    from generate_luts import apply_look, LOOKS
-   p = LOOKS['PowerGrade <Name>']
+   p = LOOKS['OneGrade <Name>']
    for probe in [(0,0,0),(0.5,0.5,0.5),(1,1,1),(0.3,0.5,0.2),(0.5,0.6,0.8)]:
        print(probe, '->', tuple(round(c,3) for c in apply_look(*probe, p)))"
    ```
@@ -60,13 +60,13 @@ instead of holding full chroma — the film-like behavior we want everywhere.
    picks it up automatically via glob; CMake will not).
 4. `make && make test`, install the bundle, restart Resolve, and delete the render
    cache (Playback → Delete Render Cache) so stale frames don't lie to you.
-5. Eyeball on real footage via **LUT Mode = Custom Look → PowerGrade (built-in)**.
+5. Eyeball on real footage via **LUT Mode = Custom Look → OneGrade (built-in)**.
    Iterate: tweak the dict, re-run the generator, `make`, reinstall. Screenshot
    comparisons against a reference grade are the fastest way to converge (that's how
    Desert Day and Cinematic Landscape were tuned).
-6. Optional preset: in `src/PowerGrade.cpp` add a `preset->appendOption(...)` entry and
+6. Optional preset: in `src/OneGrade.cpp` add a `preset->appendOption(...)` entry and
    an `applyPreset()` branch that locates the LUT with
-   `findLookLut("powergrade <name>", gi, li)` — see the Desert Day branch for the
+   `findLookLut("onegrade <name>", gi, li)` — see the Desert Day branch for the
    pattern, including the LUT-free fallback. Preset option order defines the stored
    index, so append rather than reorder.
 7. Commit the generator change **and** the regenerated `.cube` files (they're checked

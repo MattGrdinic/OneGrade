@@ -1,14 +1,14 @@
 # How the camera input transforms work
 
-The Camera dropdown is PowerGrade's built-in CST: it takes the clip from its native
+The Camera dropdown is OneGrade's built-in CST: it takes the clip from its native
 log/gamut into the plugin's working space, replacing the Color Space Transform node (or
 color management) you'd otherwise need in front of the grade. This doc explains the two
 halves of that transform and the working space it lands in.
 
 ## 1. The two halves: curve, then gamut
 
-Every camera entry is a pair applied in `pg::process()` steps 1–2
-([src/PowerGradePipeline.h](../src/PowerGradePipeline.h)):
+Every camera entry is a pair applied in `og::process()` steps 1–2
+([src/OneGradePipeline.h](../src/OneGradePipeline.h)):
 
 1. **Transfer decode — `decode_log(cam, x)`.** Inverts the camera's log curve (or HDR
    EOTF) per channel, producing **scene-linear** values normalized so 18% mid-gray sits
@@ -83,10 +83,10 @@ in DWG primaries (see `docs/GAMMA.md`).
 
 ## 5. Adding a camera
 
-1. `PowerGradePipeline.h` — a branch in `decode_log()` (published inverse curve) and,
+1. `OneGradePipeline.h` — a branch in `decode_log()` (published inverse curve) and,
    if the gamut isn't covered, a matrix branch in `to_XYZ()` (camera → XYZ D65).
 2. Mirror both in `MetalKernel.mm`, `OpenCLKernel.cpp`, `CudaKernel.cu` — same index.
-3. `PowerGrade.cpp` — `cam->appendOption("…")` in the same position. Appending at the
+3. `OneGrade.cpp` — `cam->appendOption("…")` in the same position. Appending at the
    end avoids renumbering existing saved grades.
 4. Extend the camera loop in `test/pipeline_test.cpp` and, ideally, add a mid-gray
    anchor test like the Gen 5 one.

@@ -1,9 +1,9 @@
-# How gamma works in PowerGrade
+# How gamma works in OneGrade
 
-PowerGrade is a display pipeline in one node: camera log in, graded picture out. Gamma
+OneGrade is a display pipeline in one node: camera log in, graded picture out. Gamma
 is the space the grading wheels live in and the last thing that happens to a pixel, so
 understanding it explains most of the plugin's output stage. This doc covers what gamma
-is, the curves PowerGrade implements, and every place a transfer function acts in the
+is, the curves OneGrade implements, and every place a transfer function acts in the
 pixel path.
 
 ## 1. Linear light vs. code values
@@ -32,12 +32,12 @@ one difference drives the plugin's "grade curve follows the encode" design (§3b
 
 Camera *log* curves (S-Log3, LogC, Gen 5 Film…) and the HDR inverse-EOTFs (PQ, HLG) are
 transfer functions too, but they exist to squeeze 14+ stops of scene range into a
-recordable signal, not to match a display — PowerGrade treats them purely as input
+recordable signal, not to match a display — OneGrade treats them purely as input
 decodes (see `docs/CAMERAS.md`).
 
-## 2. The curves PowerGrade implements
+## 2. The curves OneGrade implements
 
-All in [src/PowerGradePipeline.h](../src/PowerGradePipeline.h), mirrored exactly in the
+All in [src/OneGradePipeline.h](../src/OneGradePipeline.h), mirrored exactly in the
 Metal/OpenCL/CUDA kernels:
 
 | Helper | Curve | Shape |
@@ -50,7 +50,7 @@ Metal/OpenCL/CUDA kernels:
 
 ## 3. The three places transfer functions act in the pixel path
 
-Everything below is `pg::process()` plus the trim step in the processor/kernels.
+Everything below is `og::process()` plus the trim step in the processor/kernels.
 
 **a. Camera decode (step 1).** `decode_log()` linearizes the footage — log curves
 inverted to scene-linear (mid-gray 0.18), PQ/HLG via their inverse EOTFs normalized so
@@ -70,7 +70,7 @@ outc[i] = (dg > 0.f) ? r709_g_dec(v, dg) : r709_dec(v);
 ```
 
 `dg` (display gamma; `0` = Scene OETF) threads the choice through all four
-implementations (`pg_lgg(..., dg)` in the kernels). If the encode is a pure power, the
+implementations (`og_lgg(..., dg)` in the kernels). If the encode is a pure power, the
 wheels grade in that power; if it's the Scene OETF, they grade in the OETF — grading in
 one curve and encoding in another would make Lift's white pivot and the toe behavior
 land in the wrong place on the scope.
@@ -79,7 +79,7 @@ Note the user-facing **Gamma wheel** is a different animal: a creative power adj
 *inside* whatever grade curve is active (midtone brightness), not a transfer-function
 choice.
 
-**c. The output encode (step 7).** `encode()` (CPU) / `pg_enc()` (kernels) turn the
+**c. The output encode (step 7).** `encode()` (CPU) / `og_enc()` (kernels) turn the
 graded linear pixel into the delivery curve:
 
 | Index | Option | Curve | Primaries |
@@ -100,7 +100,7 @@ Two downstream behaviors key off this index:
   Cineon/DI/Linear feeds to downstream nodes.
 
 The LUT paths override the encode at render time (`setupAndProcess()` in
-[src/PowerGrade.cpp](../src/PowerGrade.cpp)): Film Look forces Cineon (3), Custom Look
+[src/OneGrade.cpp](../src/OneGrade.cpp)): Film Look forces Cineon (3), Custom Look
 forces Rec.709 Scene (0), because that's the input space those LUTs are built for
 (see `docs/LUTS.md`).
 

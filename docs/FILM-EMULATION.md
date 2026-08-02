@@ -1,6 +1,6 @@
 # How the film emulation pipeline works
 
-The Cinematic Film Emulation presets are PowerGrade's "shot on film" path: the grade is
+The Cinematic Film Emulation presets are OneGrade's "shot on film" path: the grade is
 prepared the way a film scan would be, pushed through one of Resolve's print-film LUTs,
 and trimmed back to level afterward. This doc explains the chain and why each stage is
 shaped the way it is.
@@ -15,7 +15,7 @@ them anything else (display gamma, linear) and the curve lands on the wrong part
 S-curve: crushed mids, wrong colors.
 
 Cineon is a printing-density log format: 10-bit code values where mid-gray sits around
-code 445 and diffuse white around 685. PowerGrade's encode is the standard mapping,
+code 445 and diffuse white around 685. OneGrade's encode is the standard mapping,
 normalized to 0–1:
 
 ```c
@@ -23,7 +23,7 @@ code = 685 + 300 * log10(x);      // x = linear, floored at 1e-4
 out  = clamp(code / 1023, 0, 1);
 ```
 
-(`encode()` index 3 / `pg_enc()` — see `docs/GAMMA.md` for where encodes sit in the
+(`encode()` index 3 / `og_enc()` — see `docs/GAMMA.md` for where encodes sit in the
 pixel path.)
 
 ## 2. The chain, end to end
@@ -51,13 +51,13 @@ Key mechanics:
   post-LUT Exposure (stops) and Contrast (about 0.5) bring the level back without
   disturbing what the grade fed the stock. This mirrors print-light adjustments.
 - **Rolloff is available, not required.** The per-channel soft clip
-  (`pg::softclip`) runs last for practicals that still clip; any active LUT counts as
+  (`og::softclip`) runs last for practicals that still clip; any active LUT counts as
   display-referred output, so the control stays live on this path.
 
 ## 3. The preset recipe
 
 Both Film Emulation presets apply the same user-validated recipe
-(`applyPreset()` in [src/PowerGrade.cpp](../src/PowerGrade.cpp)) — they differ only in
+(`applyPreset()` in [src/OneGrade.cpp](../src/OneGrade.cpp)) — they differ only in
 the stock they select:
 
 | Param | Value | Role in the look |

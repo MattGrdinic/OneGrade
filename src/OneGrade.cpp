@@ -1,8 +1,8 @@
-// PowerGrade — cross-platform OpenFX color grade plugin for DaVinci Resolve.
+// OneGrade — cross-platform OpenFX color grade plugin for DaVinci Resolve.
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include "PowerGrade.h"
-#include "PowerGradePipeline.h"
+#include "OneGrade.h"
+#include "OneGradePipeline.h"
 #include "CubeLUT.h"
 
 #include <cstdio>
@@ -27,13 +27,13 @@
 #include "ofxsProcessing.h"
 #include "ofxsLog.h"
 
-#define kPluginName        "PowerGrade"
-#define kPluginGrouping    "Power Grade"
+#define kPluginName        "OneGrade"
+#define kPluginGrouping    "OneGrade"
 #define kPluginDescription "One-node camera CST + balance + density + exposure + output encode. " \
                            "Set Output Encode to Cineon Log to feed a film-look LUT node."
-#define kPluginIdentifier  "com.mattgrdinic.PowerGrade"
+#define kPluginIdentifier  "com.mattgrdinic.OneGrade"
 #define kPluginVersionMajor 1
-#define kPluginVersionMinor 0
+#define kPluginVersionMinor 1
 
 #define kSupportsTiles              false
 #define kSupportsMultiResolution    false
@@ -121,7 +121,7 @@ static std::string bundleLutDir()
 #endif
     if (bin.empty()) return {};
     namespace fs = std::filesystem;
-    fs::path contents = fs::path(bin).parent_path().parent_path();   // Contents/<arch>/PowerGrade.ofx -> Contents
+    fs::path contents = fs::path(bin).parent_path().parent_path();   // Contents/<arch>/OneGrade.ofx -> Contents
     return (contents / "Resources" / "LUTs").string();
 }
 
@@ -154,7 +154,7 @@ static void scanLuts()
     // presets (and users) get them with zero external installs.
     LutList builtin;
     scanDir(bundleLutDir(), builtin);
-    if (!builtin.empty()) s_LookGroups.emplace_back("PowerGrade (built-in)", builtin);
+    if (!builtin.empty()) s_LookGroups.emplace_back("OneGrade (built-in)", builtin);
 
     // Group the whole master folder by top-level subfolder (files in root -> "General").
     std::map<std::string, LutList> groups;
@@ -180,10 +180,10 @@ static void scanLuts()
 
 ////////////////////////////////////////////////////////////////////////////////
 
-class PowerGradeProcessor : public OFX::ImageProcessor
+class OneGradeProcessor : public OFX::ImageProcessor
 {
 public:
-    explicit PowerGradeProcessor(OFX::ImageEffect& p_Instance);
+    explicit OneGradeProcessor(OFX::ImageEffect& p_Instance);
 
     virtual void processImagesCuda();
     virtual void processImagesOpenCL();
@@ -204,7 +204,7 @@ private:
     float _lutMix = 0.0f;
 };
 
-PowerGradeProcessor::PowerGradeProcessor(OFX::ImageEffect& p_Instance)
+OneGradeProcessor::OneGradeProcessor(OFX::ImageEffect& p_Instance)
     : OFX::ImageProcessor(p_Instance)
 {
     for (int i = 0; i < kParamCount; ++i) _params[i] = 0.0f;
@@ -214,7 +214,7 @@ PowerGradeProcessor::PowerGradeProcessor(OFX::ImageEffect& p_Instance)
 extern void RunCudaKernel(void* p_Stream, int p_Width, int p_Height, const float* p_Params, int p_Camera, int p_Encode, const float* p_Lut, int p_LutSize, float p_LutMix, const float* p_Input, float* p_Output);
 #endif
 
-void PowerGradeProcessor::processImagesCuda()
+void OneGradeProcessor::processImagesCuda()
 {
 #ifdef OFX_SUPPORTS_CUDARENDER
     const OfxRectI& bounds = _srcImg->getBounds();
@@ -230,7 +230,7 @@ void PowerGradeProcessor::processImagesCuda()
 extern void RunMetalKernel(void* p_CmdQ, int p_Width, int p_Height, const float* p_Params, int p_Camera, int p_Encode, const float* p_Lut, int p_LutSize, float p_LutMix, const float* p_Input, float* p_Output);
 #endif
 
-void PowerGradeProcessor::processImagesMetal()
+void OneGradeProcessor::processImagesMetal()
 {
 #ifdef __APPLE__
     const OfxRectI& bounds = _srcImg->getBounds();
@@ -244,7 +244,7 @@ void PowerGradeProcessor::processImagesMetal()
 
 extern void RunOpenCLKernelBuffers(void* p_CmdQ, int p_Width, int p_Height, const float* p_Params, int p_Camera, int p_Encode, const float* p_Lut, int p_LutSize, float p_LutMix, const float* p_Input, float* p_Output);
 
-void PowerGradeProcessor::processImagesOpenCL()
+void OneGradeProcessor::processImagesOpenCL()
 {
 #ifdef OFX_SUPPORTS_OPENCLRENDER
     const OfxRectI& bounds = _srcImg->getBounds();
@@ -256,7 +256,7 @@ void PowerGradeProcessor::processImagesOpenCL()
 #endif
 }
 
-void PowerGradeProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
+void OneGradeProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
 {
     for (int y = p_ProcWindow.y1; y < p_ProcWindow.y2; ++y)
     {
@@ -267,13 +267,13 @@ void PowerGradeProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
             float* srcPix = static_cast<float*>(_srcImg ? _srcImg->getPixelAddress(x, y) : nullptr);
             if (srcPix)
             {
-                pg::process(_camera, _encode, _params, srcPix[0], srcPix[1], srcPix[2],
+                og::process(_camera, _encode, _params, srcPix[0], srcPix[1], srcPix[2],
                             dstPix[0], dstPix[1], dstPix[2]);
                 if (_lut && _lutSize >= 2 && _lutMix > 0.0f)
-                    pg::apply_lut(_lut, _lutSize, _lutMix, dstPix[0], dstPix[1], dstPix[2]);
-                pg::apply_trim(_params[8], _params[9], dstPix[0], dstPix[1], dstPix[2]);  // post-LUT trim
+                    og::apply_lut(_lut, _lutSize, _lutMix, dstPix[0], dstPix[1], dstPix[2]);
+                og::apply_trim(_params[8], _params[9], dstPix[0], dstPix[1], dstPix[2]);  // post-LUT trim
                 if (_params[12] > 0.0f && (_encode <= 2 || (_lut && _lutSize >= 2 && _lutMix > 0.0f)))
-                    for (int c = 0; c < 3; ++c) dstPix[c] = pg::softclip(dstPix[c], _params[12]);  // highlight roll-off (display-referred only)
+                    for (int c = 0; c < 3; ++c) dstPix[c] = og::softclip(dstPix[c], _params[12]);  // highlight roll-off (display-referred only)
                 dstPix[3] = srcPix[3];
             }
             else
@@ -285,16 +285,16 @@ void PowerGradeProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
     }
 }
 
-void PowerGradeProcessor::setSrcImg(OFX::Image* p_SrcImg) { _srcImg = p_SrcImg; }
+void OneGradeProcessor::setSrcImg(OFX::Image* p_SrcImg) { _srcImg = p_SrcImg; }
 
-void PowerGradeProcessor::setParams(const float p_Params[kParamCount], int p_Camera, int p_Encode)
+void OneGradeProcessor::setParams(const float p_Params[kParamCount], int p_Camera, int p_Encode)
 {
     std::memcpy(_params, p_Params, sizeof(float) * kParamCount);
     _camera = p_Camera;
     _encode = p_Encode;
 }
 
-void PowerGradeProcessor::setLut(const float* p_Lut, int p_LutSize, float p_LutMix)
+void OneGradeProcessor::setLut(const float* p_Lut, int p_LutSize, float p_LutMix)
 {
     _lut = p_Lut;
     _lutSize = p_LutSize;
@@ -303,21 +303,22 @@ void PowerGradeProcessor::setLut(const float* p_Lut, int p_LutSize, float p_LutM
 
 ////////////////////////////////////////////////////////////////////////////////
 
-class PowerGrade : public OFX::ImageEffect
+class OneGrade : public OFX::ImageEffect
 {
 public:
-    explicit PowerGrade(OfxImageEffectHandle p_Handle);
+    explicit OneGrade(OfxImageEffectHandle p_Handle);
     virtual void render(const OFX::RenderArguments& p_Args);
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName);
     void setEnabledness();
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
-    void setupAndProcess(PowerGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
+    void setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
 
 private:
     OFX::Clip* m_DstClip;
     OFX::Clip* m_SrcClip;
 
+    OFX::ChoiceParam* m_NodeRole;   // 0 full grade, 1 input transform, 2 output transform
     OFX::ChoiceParam* m_Preset;
     OFX::ChoiceParam* m_Camera;
     OFX::DoubleParam* m_RawExp;
@@ -343,12 +344,13 @@ private:
     CubeLUT           m_Lut;        // cached loaded LUT
 };
 
-PowerGrade::PowerGrade(OfxImageEffectHandle p_Handle)
+OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     : ImageEffect(p_Handle)
 {
     m_DstClip = fetchClip(kOfxImageEffectOutputClipName);
     m_SrcClip = fetchClip(kOfxImageEffectSimpleSourceClipName);
 
+    m_NodeRole= fetchChoiceParam("nodeRole");
     m_Preset  = fetchChoiceParam("preset");
     m_Camera  = fetchChoiceParam("camera");
     m_RawExp  = fetchDoubleParam("rawExp");
@@ -376,19 +378,55 @@ PowerGrade::PowerGrade(OfxImageEffectHandle p_Handle)
     setEnabledness();
 }
 
-// Mutually exclusive: Film Look and Custom Look can't be used together.
-void PowerGrade::setEnabledness()
+// Grey out whatever the current Node Role doesn't own, then apply the LUT-mode rule
+// (Film Look and Custom Look are mutually exclusive) on top.
+//
+// Role splits the pipeline across Resolve's group grading levels:
+//   0 Full Grade      — one node does everything (the original, and the default).
+//   1 Input Transform — camera decode only, out to DaVinci Intermediate. Group Pre-Clip.
+//   2 Output Transform— takes DWG/DI in, applies look + delivery encode. Group Post-Clip.
+// Roles 1+2 chained reproduce role 0 to well under an 8-bit code value (test/pipeline_test).
+void OneGrade::setEnabledness()
 {
-    int mode = 0;
+    int role = 0, mode = 0;
+    m_NodeRole->getValue(role);
     m_LutMode->getValue(mode);
-    m_FilmLut->setEnabled(mode == 2);
-    m_LookGroup->setEnabled(mode == 1);
-    m_LookLut->setEnabled(mode == 1);
-    m_LutMix->setEnabled(mode != 0);
+
+    const bool input  = (role == 1);
+    const bool output = (role == 2);
+    const bool look   = !input;    // look/grade layer belongs to Full + Output Transform
+    const bool src    = !output;   // camera + RAW belong to Full + Input Transform
+
+    m_Camera->setEnabled(src);
+    m_RawExp->setEnabled(src);
+    m_RawTemp->setEnabled(src);
+
+    m_Preset->setEnabled(look);
+    m_Temp->setEnabled(look);
+    m_Tint->setEnabled(look);
+    m_OffTemp->setEnabled(look);
+    m_OffTint->setEnabled(look);
+    m_Density->setEnabled(look);
+    m_Lift->setEnabled(look);
+    m_Gamma->setEnabled(look);
+    m_Gain->setEnabled(look);
+    m_PostExp->setEnabled(look);
+    m_PostCon->setEnabled(look);
+    m_Rolloff->setEnabled(look);
+    m_LutMode->setEnabled(look);
+
+    // Input Transform pins the encode to DaVinci Intermediate — the hand-off to the
+    // clip-level grade — so it isn't the user's to pick.
+    m_Encode->setEnabled(look);
+
+    m_FilmLut->setEnabled(look && mode == 2);
+    m_LookGroup->setEnabled(look && mode == 1);
+    m_LookLut->setEnabled(look && mode == 1);
+    m_LutMix->setEnabled(look && mode != 0);
 }
 
 // Rebuild the Look LUT dropdown to list only the currently selected group's LUTs.
-void PowerGrade::populateLookLut()
+void OneGrade::populateLookLut()
 {
     int gi = 0;
     m_LookGroup->getValue(gi);
@@ -405,9 +443,9 @@ void PowerGrade::populateLookLut()
 // Balance, Density, Lift/Gamma/Gain, LUT and Trim. RAW and Output Encode are never
 // touched. "None / Reset Look" returns the look params to neutral (Camera stays put).
 // Names call out which LUT path a preset drives: Film Emulation = Resolve's print-film
-// LUTs (Cineon path, swap stocks in Film Look LUT); Custom LUT = PowerGrade's built-in
+// LUTs (Cineon path, swap stocks in Film Look LUT); Custom LUT = OneGrade's built-in
 // looks (Rec.709 path, swap looks in Look LUT).
-void PowerGrade::applyPreset(int p)
+void OneGrade::applyPreset(int p)
 {
     if (p == 1 || p == 2) { // Cinematic Film Emulation — 1: Kodak 2383 D60, 2: Fujifilm
                             // 3513DI D60. Cool highlights vs warm practicals, lift shadows
@@ -443,8 +481,8 @@ void PowerGrade::applyPreset(int p)
                             // grade lifted and brightened into the look. Swap looks in
                             // the Look LUT dropdown below.
         int gi = 0, li = 0;
-        const bool lut = findLookLut(p == 3 ? "powergrade cinematic landscape"
-                                            : "powergrade teal orange", gi, li);
+        const bool lut = findLookLut(p == 3 ? "onegrade cinematic landscape"
+                                            : "onegrade teal orange", gi, li);
         const bool teal = (p == 4);
         m_Camera->setValue(11);     // Rec.2100 PQ / ST.2084
         m_OffTemp->setValue(teal ? -0.073 : -0.112);
@@ -485,10 +523,29 @@ void PowerGrade::applyPreset(int p)
     }
 }
 
-void PowerGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName)
+void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName)
 {
     if (p_ParamName == "lutMode") setEnabledness();
     else if (p_ParamName == "lookGroup") { populateLookLut(); m_LookLut->setValue(0); }
+    // Node Role: stamp the transform the role implies so the panel shows the truth.
+    // Guarded like the preset — a project load must not overwrite stored values. Render
+    // enforces the same rules regardless (see setupAndProcess), so a stale stored value
+    // can't produce a wrong picture, only a stale-looking dropdown.
+    else if (p_ParamName == "nodeRole") {
+        if (p_Args.reason == OFX::eChangeUserEdit) {
+            int role = 0; m_NodeRole->getValue(role);
+            if (role == 1) {            // Input Transform -> hand off in DaVinci Intermediate
+                m_Encode->setValue(4);
+                m_LutMode->setValue(0);
+                applyPreset(0);         // neutral look; leaves Camera and RAW alone
+            } else if (role == 2) {     // Output Transform -> takes the pre-clip's DWG/DI
+                m_Camera->setValue(1);
+                m_RawExp->setValue(0.0);
+                m_RawTemp->setValue(6500.0);
+            }
+        }
+        setEnabledness();
+    }
     // Only on a real user edit — project load / plugin edits must not re-stamp the preset
     // over values the user has since tweaked.
     else if (p_ParamName == "preset" && p_Args.reason == OFX::eChangeUserEdit) {
@@ -498,11 +555,11 @@ void PowerGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std:
     }
 }
 
-void PowerGrade::render(const OFX::RenderArguments& p_Args)
+void OneGrade::render(const OFX::RenderArguments& p_Args)
 {
     if ((m_DstClip->getPixelDepth() == OFX::eBitDepthFloat) && (m_DstClip->getPixelComponents() == OFX::ePixelComponentRGBA))
     {
-        PowerGradeProcessor proc(*this);
+        OneGradeProcessor proc(*this);
         setupAndProcess(proc, p_Args);
     }
     else
@@ -511,7 +568,7 @@ void PowerGrade::render(const OFX::RenderArguments& p_Args)
     }
 }
 
-void PowerGrade::setupAndProcess(PowerGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args)
+void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args)
 {
     std::unique_ptr<OFX::Image> dst(m_DstClip->fetchImage(p_Args.time));
     std::unique_ptr<OFX::Image> src(m_SrcClip->fetchImage(p_Args.time));
@@ -519,10 +576,21 @@ void PowerGrade::setupAndProcess(PowerGradeProcessor& p_Proc, const OFX::RenderA
     if ((src->getPixelDepth() != dst->getPixelDepth()) || (src->getPixelComponents() != dst->getPixelComponents()))
         OFX::throwSuiteStatusException(kOfxStatErrValue);
 
-    int camera = 0, encode = 0, lutMode = 0;
+    int role = 0, camera = 0, encode = 0, lutMode = 0;
+    m_NodeRole->getValueAtTime(p_Args.time, role);
     m_Camera->getValueAtTime(p_Args.time, camera);
     m_Encode->getValueAtTime(p_Args.time, encode);
     m_LutMode->getValueAtTime(p_Args.time, lutMode);
+
+    // Node Role is authoritative at render time, not just in the UI: a grade saved in one
+    // role and switched to another (or loaded from an older project) must still render the
+    // role it is set to, never a half-applied mix of the two.
+    if (role == 1) {            // Input Transform: camera decode only, out to DWG/DI
+        encode  = 4;
+        lutMode = 0;
+    } else if (role == 2) {     // Output Transform: input is the pre-clip node's DWG/DI
+        camera = 1;
+    }
 
     // Couple the pre-LUT encoding to the LUT path so the two can't mismatch:
     //   Film Look LUTs require Cineon log input; Custom look LUTs use Rec.709.
@@ -544,6 +612,17 @@ void PowerGrade::setupAndProcess(PowerGradeProcessor& p_Proc, const OFX::RenderA
     params[10] = (float)m_RawExp->getValueAtTime(p_Args.time);
     params[11] = (float)m_RawTemp->getValueAtTime(p_Args.time);
     params[12] = (float)m_Rolloff->getValueAtTime(p_Args.time);
+
+    // Force the params the role doesn't own to neutral, so the two nodes chain cleanly:
+    // the look must be applied once (on the output node), the RAW/WB stage once (input).
+    if (role == 1) {            // Input Transform: no look at all
+        params[0]=0.f; params[1]=0.f; params[2]=0.f;              // temp, tint, density
+        params[3]=0.f; params[4]=1.f; params[5]=1.f;              // lift, gamma, gain
+        params[6]=0.f; params[7]=0.f;                             // offset temp/tint
+        params[8]=0.f; params[9]=1.f; params[12]=0.f;             // trim exp/contrast/rolloff
+    } else if (role == 2) {     // Output Transform: RAW stage already happened upstream
+        params[10]=0.f; params[11]=6500.f;                        // rawExp, rawTemp
+    }
 
     // Resolve the active LUT (path from mode) and load it (cached by path).
     std::string lutPath;
@@ -575,12 +654,12 @@ void PowerGrade::setupAndProcess(PowerGradeProcessor& p_Proc, const OFX::RenderA
 
 using namespace OFX;
 
-PowerGradeFactory::PowerGradeFactory()
-    : OFX::PluginFactoryHelper<PowerGradeFactory>(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor)
+OneGradeFactory::OneGradeFactory()
+    : OFX::PluginFactoryHelper<OneGradeFactory>(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor)
 {
 }
 
-void PowerGradeFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
+void OneGradeFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
 {
     p_Desc.setLabels(kPluginName, kPluginName, kPluginName);
     p_Desc.setPluginGrouping(kPluginGrouping);
@@ -630,7 +709,7 @@ static DoubleParamDescriptor* defineSlider(OFX::ImageEffectDescriptor& p_Desc, c
     return param;
 }
 
-void PowerGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX::ContextEnum /*p_Context*/)
+void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX::ContextEnum /*p_Context*/)
 {
     ClipDescriptor* srcClip = p_Desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     srcClip->addSupportedComponent(ePixelComponentRGBA);
@@ -644,12 +723,25 @@ void PowerGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OF
 
     PageParamDescriptor* page = p_Desc.definePageParam("Controls");
 
-    // ---- 0. Preset ----  one-shot look starting points (see PowerGrade::applyPreset)
+    // ---- 0. Role + Preset ----
     GroupParamDescriptor* gPreset = p_Desc.defineGroupParam("gPreset");
-    gPreset->setLabels("0  Preset", "0  Preset", "0  Preset");
+    gPreset->setLabels("0  Role / Preset", "0  Role / Preset", "0  Role / Preset");
+
+    // Node Role splits the pipeline across Resolve's group grading levels. See
+    // OneGrade::setEnabledness / setupAndProcess — the role is enforced at render.
+    ChoiceParamDescriptor* role = p_Desc.defineChoiceParam("nodeRole");
+    role->setLabels("Node Role", "Node Role", "Node Role");
+    role->setHint("Which part of the pipeline this node does. Full Grade (the default) does everything in one node. The other two split it across Resolve's group grading levels so a whole group shares one setup: put an Input Transform node in the Group Pre-Clip graph (camera decode only, handed off in DaVinci Intermediate), grade your shots normally at the Clip level, then put an Output Transform node in the Group Post-Clip graph (look, LUT, trim and the delivery encode). Chained, the two match a single Full Grade node. Controls the role doesn't own are greyed out and forced neutral at render, so the look is never applied twice.");
+    role->appendOption("Full Grade (single node)");
+    role->appendOption("Input Transform (Group Pre-Clip)");
+    role->appendOption("Output Transform (Group Post-Clip)");
+    role->setDefault(0);
+    role->setParent(*gPreset);
+    page->addChild(*role);
+
     ChoiceParamDescriptor* preset = p_Desc.defineChoiceParam("preset");
     preset->setLabels("Preset", "Preset", "Preset");
-    preset->setHint("One-click starting points on the happy path: every preset sets Camera to Rec.2100 PQ (the smooth decode, also the default) plus Balance, Density, Lift/Gamma/Gain, LUT and Trim — every slider stays live to tweak per clip; RAW and Output Encode are never touched. Film Emulation presets drive Resolve's print-film stocks (swap in Film Look LUT); Custom LUT presets drive PowerGrade's built-in looks, shipped inside the plugin (swap in Look LUT; six looks available). Trim any LUT with LUT Mix. None / Reset Look returns the look params to neutral (Camera stays put).");
+    preset->setHint("One-click starting points on the happy path: every preset sets Camera to Rec.2100 PQ (the smooth decode, also the default) plus Balance, Density, Lift/Gamma/Gain, LUT and Trim — every slider stays live to tweak per clip; RAW and Output Encode are never touched. Film Emulation presets drive Resolve's print-film stocks (swap in Film Look LUT); Custom LUT presets drive OneGrade's built-in looks, shipped inside the plugin (swap in Look LUT; six looks available). Trim any LUT with LUT Mix. None / Reset Look returns the look params to neutral (Camera stays put).");
     preset->appendOption("None / Reset Look");
     preset->appendOption("Cinematic Film Emulation (Kodak 2383 D60)");
     preset->appendOption("Cinematic Film Emulation (Fujifilm 3513DI D60)");
@@ -813,7 +905,7 @@ void PowerGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OF
     helpLine("help4", "macOS Preference", "'Use Mac display color profiles' = ON",
              "Preferences > General > 'Use Mac display color profiles for viewers' ON. That enables its sub-option 'Viewers match QuickTime player when using Rec.709 Scene', which only engages on a Rec.709 Scene timeline - see Timeline Color Space above.");
     helpLine("help5", "Clips", "Camera raw/log defaults - no CST or LUT first",
-             "Leave clips at their camera raw/log defaults - no input CST or LUT before this node. PowerGrade does the camera transform itself.");
+             "Leave clips at their camera raw/log defaults - no input CST or LUT before this node. OneGrade does the camera transform itself.");
     helpLine("help6", "Camera control", "Default Rec.2100 PQ = smooth decode",
              "Default Rec.2100 PQ is the creative smooth decode the presets use, not a camera match. Pick your camera's real log for a colorimetric transform instead.");
     helpLine("help7", "Output Encode", "Delivery curve - NOT the Timeline setting",
@@ -822,13 +914,13 @@ void PowerGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OF
              "Calibrate your monitor and have Resolve show your delivery space; check the grade on a second screen before committing.");
 }
 
-ImageEffect* PowerGradeFactory::createInstance(OfxImageEffectHandle p_Handle, ContextEnum /*p_Context*/)
+ImageEffect* OneGradeFactory::createInstance(OfxImageEffectHandle p_Handle, ContextEnum /*p_Context*/)
 {
-    return new PowerGrade(p_Handle);
+    return new OneGrade(p_Handle);
 }
 
 void OFX::Plugin::getPluginIDs(PluginFactoryArray& p_FactoryArray)
 {
-    static PowerGradeFactory powerGradePlugin;
-    p_FactoryArray.push_back(&powerGradePlugin);
+    static OneGradeFactory oneGradePlugin;
+    p_FactoryArray.push_back(&oneGradePlugin);
 }

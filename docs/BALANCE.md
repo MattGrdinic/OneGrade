@@ -1,6 +1,6 @@
 # How the color balance controls work
 
-PowerGrade has three layers of white/color balance, applied at three different depths of
+OneGrade has three layers of white/color balance, applied at three different depths of
 the pipeline — from "as close to the sensor as we can get" to "even tint across every
 tone." They are deliberately different math, because casts have different causes.
 
@@ -10,8 +10,8 @@ tone." They are deliberately different math, because casts have different causes
 | **Gain Temp / Gain Tint** | DWG linear, multiplicative | per-channel multiply | casts that live in the highlights; neutralizing lights |
 | **Offset Temp / Offset Tint** | DWG linear, additive | per-channel add | stubborn casts that sit evenly across all tones |
 
-All of this is steps 0 and 3 of `pg::process()` in
-[src/PowerGradePipeline.h](../src/PowerGradePipeline.h), mirrored in the kernels.
+All of this is steps 0 and 3 of `og::process()` in
+[src/OneGradePipeline.h](../src/OneGradePipeline.h), mirrored in the kernels.
 
 ## 1. RAW Temperature — physically real white balance
 

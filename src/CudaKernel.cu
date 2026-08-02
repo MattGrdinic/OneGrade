@@ -1,35 +1,35 @@
-// PowerGrade — CUDA GPU kernel (Linux/Windows NVIDIA). Mirrors src/PowerGradePipeline.h.
+// OneGrade — CUDA GPU kernel (Linux/Windows NVIDIA). Mirrors src/OneGradePipeline.h.
 // SPDX-License-Identifier: BSD-3-Clause
 #include <cuda_runtime.h>
 
-__device__ float pg_pow(float b, float e){ return powf(fmaxf(b,0.0f), e); }
+__device__ float og_pow(float b, float e){ return powf(fmaxf(b,0.0f), e); }
 
-__device__ float pg_decode(int cam, float x){
+__device__ float og_decode(int cam, float x){
     if(cam==0){ float A=0.08692876f,B=0.00549407f,C=0.53001334f,D=8.28360593f,E=0.09246575f,LC=0.13388378f;
         return (x>LC)?(expf((x-C)/A)-B):((x-E)/D); } // Blackmagic Film Gen 5
     else if(cam==1){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f;
         return (x>LC)?(exp2f(x/C-B)-A):(x/M); }
-    else if(cam==2){ return (x>=171.2102946f/1023.0f)?(pg_pow(10.0f,(x*1023.0f-420.0f)/261.5f)*0.19f-0.01f):((x*1023.0f-95.0f)*0.01125f/(171.2102946f-95.0f)); }
+    else if(cam==2){ return (x>=171.2102946f/1023.0f)?(og_pow(10.0f,(x*1023.0f-420.0f)/261.5f)*0.19f-0.01f):((x*1023.0f-95.0f)*0.01125f/(171.2102946f-95.0f)); }
     else if(cam==3){ float a=5.555556f,b=0.052272f,c=0.247190f,d=0.385537f,e=5.367655f,f=0.092809f,cut=0.010591f;
-        return (x>e*cut+f)?((pg_pow(10.0f,(x-d)/c)-b)/a):((x-f)/e); }
+        return (x>e*cut+f)?((og_pow(10.0f,(x-d)/c)-b)/a):((x-f)/e); }
     else if(cam==4){ float a=(exp2f(18.0f)-16.0f)/117.45f,b=(1023.0f-95.0f)/1023.0f,c=95.0f/1023.0f;
         float s=(7.0f*logf(2.0f)*exp2f(7.0f-14.0f*c/b))/(a*b); float t=(exp2f(14.0f*(-c/b)+6.0f)-64.0f)/a;
         float p=(x-c)/b; float hi=(exp2f(14.0f*p+6.0f)-64.0f)/a; return (hi>t)?hi:(x*s); }
-    else if(cam==5){ float v=x; if(v<0.09755646f) return -(pg_pow(10.0f,(0.07623209f-v)/0.42889912f)-1.0f)/14.98325f;
-        if(v<=0.15277891f) return (v-0.12512219f)/1.9754798f; return (pg_pow(10.0f,(v-0.19022340f)/0.42889912f)-1.0f)/14.98325f; }
-    else if(cam==6){ return (pg_pow(10.0f,x/0.224282f)-1.0f)/155.975327f-0.01f; }
-    else if(cam==7){ return (x<=0.14f)?((x-0.0929f)/6.025f):(pg_pow(10.0f,(x-0.5595f)/0.9892f)-0.0108f); }
+    else if(cam==5){ float v=x; if(v<0.09755646f) return -(og_pow(10.0f,(0.07623209f-v)/0.42889912f)-1.0f)/14.98325f;
+        if(v<=0.15277891f) return (v-0.12512219f)/1.9754798f; return (og_pow(10.0f,(v-0.19022340f)/0.42889912f)-1.0f)/14.98325f; }
+    else if(cam==6){ return (og_pow(10.0f,x/0.224282f)-1.0f)/155.975327f-0.01f; }
+    else if(cam==7){ return (x<=0.14f)?((x-0.0929f)/6.025f):(og_pow(10.0f,(x-0.5595f)/0.9892f)-0.0108f); }
     else if(cam==8){ float a=5.555556f,b=0.064829f,c=0.245281f,d=0.384316f,e=8.799461f,f=0.092864f,cut=0.100686685f;
-        return (x>=cut)?((pg_pow(10.0f,(x-d)/c)-b)/a):((x-f)/e); }
-    else if(cam==9){ return (x<0.181f)?((x-0.125f)/5.6f):(pg_pow(10.0f,(x-0.598206f)/0.241514f)-0.00873f); } // Panasonic V-Log
+        return (x>=cut)?((og_pow(10.0f,(x-d)/c)-b)/a):((x-f)/e); }
+    else if(cam==9){ return (x<0.181f)?((x-0.125f)/5.6f):(og_pow(10.0f,(x-0.598206f)/0.241514f)-0.00873f); } // Panasonic V-Log
     else if(cam==10){ float a=0.17883277f,b=0.28466892f,c=0.55991073f; float e=(x<=0.5f)?(x*x/3.0f):((expf((x-c)/a)+b)/12.0f); return e*3.774f; } // Rec.2100 HLG
-    else { float m1=0.1593017578125f,m2=78.84375f,c1=0.8359375f,c2=18.8515625f,c3=18.6875f; float p=pg_pow(x,1.0f/m2); float num=fmaxf(p-c1,0.0f); float e=pg_pow(num/(c2-c3*p),1.0f/m1); return e*49.26f; } // Rec.2100 PQ
+    else { float m1=0.1593017578125f,m2=78.84375f,c1=0.8359375f,c2=18.8515625f,c3=18.6875f; float p=og_pow(x,1.0f/m2); float num=fmaxf(p-c1,0.0f); float e=og_pow(num/(c2-c3*p),1.0f/m1); return e*49.26f; } // Rec.2100 PQ
 }
 
 __device__ void mul33(const float m[9], const float v[3], float o[3]){
     o[0]=m[0]*v[0]+m[1]*v[1]+m[2]*v[2]; o[1]=m[3]*v[0]+m[4]*v[1]+m[5]*v[2]; o[2]=m[6]*v[0]+m[7]*v[1]+m[8]*v[2];
 }
-__device__ void pg_toXYZ(int cam, const float v[3], float o[3]){
+__device__ void og_toXYZ(int cam, const float v[3], float o[3]){
     float m[9];
     if(cam==0){ float t[9]={0.6065384f,0.2204127f,0.1235048f,0.2679929f,0.8327485f,-0.1007414f,-0.0294426f,-0.0866124f,1.2048076f}; for(int i=0;i<9;i++)m[i]=t[i]; } // Blackmagic Wide Gamut Gen 4/5
     else if(cam==1){ float t[9]={0.7006223f,0.1487748f,0.1010587f,0.2740150f,0.8736457f,-0.1476607f,-0.0989629f,-0.1378905f,1.3259942f}; for(int i=0;i<9;i++)m[i]=t[i]; } // DaVinci Wide Gamut
@@ -41,11 +41,11 @@ __device__ void pg_toXYZ(int cam, const float v[3], float o[3]){
     else { float t[9]={0.6369580f,0.1446169f,0.1688810f,0.2627002f,0.6779981f,0.0593017f,0.0f,0.0280727f,1.0609851f}; for(int i=0;i<9;i++)m[i]=t[i]; }
     mul33(m,v,o);
 }
-__device__ void pg_XYZtoDWG(const float v[3], float o[3]){ const float m[9]={1.5166283f,-0.2814601f,-0.1469306f,-0.4647205f,1.2513509f,0.1747665f,0.0648641f,0.1091221f,0.7613593f}; mul33(m,v,o); }
-__device__ void pg_DWGtoXYZ(const float v[3], float o[3]){ const float m[9]={0.7006223f,0.1487748f,0.1010587f,0.2740150f,0.8736457f,-0.1476607f,-0.0989629f,-0.1378905f,1.3259942f}; mul33(m,v,o); }
-__device__ void pg_XYZto709(const float v[3], float o[3]){ const float m[9]={3.2409699f,-1.5373832f,-0.4986108f,-0.9692436f,1.8759675f,0.0415551f,0.0556301f,-0.2039770f,1.0569715f}; mul33(m,v,o); }
+__device__ void og_XYZtoDWG(const float v[3], float o[3]){ const float m[9]={1.5166283f,-0.2814601f,-0.1469306f,-0.4647205f,1.2513509f,0.1747665f,0.0648641f,0.1091221f,0.7613593f}; mul33(m,v,o); }
+__device__ void og_DWGtoXYZ(const float v[3], float o[3]){ const float m[9]={0.7006223f,0.1487748f,0.1010587f,0.2740150f,0.8736457f,-0.1476607f,-0.0989629f,-0.1378905f,1.3259942f}; mul33(m,v,o); }
+__device__ void og_XYZto709(const float v[3], float o[3]){ const float m[9]={3.2409699f,-1.5373832f,-0.4986108f,-0.9692436f,1.8759675f,0.0415551f,0.0556301f,-0.2039770f,1.0569715f}; mul33(m,v,o); }
 
-__device__ void pg_cct_xy(float T, float& x, float& y){
+__device__ void og_cct_xy(float T, float& x, float& y){
     float t1=1.0f/T,t2=t1*t1,t3=t2*t1;
     float xc=(T<4000.0f)?(-0.2661239e9f*t3-0.2343589e6f*t2+0.8776956e3f*t1+0.179910f)
                         :(-3.0258469e9f*t3+2.1070379e6f*t2+0.2226347e3f*t1+0.240390f);
@@ -55,9 +55,9 @@ __device__ void pg_cct_xy(float T, float& x, float& y){
                         :(3.0817580f*xc3-5.87338670f*xc2+3.75112997f*xc-0.37001483f);
     x=xc; y=yc;
 }
-__device__ void pg_whitebalance(float T, float v[3]){
+__device__ void og_whitebalance(float T, float v[3]){
     if(T<=0.0f || (T>6499.0f && T<6501.0f)) return;
-    float sx,sy; pg_cct_xy(T,sx,sy);
+    float sx,sy; og_cct_xy(T,sx,sy);
     float sw[3]={sx/sy,1.0f,(1.0f-sx-sy)/sy}; const float dw[3]={0.95047f,1.0f,1.08883f};
     const float MA[9]={0.8951f,0.2664f,-0.1614f,-0.7502f,1.7135f,0.0367f,0.0389f,-0.0685f,1.0296f};
     const float MAi[9]={0.9869929f,-0.1470543f,0.1599627f,0.4323053f,0.5183603f,0.0492912f,-0.0085287f,0.0400428f,0.9684867f};
@@ -65,35 +65,35 @@ __device__ void pg_whitebalance(float T, float v[3]){
     pl[0]*=dl[0]/sl[0]; pl[1]*=dl[1]/sl[1]; pl[2]*=dl[2]/sl[2]; mul33(MAi,pl,v);
 }
 
-__device__ void pg_rgb2hsv(const float c[3], float o[3]){
+__device__ void og_rgb2hsv(const float c[3], float o[3]){
     float mx=fmaxf(c[0],fmaxf(c[1],c[2])), mn=fminf(c[0],fminf(c[1],c[2])); float v=mx,d=mx-mn; float s=(mx<=0.0f)?0.0f:(d/mx); float h=0.0f;
     if(d>0.0f){ if(mx==c[0]) h=(c[1]-c[2])/d+(c[1]<c[2]?6.0f:0.0f); else if(mx==c[1]) h=(c[2]-c[0])/d+2.0f; else h=(c[0]-c[1])/d+4.0f; h/=6.0f; }
     o[0]=h; o[1]=s; o[2]=v;
 }
-__device__ void pg_hsv2rgb(const float c[3], float o[3]){
+__device__ void og_hsv2rgb(const float c[3], float o[3]){
     float h=c[0],s=c[1],v=c[2]; if(s<=0.0f){ o[0]=o[1]=o[2]=v; return; }
     h*=6.0f; int i=(int)floorf(h); float f=h-(float)i; float p=v*(1.0f-s),q=v*(1.0f-s*f),t=v*(1.0f-s*(1.0f-f)); i%=6; if(i<0)i+=6;
     if(i==0){o[0]=v;o[1]=t;o[2]=p;} else if(i==1){o[0]=q;o[1]=v;o[2]=p;} else if(i==2){o[0]=p;o[1]=v;o[2]=t;}
     else if(i==3){o[0]=p;o[1]=q;o[2]=v;} else if(i==4){o[0]=t;o[1]=p;o[2]=v;} else {o[0]=v;o[1]=p;o[2]=q;}
 }
-__device__ float pg_r709e(float L){ return (L<0.018f)?(4.5f*L):(1.099f*pg_pow(L,0.45f)-0.099f); }
-__device__ float pg_r709d(float V){ return (V<0.081f)?(V/4.5f):pg_pow((V+0.099f)/1.099f,1.0f/0.45f); }
-__device__ float pg_r709ge(float L, float g){ return pg_pow(L,1.0f/g); }
-__device__ float pg_r709gd(float V, float g){ return pg_pow(V,g); }
-__device__ float pg_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?pg_r709ge(L,dg):pg_r709e(L); v=v*gain; v=v+lift*(1.0f-fminf(v,1.0f)); v=pg_pow(v,1.0f/gamma); return (dg>0.0f)?pg_r709gd(v,dg):pg_r709d(v); }
-__device__ float pg_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2f(x+A)+B)*C):(x*M); }
-__device__ float pg_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2f(x/C-B)-A):(x/M); }
+__device__ float og_r709e(float L){ return (L<0.018f)?(4.5f*L):(1.099f*og_pow(L,0.45f)-0.099f); }
+__device__ float og_r709d(float V){ return (V<0.081f)?(V/4.5f):og_pow((V+0.099f)/1.099f,1.0f/0.45f); }
+__device__ float og_r709ge(float L, float g){ return og_pow(L,1.0f/g); }
+__device__ float og_r709gd(float V, float g){ return og_pow(V,g); }
+__device__ float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=v*gain; v=v+lift*(1.0f-fminf(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); }
+__device__ float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2f(x+A)+B)*C):(x*M); }
+__device__ float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2f(x/C-B)-A):(x/M); }
 
-__device__ float pg_enc(int enc, float x){
-    if(enc==0) return pg_r709e(x);
-    else if(enc==1) return pg_r709ge(x,2.2f);
-    else if(enc==2) return pg_r709ge(x,2.4f);
+__device__ float og_enc(int enc, float x){
+    if(enc==0) return og_r709e(x);
+    else if(enc==1) return og_r709ge(x,2.2f);
+    else if(enc==2) return og_r709ge(x,2.4f);
     else if(enc==3){ float code=685.0f+300.0f*log10f(fmaxf(x,1e-4f)); return fminf(fmaxf(code/1023.0f,0.0f),1.0f); }
     else if(enc==4){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2f(x+A)+B)*C):(x*M); }
     else return x;
 }
 
-__device__ void pg_sampleLUT(const float* lut,int N,const float c[3],float o[3]){
+__device__ void og_sampleLUT(const float* lut,int N,const float c[3],float o[3]){
     float cr=fminf(fmaxf(c[0],0.0f),1.0f)*(N-1), cg=fminf(fmaxf(c[1],0.0f),1.0f)*(N-1), cb=fminf(fmaxf(c[2],0.0f),1.0f)*(N-1);
     int r0=(int)cr,g0=(int)cg,b0=(int)cb; int r1=r0<N-1?r0+1:r0,g1=g0<N-1?g0+1:g0,b1=b0<N-1?b0+1:b0;
     float fr=cr-r0,fg=cg-g0,fb=cb-b0;
@@ -106,34 +106,34 @@ __device__ void pg_sampleLUT(const float* lut,int N,const float c[3],float o[3])
     }
 }
 
-__device__ float pg_softclip(float v, float amt){
+__device__ float og_softclip(float v, float amt){
     if(amt<=0.0f || v<=0.0f) return v;
     float k=1.0f-0.6f*amt; if(v<=k) return v;
     float r=1.0f-k; return k + r*(1.0f-expf(-(v-k)/r));
 }
 
-__global__ void PowerGradeKernel(int W,int H,const float* P,int cam,int enc,const float* lut,int lutN,float lutMix,const float* in,float* out){
+__global__ void OneGradeKernel(int W,int H,const float* P,int cam,int enc,const float* lut,int lutN,float lutMix,const float* in,float* out){
     const int x=blockIdx.x*blockDim.x+threadIdx.x;
     const int y=blockIdx.y*blockDim.y+threadIdx.y;
     if(x<W && y<H){
         const int i=((y*W)+x)*4;
         float temp=P[0],tint=P[1],density=P[2],lift=P[3],gamma=P[4],gain=P[5],offTemp=P[6],offTint=P[7],rawExp=P[10],rawTemp=P[11];
         float ex0=exp2f(rawExp);   // RAW exposure (stops), pre-CST
-        float lin[3]={pg_decode(cam,in[i])*ex0,pg_decode(cam,in[i+1])*ex0,pg_decode(cam,in[i+2])*ex0};
-        float xyz[3]; pg_toXYZ(cam,lin,xyz);
-        pg_whitebalance(rawTemp,xyz);            // RAW white balance in XYZ
-        float w[3];   pg_XYZtoDWG(xyz,w);
+        float lin[3]={og_decode(cam,in[i])*ex0,og_decode(cam,in[i+1])*ex0,og_decode(cam,in[i+2])*ex0};
+        float xyz[3]; og_toXYZ(cam,lin,xyz);
+        og_whitebalance(rawTemp,xyz);            // RAW white balance in XYZ
+        float w[3];   og_XYZtoDWG(xyz,w);
         w[0]*=(1.0f+temp*0.20f); w[2]*=(1.0f-temp*0.20f); w[1]*=(1.0f+tint*0.20f);
         w[0]+=offTemp*0.10f; w[2]-=offTemp*0.10f; w[1]+=offTint*0.10f;
-        if(density!=0.0f){ float l[3]={pg_dienc(w[0]),pg_dienc(w[1]),pg_dienc(w[2])}; float hsv[3]; pg_rgb2hsv(l,hsv); hsv[1]=fminf(fmaxf(hsv[1]*(1.0f+density),0.0f),1.0f); pg_hsv2rgb(hsv,l); w[0]=pg_didec(l[0]); w[1]=pg_didec(l[1]); w[2]=pg_didec(l[2]); }
+        if(density!=0.0f){ float l[3]={og_dienc(w[0]),og_dienc(w[1]),og_dienc(w[2])}; float hsv[3]; og_rgb2hsv(l,hsv); hsv[1]=fminf(fmaxf(hsv[1]*(1.0f+density),0.0f),1.0f); og_hsv2rgb(hsv,l); w[0]=og_didec(l[0]); w[1]=og_didec(l[1]); w[2]=og_didec(l[2]); }
         float outc[3];
-        if(enc<=3){ float x2[3]; pg_DWGtoXYZ(w,x2); pg_XYZto709(x2,outc); } else { outc[0]=w[0];outc[1]=w[1];outc[2]=w[2]; }  // 709 primaries for Scene/2.2/2.4/Cineon
+        if(enc<=3){ float x2[3]; og_DWGtoXYZ(w,x2); og_XYZto709(x2,outc); } else { outc[0]=w[0];outc[1]=w[1];outc[2]=w[2]; }  // 709 primaries for Scene/2.2/2.4/Cineon
         float dg=(enc==1)?2.2f:((enc==2)?2.4f:0.0f);                  // grade curve follows output (pure gamma vs Scene OETF)
-        for(int k=0;k<3;k++) outc[k]=pg_lgg(outc[k],gain,lift,gamma,dg);  // LGG in Rec.709 display curve
-        float e[3]={pg_enc(enc,outc[0]),pg_enc(enc,outc[1]),pg_enc(enc,outc[2])};
-        if(lutN>=2 && lutMix>0.0f){ float s[3]; pg_sampleLUT(lut,lutN,e,s); for(int k=0;k<3;k++) e[k]=e[k]+(s[k]-e[k])*lutMix; }
+        for(int k=0;k<3;k++) outc[k]=og_lgg(outc[k],gain,lift,gamma,dg);  // LGG in Rec.709 display curve
+        float e[3]={og_enc(enc,outc[0]),og_enc(enc,outc[1]),og_enc(enc,outc[2])};
+        if(lutN>=2 && lutMix>0.0f){ float s[3]; og_sampleLUT(lut,lutN,e,s); for(int k=0;k<3;k++) e[k]=e[k]+(s[k]-e[k])*lutMix; }
         float ex=exp2f(P[8]); for(int k=0;k<3;k++) e[k]=(e[k]*ex-0.5f)*P[9]+0.5f;  // post-LUT trim
-        if(P[12]>0.0f && (enc<=2 || (lutN>=2 && lutMix>0.0f))) for(int k=0;k<3;k++) e[k]=pg_softclip(e[k],P[12]);  // highlight roll-off (display-referred only)
+        if(P[12]>0.0f && (enc<=2 || (lutN>=2 && lutMix>0.0f))) for(int k=0;k<3;k++) e[k]=og_softclip(e[k],P[12]);  // highlight roll-off (display-referred only)
         out[i]=e[0]; out[i+1]=e[1]; out[i+2]=e[2]; out[i+3]=in[i+3];
     }
 }
@@ -155,7 +155,7 @@ void RunCudaKernel(void* p_Stream, int p_Width, int p_Height, const float* p_Par
     cudaMalloc(&d_lut, sizeof(float) * lutCount);
     if (lutN) cudaMemcpyAsync(d_lut, p_Lut, sizeof(float) * lutCount, cudaMemcpyHostToDevice, stream);
 
-    PowerGradeKernel<<<blocks, threads, 0, stream>>>(p_Width, p_Height, d_params, p_Camera, p_Encode, d_lut, lutN, p_LutMix, p_Input, p_Output);
+    OneGradeKernel<<<blocks, threads, 0, stream>>>(p_Width, p_Height, d_params, p_Camera, p_Encode, d_lut, lutN, p_LutMix, p_Input, p_Output);
     cudaStreamSynchronize(stream);
     cudaFree(d_params);
     cudaFree(d_lut);

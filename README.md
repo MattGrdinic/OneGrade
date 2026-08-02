@@ -1,4 +1,4 @@
-# PowerGrade
+# OneGrade
 
 A single-node **OpenFX** color grade plugin for DaVinci Resolve. It collapses the
 classic scene-linear grading chain — **input CST → balance → density → exposure →
@@ -6,7 +6,7 @@ output transform → look / film LUT** — into one node with a clean, grouped i
 running on the GPU (Metal / CUDA / OpenCL) with a CPU fallback.
 
 ```
-[ PowerGrade ]  ==  CST → Balance → Density → Exposure → Output → LUT → Trim   (one node)
+[ OneGrade ]  ==  CST → Balance → Density → Exposure → Output → LUT → Trim   (one node)
 ```
 
 - **macOS** (Apple Silicon + Intel, universal) — Metal + OpenCL
@@ -23,14 +23,14 @@ running on the GPU (Metal / CUDA / OpenCL) with a CPU fallback.
 2. Unzip and run the installer:
    - **macOS**: double-click `install-macos.command` (copies the plugin to `/Library/OFX/Plugins/`; you'll be asked for your password).
    - **Windows**: right-click `install-windows.bat` → **Run as administrator**.
-   - Or copy `PowerGrade.ofx.bundle` manually to:
+   - Or copy `OneGrade.ofx.bundle` manually to:
      - macOS: `/Library/OFX/Plugins/`
      - Windows: `C:\Program Files\Common Files\OFX\Plugins\`
 3. Restart DaVinci Resolve.
 
 ## Project setup (do this once)
 
-PowerGrade does the camera transform itself, so Resolve must **not** be color-managing
+OneGrade does the camera transform itself, so Resolve must **not** be color-managing
 your clips. In **Project Settings → Color Management**:
 
 | Setting | Value |
@@ -70,10 +70,33 @@ check an export against your player before trusting the viewer.
 
 ## Add it
 
-Color page → **Effects** (Library) → **OpenFX → Power Grade → PowerGrade** → drag it
-onto a node. The controls appear top-to-bottom in the order they're applied.
+Color page → **Effects** (Library) → **OpenFX → OneGrade** (the category) **→ OneGrade**
+(the plugin) → drag it onto a node. The controls appear top-to-bottom in the order
+they're applied.
+
+> **Renamed in v1.1.0.** This plugin was previously called *PowerGrade* — renamed because
+> "PowerGrade" already means something specific in Resolve (the stills album in the
+> Gallery). The OFX plugin ID changed with it, so **grades saved with PowerGrade will not
+> carry over**; the installers remove the old bundle so you don't end up with a dead
+> duplicate in the Effects list.
 
 ## The controls
+
+**0 · Node Role** — which part of the pipeline this node does. Leave it on **Full Grade
+(single node)** unless you group your clips; that's the default and it's the whole plugin
+in one node. The other two roles split it across Resolve's group grading levels so a whole
+group shares one setup:
+
+- **Input Transform (Group Pre-Clip)** — camera decode only, handed off in DaVinci
+  Intermediate. The panel drops to three live controls: Camera, RAW Exposure, RAW
+  Temperature.
+- **Output Transform (Group Post-Clip)** — takes that hand-off and applies the look, LUT,
+  trim and delivery encode.
+
+Chained, the two match a single Full Grade node (measured to within a quarter of an 8-bit
+code value). Controls a role doesn't own are greyed out *and* forced neutral at render, so
+the look can never be applied twice. See **Workflows** below, and
+[docs/GROUPS.md](docs/GROUPS.md) for the full explanation.
 
 **0 · Preset** — one-click starting points on the happy path. Every preset sets
 **Camera → Rec.2100 PQ** (the smooth decode, also the plugin default) plus Balance,
@@ -91,8 +114,8 @@ and Output Encode are never touched. The name tells you which LUT path it drives
   image brightened into the look.
 - **None / Reset Look** — returns the look params to neutral (Camera stays put).
 
-The built-in LUTs live at `PowerGrade.ofx.bundle/Contents/Resources/LUTs` and appear in
-the **Look LUT Group** dropdown as **PowerGrade (built-in)** — you can use them directly
+The built-in LUTs live at `OneGrade.ofx.bundle/Contents/Resources/LUTs` and appear in
+the **Look LUT Group** dropdown as **OneGrade (built-in)** — you can use them directly
 at any mix, on any machine the plugin is installed on. Six looks ship, each deliberately
 distinct so one of the defaults is likely close to what your footage wants (pick it,
 then trim with **LUT Mix** and the sliders):
@@ -172,6 +195,18 @@ exclusive (they use different transforms):
   **Trim → Exposure** to taste.
 - **Custom look** — LUT Mode → Custom Look → pick your `.cube`, dial **LUT Mix**.
 - **HDR clip (e.g. DJI drone)** — set Camera = Rec.2100 HLG (or PQ), then trim exposure.
+- **Grouped timeline (pre-clip / post-clip)** — for shot-per-minute work where a whole
+  group should share one transform and one look:
+  1. Color page → select the clips → right-click → *Add into a New Group*.
+  2. Node Editor mode selector → **Group Pre-Clip**. Add OneGrade,
+     **Node Role → Input Transform**, set **Camera**.
+  3. Mode selector → **Clip**. Grade shots normally — curves, primaries, secondaries,
+     windows, panel. OneGrade isn't involved at this level.
+  4. Mode selector → **Group Post-Clip**. Add OneGrade,
+     **Node Role → Output Transform**, pick a Preset or set **Output Encode**.
+
+  Change the delivery curve or the look once and it applies to every clip in the group.
+  Costs two GPU passes per clip instead of one. Details: [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
@@ -187,13 +222,13 @@ color math lives in **one header** used by the CPU path; the three GPU kernels m
 
 ```
 src/
-  PowerGrade.cpp        OFX plugin: params, grouped UI, render dispatch, LUT scan
-  PowerGrade.h          factory declaration
-  PowerGradePipeline.h  the color pipeline — SINGLE SOURCE OF TRUTH (CPU path)
+  OneGrade.cpp        OFX plugin: params, grouped UI, render dispatch, LUT scan
+  OneGrade.h          factory declaration
+  OneGradePipeline.h  the color pipeline — SINGLE SOURCE OF TRUTH (CPU path)
   CubeLUT.h             minimal .cube 3D-LUT parser (host side)
-  MetalKernel.mm        Metal kernel      (mirrors PowerGradePipeline.h)
-  OpenCLKernel.cpp      OpenCL kernel     (mirrors PowerGradePipeline.h)
-  CudaKernel.cu         CUDA kernel       (mirrors PowerGradePipeline.h)
+  MetalKernel.mm        Metal kernel      (mirrors OneGradePipeline.h)
+  OpenCLKernel.cpp      OpenCL kernel     (mirrors OneGradePipeline.h)
+  CudaKernel.cu         CUDA kernel       (mirrors OneGradePipeline.h)
   Info.plist            bundle plist
 Makefile                macOS/Linux build
 CMakeLists.txt          cross-platform build (macOS/Windows/Linux)
@@ -203,7 +238,7 @@ third_party/openfx/     vendored OpenFX 1.4 SDK
 
 ## The color pipeline (order and spaces)
 
-Per pixel, in `pg::process()` (`PowerGradePipeline.h`). The **space each step runs in is
+Per pixel, in `og::process()` (`OneGradePipeline.h`). The **space each step runs in is
 deliberate** — this is where most of the correctness lives:
 
 | # | Step | Space | Why |
@@ -221,40 +256,40 @@ deliberate** — this is where most of the correctness lives:
 Parameter vector `P[13]` = `{temp, tint, density, lift, gamma, gain, offTemp, offTint,
 postExp, postCon, rawExp, rawTemp, rolloff}`; `camera` and `outEncode` are passed
 separately as ints. `postExp` / `postCon` / `rolloff` are applied by the caller in the
-trim step (after the LUT), not inside `pg::process()`.
+trim step (after the LUT), not inside `og::process()`.
 
 ## Golden rule: the CPU header is the source of truth
 
-`PowerGradePipeline.h` is authoritative. The Metal/OpenCL/CUDA kernels **must mirror it
+`OneGradePipeline.h` is authoritative. The Metal/OpenCL/CUDA kernels **must mirror it
 exactly**. Any change to the math is a **4-file change** (CPU + 3 kernels). Keep the
 helper names and formulas identical so they're easy to diff.
 
 ## How to extend
 
 **Add a camera** (e.g. a new log format):
-1. `PowerGradePipeline.h` → add a branch to `decode_log()` (log→linear) and, if the
+1. `OneGradePipeline.h` → add a branch to `decode_log()` (log→linear) and, if the
    gamut isn't already covered, a matrix branch in `to_XYZ()`.
 2. Mirror both in `MetalKernel.mm`, `OpenCLKernel.cpp`, `CudaKernel.cu` (same `cam`
    index).
-3. `PowerGrade.cpp` → `cam->appendOption("…")` in the same order.
+3. `OneGrade.cpp` → `cam->appendOption("…")` in the same order.
 
-**Add an output encode:** add a branch to `encode()` (CPU) + `pg_enc()` (3 kernels), and
+**Add an output encode:** add a branch to `encode()` (CPU) + `og_enc()` (3 kernels), and
 an `enc->appendOption("…")`. If it changes the grade space, update the LGG accordingly.
 
 **Add a control:** bump `kParamCount`, define the param in `describeInContext`, fetch it,
-push into `params[]`, and read `P[n]` in `pg::process()` + the 3 kernels (mind the Metal
+push into `params[]`, and read `P[n]` in `og::process()` + the 3 kernels (mind the Metal
 `setBytes` length, the OpenCL arg list/count, and the CUDA `cudaMalloc` size).
 
 **LUTs:** `CubeLUT.h` parses 3D `.cube` files; the host scans Resolve's LUT folder
 (`filmLutDir()`, per-platform) into a Film list and a grouped Look cascade, loads the selected `.cube`
 (cached by path), and passes `(data, size, mix)` to the processor. Sampling is trilinear
-in `apply_lut()` / `pg_sampleLUT()`.
+in `apply_lut()` / `og_sampleLUT()`.
 
 ## Build from source
 
 ```bash
 # macOS (universal arm64+x86_64) / Linux
-make                 # -> PowerGrade.ofx.bundle
+make                 # -> OneGrade.ofx.bundle
 sudo make install         # -> /Library/OFX/Plugins   (needs sudo)
 
 # any platform, via CMake
@@ -271,7 +306,7 @@ the copy bundled with Visual Studio, as below.
 ```powershell
 $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 & $cmake -S . -B build-cuda -G "Visual Studio 17 2022" -A x64 -DBUILD_CUDA=ON
-& $cmake --build build-cuda --config Release      # -> build-cuda\PowerGrade.ofx.bundle
+& $cmake --build build-cuda --config Release      # -> build-cuda\OneGrade.ofx.bundle
 ```
 
 Install (**close Resolve first** — the plugin is locked while it runs):
@@ -282,13 +317,13 @@ Copy-Item install\install-windows.bat build-cuda\
 
 then right-click `build-cuda\install-windows.bat` → **Run as administrator**. It copies the
 bundle to `%CommonProgramFiles%\OFX\Plugins`. Restart Resolve → Color page → Effects →
-OpenFX → Power Grade.
+OpenFX → OneGrade.
 
 Confirm the GPU kernel actually shipped — a plugin built without it looks fine and just
 renders on the CPU:
 
 ```powershell
-& "$env:CUDA_PATH\bin\cuobjdump.exe" --list-elf "$env:CommonProgramFiles\OFX\Plugins\PowerGrade.ofx.bundle\Contents\Win64\PowerGrade.ofx"
+& "$env:CUDA_PATH\bin\cuobjdump.exe" --list-elf "$env:CommonProgramFiles\OFX\Plugins\OneGrade.ofx.bundle\Contents\Win64\OneGrade.ofx"
 ```
 
 Expect a list of `sm_*` cubins covering your GPU (`sm_120` for Blackwell / RTX 50-series).
@@ -307,7 +342,7 @@ slower, so build the Windows plugin with CUDA unless you have a reason not to.
 
 ## Tests
 
-`test/pipeline_test.cpp` compiles `PowerGradePipeline.h` on the CPU and asserts pipeline
+`test/pipeline_test.cpp` compiles `OneGradePipeline.h` on the CPU and asserts pipeline
 invariants (neutral pass-through sanity, Lift pins white, Gain pins black, Gamma pins
 both, LUT identity, HDR decodes finite). Run locally:
 
@@ -331,15 +366,15 @@ release should represent a known-good `main`.
 ```bash
 
 git checkout main && git pull          # be on the merged, green main
-git tag v1.0.3                         # semantic version, must start with "v"
-git push origin v1.0.3                 # this push is what triggers the release
+git tag v1.1.0                         # semantic version, must start with "v"
+git push origin v1.1.0                 # this push is what triggers the release
 ```
 
 **What it does** (`.github/workflows/ci.yml`, the `release` job — it's skipped on normal
 pushes and only runs for `refs/tags/v*`):
 
 1. Builds and **tests** on macOS **and** Windows (the same `build` matrix as every push).
-2. Packages a zip per OS — each contains `PowerGrade.ofx.bundle` **plus its installer**
+2. Packages a zip per OS — each contains `OneGrade.ofx.bundle` **plus its installer**
    (`install-macos.command` / `install-windows.bat`).
 3. Publishes a **GitHub Release** named for the tag, attaches both zips, and
    auto-generates release notes from the merged commits.
@@ -348,7 +383,7 @@ So the whole flow is: **merge → green `main` → tag `vX.Y.Z` → push tag →
 under [Releases](../../releases)** with ready-to-install downloads.
 
 **Versioning:** use [SemVer](https://semver.org) — `vMAJOR.MINOR.PATCH`. The plugin's own
-internal version is `kPluginVersionMajor` / `kPluginVersionMinor` in `src/PowerGrade.cpp`;
+internal version is `kPluginVersionMajor` / `kPluginVersionMinor` in `src/OneGrade.cpp`;
 bump it to match when you cut a release so Resolve reports the same number. If a tag was
 wrong, delete it (`git push origin :refs/tags/vX.Y.Z`) and re-tag.
 
