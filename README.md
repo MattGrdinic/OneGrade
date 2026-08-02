@@ -80,6 +80,32 @@ they're applied.
 > carry over**; the installers remove the old bundle so you don't end up with a dead
 > duplicate in the Effects list.
 
+## This plugin is opinionated
+
+Worth knowing before you compare it to anything: **OneGrade is a look-first tool, not a
+colorimetry reference.** A neutral OneGrade node is not the same picture as a neutral CST
+node, and it isn't meant to be.
+
+- **The camera transforms are published math, applied uniformly.** Resolve's own decode
+  for a specific camera can go further — the Camera RAW tab's default color science path
+  applies a **camera-specific technical LUT** (e.g. for a Pyxis 6K), which bakes in
+  per-model tuning on top of the log/gamut transform. OneGrade can't reproduce that: no
+  sensor metadata reaches an OFX plugin, so all it has is the camera's published log curve
+  and gamut. Expect a family resemblance to the RAW-tab default, not a match.
+- **The default Camera isn't a camera match at all.** Rec.2100 PQ is a deliberate creative
+  choice — a compressive *smooth decode* that flatters log footage with a near-perfect
+  highlight rolloff. It's the happy path the presets are built on. If you want a
+  colorimetric starting point, pick your actual camera from the list.
+- **Don't A/B it against "Gen 5 Film to Video" either.** That LUT bakes in Blackmagic's
+  contrast and tone curve; it isn't a plain colorimetric conversion. The fair neutral
+  reference is a CST node with tone mapping off.
+- **The grade wheels follow the output curve, and the LUT paths pin it.** Both are
+  deliberate (see Output Encode below) and both are things a raw CST chain doesn't do.
+
+None of this is a limitation you need to work around — it's the trade. You get one node,
+one set of controls, and a look that lands close on the first move. If your job is to
+match a reference transform exactly, use a CST node for that part.
+
 ## The controls
 
 **0 · Node Role** — which part of the pipeline this node does. Leave it on **Full Grade

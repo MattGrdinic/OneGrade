@@ -352,6 +352,12 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
 - **Don't expect a pixel match against Resolve's "Gen 5 Film to Video" LUT** — "to Video"
   bakes in Blackmagic's contrast/tone curve, not a plain colorimetric conversion. The right
   neutral reference is a CST node (Gen 5 Film → Rec.709 / Gamma 2.4, tone mapping off).
+  Nor against the **Camera RAW tab's default color-science path**, which applies a
+  **camera-specific technical LUT** (per-model tuning, e.g. Pyxis 6K) on top of the log/gamut
+  transform — we can't reproduce it, no sensor metadata reaches an OFX plugin. README §"This
+  plugin is opinionated" says this to users out loud (added 2026-08-02, user's call): it's a
+  look-first tool, family resemblance to a CST/RAW-tab neutral, not a match. Say this when
+  users report "it doesn't look like a plain CST".
 
 ## Likely next tasks
 **Rolloff smoothness on Gen 5 (user's active thread):** the Highlight Rolloff softclip is
