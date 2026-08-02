@@ -75,6 +75,22 @@ onto a node. The controls appear top-to-bottom in the order they're applied.
 
 ## The controls
 
+**0 · Node Role** — which part of the pipeline this node does. Leave it on **Full Grade
+(single node)** unless you group your clips; that's the default and it's the whole plugin
+in one node. The other two roles split it across Resolve's group grading levels so a whole
+group shares one setup:
+
+- **Input Transform (Group Pre-Clip)** — camera decode only, handed off in DaVinci
+  Intermediate. The panel drops to three live controls: Camera, RAW Exposure, RAW
+  Temperature.
+- **Output Transform (Group Post-Clip)** — takes that hand-off and applies the look, LUT,
+  trim and delivery encode.
+
+Chained, the two match a single Full Grade node (measured to within a quarter of an 8-bit
+code value). Controls a role doesn't own are greyed out *and* forced neutral at render, so
+the look can never be applied twice. See **Workflows** below, and
+[docs/GROUPS.md](docs/GROUPS.md) for the full explanation.
+
 **0 · Preset** — one-click starting points on the happy path. Every preset sets
 **Camera → Rec.2100 PQ** (the smooth decode, also the plugin default) plus Balance,
 Density, Lift/Gamma/Gain, LUT and Trim; every slider stays live to tweak per clip. RAW
@@ -172,6 +188,18 @@ exclusive (they use different transforms):
   **Trim → Exposure** to taste.
 - **Custom look** — LUT Mode → Custom Look → pick your `.cube`, dial **LUT Mix**.
 - **HDR clip (e.g. DJI drone)** — set Camera = Rec.2100 HLG (or PQ), then trim exposure.
+- **Grouped timeline (pre-clip / post-clip)** — for shot-per-minute work where a whole
+  group should share one transform and one look:
+  1. Color page → select the clips → right-click → *Add into a New Group*.
+  2. Node Editor mode selector → **Group Pre-Clip**. Add PowerGrade,
+     **Node Role → Input Transform**, set **Camera**.
+  3. Mode selector → **Clip**. Grade shots normally — curves, primaries, secondaries,
+     windows, panel. PowerGrade isn't involved at this level.
+  4. Mode selector → **Group Post-Clip**. Add PowerGrade,
+     **Node Role → Output Transform**, pick a Preset or set **Output Encode**.
+
+  Change the delivery curve or the look once and it applies to every clip in the group.
+  Costs two GPU passes per clip instead of one. Details: [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
@@ -331,8 +359,8 @@ release should represent a known-good `main`.
 ```bash
 
 git checkout main && git pull          # be on the merged, green main
-git tag v1.0.3                         # semantic version, must start with "v"
-git push origin v1.0.3                 # this push is what triggers the release
+git tag v1.0.5                         # semantic version, must start with "v"
+git push origin v1.0.5                 # this push is what triggers the release
 ```
 
 **What it does** (`.github/workflows/ci.yml`, the `release` job — it's skipped on normal

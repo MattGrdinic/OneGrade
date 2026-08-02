@@ -17,7 +17,8 @@ when touching the matching code): `GAMMA.md` (transfer functions, grade curve, e
 `CAMERAS.md` (input transforms, working space) · `BALANCE.md` (RAW WB + gain/offset
 balance) · `DENSITY.md` (HSV-in-DI-log saturation) · `LUTS.md` (discovery, parsing,
 sampling, built-ins) · `FILM-EMULATION.md` (Cineon → print-stock path + preset recipe) ·
-`CREATING-LUTS.md` (authoring new built-in looks).
+`CREATING-LUTS.md` (authoring new built-in looks) · `GROUPS.md` (Node Role, the
+pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed).
 
 ## The golden rule
 `src/PowerGradePipeline.h` (namespace `pg`, CPU) is the **single source of truth** for all
