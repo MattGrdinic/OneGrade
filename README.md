@@ -394,8 +394,9 @@ push, and attaches release artifacts on tags.
 Releases are **git-tag driven** — pushing a `v*` tag is the only trigger. There is no
 manual upload step.
 
-**When to run it:** after your changes are merged to `main` and CI is green there. A
-release should represent a known-good `main`.
+**When to run it:** after your changes are merged to `main`. CI runs on the *PR* into
+`main`, not on the merge commit, so "known-good `main`" means that PR's checks were green
+before you merged it.
 
 **How to run it:**
 

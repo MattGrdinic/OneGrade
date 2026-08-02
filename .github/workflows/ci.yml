@@ -1,18 +1,20 @@
 name: CI
 
-# Every commit still gets built and tested, but exactly once. `push` on "**" meant a
-# branch push and its pull_request event both fired, so a single commit on a PR'd branch
-# burned two full macOS+Windows matrices — the working branches in this repo are always
-# headed for a PR, so the push run was pure duplication.
+# Two triggers only, by design (user's call, 2026-08-02): the gate into `main`, and the
+# release. `push: ["**"]` plus an unfiltered `pull_request` fired twice for one commit on
+# a PR'd branch — the v1.1.1 tag produced 7 runs where 3 were wanted.
 #
-# `pull_request` is deliberately unfiltered: the branch flow here is
-# task branch -> feature/<release> -> main, and filtering it to `branches: [main]` would
-# skip CI on that first hop, so work would land in the release branch unverified.
+# What this deliberately does NOT build, so nobody re-adds it as a "fix":
+#   - pushes to working branches (task branches and feature/<version>)
+#   - PRs into feature/<version>, i.e. the first hop of the branch flow
+#   - the merge commit on `main` — `main` is green because its PR was green
+# So a sub-feature is verified when its release branch opens a PR into `main`, not before.
+# Run `make test` locally while working; that's the fast loop anyway.
 on:
   push:
-    branches: [main]      # merges to main; every other branch is covered by its PR
     tags: ["v*"]          # the release trigger — see "Cutting a release" in README.md
-  pull_request:           # any target branch, so both hops of the flow are checked
+  pull_request:
+    branches: [main]      # the gate into main: build + test before it can merge
 
 # A new push to a PR makes the in-flight run for that branch obsolete; cancel it rather
 # than let both finish. Never cancels main or a tag: a killed `v*` run means no release
