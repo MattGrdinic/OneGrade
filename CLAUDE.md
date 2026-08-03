@@ -525,8 +525,20 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
      alone rather than guess.** Not every control the user touches is a correction — some
      are taste, and taste has no measurement to fit.
 
-5. **Bias slider (`autoBias`, -1..+1, default 0)** — user's request after using the button
-   on real shots. Negative tames the top (rolloff up, lift down), positive opens the bottom
+5. **Bias slider (`autoBias`, -1..+1, default 0) — LIVE, and the group sits FIRST in the
+   panel** (both at the user's request, 2026-08-02: "the bias adjustment is great, the only
+   thing is to make it real time"). `applyBias()` is split out of `applyAutoGrade()` so a
+   drag re-derives Rolloff and Lift from the **cached** measurement — pure arithmetic on two
+   stored numbers, no re-analysis, so it keeps up with the drag. Gated on `m_AutoApplied`:
+   dragging Bias on a node that was never auto-graded must not silently stamp values, and
+   since that flag and the cached measurement are instance state, the slider goes **inert
+   after a project reload** until Auto Grade is pressed again — deliberately inert rather
+   than acting on a stale number. The group is **unnumbered** while experimental: 0-8 is the
+   pipeline in application order and this isn't a pipeline stage, plus it keeps the numbering
+   in the README and users' heads from shifting for a feature that may still change shape.
+   Number it 0 and renumber the rest if it graduates.
+
+   User's request after using the button Negative tames the top (rolloff up, lift down), positive opens the bottom
    (lift up, rolloff down), 0 = the fitted result. `rolloff = clamp(0.090*pin - bias*0.35)`,
    `lift = clamp(0.11 + bias*0.06)`. It moves **Rolloff and Lift only** — those are the two
    the user reached for in exactly this situation ("add a touch of highlight rolloff until

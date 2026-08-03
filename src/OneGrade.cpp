@@ -329,9 +329,12 @@ public:
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
     void probeAnalyze(double p_Time);   // measure the frame and report (writes m_LastKey)
     void applyAutoGrade(double p_Time); // measure, then set the film look + Gain from key
+    void applyBias();                   // re-derive Rolloff/Lift from the cached measurement
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
     double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
+    double m_LastGain = 0.80;           // Gain the last Auto Grade wrote (for the readout)
     bool   m_HaveKey = false;
+    bool   m_AutoApplied = false;       // has Auto Grade run? gates the live Bias drag
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
     void setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
@@ -706,17 +709,33 @@ void OneGrade::applyAutoGrade(double p_Time)
     // Evidenced by ONE non-zero point, so it is a line through the origin; three controls
     // sit correctly at zero. Cap short of 1.0 - beyond ~0.8 the shoulder starts eating
     // diffuse white, and no measured shot came near it.
-    // Bias: one slider trading highlight restraint against shadow openness, because the
-    // measurement can only get the shot into the right neighbourhood — which end of that
-    // neighbourhood you want is taste, and taste needs a knob rather than a constant.
-    // Negative tames the top (more rolloff, shadows sit down); positive opens the bottom
-    // (lift up, rolloff backed off). Zero is the fitted result.
-    //
-    // It moves Rolloff and Lift specifically because those are the two the user reached for
-    // in exactly this situation: "add a touch of highlight rolloff until we bring the
-    // highlights below 1023", and "lift darker images a bit". Gain deliberately stays on
-    // its measurement — it's the one parameter with a hard physical anchor (distance from
-    // mid-gray), and letting a taste control drag it would undo the part that works.
+    m_LastGain = gain;
+    m_AutoApplied = true;
+    applyBias();                       // sets Rolloff + Lift, and writes the Applied line
+    setEnabledness();                  // the preset switches LUT Mode
+}
+
+// Bias: one slider trading highlight restraint against shadow openness, because the
+// measurement can only get a shot into the right neighbourhood — which end of that
+// neighbourhood you want is taste, and taste needs a knob rather than a constant.
+// Negative tames the top (more rolloff, shadows sit down); positive opens the bottom
+// (lift up, rolloff backed off). Zero is the fitted result.
+//
+// It moves Rolloff and Lift specifically because those are the two the user reached for in
+// exactly this situation: "add a touch of highlight rolloff until we bring the highlights
+// below 1023", and "lift darker images a bit". Gain deliberately stays on its measurement —
+// it's the one parameter with a hard physical anchor (distance from mid-gray), and letting
+// a taste control drag it would undo the part that works.
+//
+// Split out of applyAutoGrade so a Bias drag can re-derive both values from the CACHED
+// measurement, with no re-analysis: it's pure arithmetic on two stored numbers, so it keeps
+// up with a drag. Gated on m_AutoApplied — dragging Bias on a node that was never
+// auto-graded must not silently stamp Lift and Rolloff. That flag and the cached
+// measurement are instance state, so after a project reload the slider goes inert until
+// Auto Grade is pressed again; deliberately inert rather than acting on a stale number.
+void OneGrade::applyBias()
+{
+    if (!m_AutoApplied) return;
     double bias = 0.0; m_AutoBias->getValue(bias);
     const double rolloff = std::min(0.80, std::max(0.0, 0.090 * m_LastPin - bias * 0.35));
     const double lift    = std::min(0.50, std::max(-0.50, 0.11 + bias * 0.06));
@@ -726,12 +745,11 @@ void OneGrade::applyAutoGrade(double p_Time)
     char msg[96];
     if (bias != 0.0)
         snprintf(msg, sizeof msg, "Gain %.3f  Roll %.3f  Lift %.3f  bias %+.2f",
-                 gain, rolloff, lift, bias);
+                 m_LastGain, rolloff, lift, bias);
     else
         snprintf(msg, sizeof msg, "Gain %.3f (key %+.2f)  Roll %.3f (pin %.1f%%)",
-                 gain, m_LastKey, rolloff, m_LastPin);
+                 m_LastGain, m_LastKey, rolloff, m_LastPin);
     m_ProbeApplied->setValue(msg);
-    setEnabledness();                  // the preset switches LUT Mode
 }
 
 void OneGrade::setEnabledness()
@@ -926,6 +944,10 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     else if (p_ParamName == "probeApply" && p_Args.reason == OFX::eChangeUserEdit) {
         applyAutoGrade(p_Args.time);
     }
+    // Live: re-derive Rolloff/Lift as the slider moves. No re-analysis, so it keeps up.
+    else if (p_ParamName == "autoBias" && p_Args.reason == OFX::eChangeUserEdit) {
+        applyBias();
+    }
     // Only on a real user edit — project load / plugin edits must not re-stamp the preset
     // over values the user has since tweaked.
     else if (p_ParamName == "preset" && p_Args.reason == OFX::eChangeUserEdit) {
@@ -1107,6 +1129,59 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     dstClip->setSupportsTiles(kSupportsTiles);
 
     PageParamDescriptor* page = p_Desc.definePageParam("Controls");
+
+    // ---- Auto Grade (experimental) ----
+    // First in the panel, at the user's request: it's the one-click entry point, so it
+    // shouldn't be buried under nine groups of manual controls. Deliberately UNNUMBERED
+    // while it's experimental — the 0-8 sequence below is the pipeline in the order it's
+    // applied, and this isn't a pipeline stage, it's a way of setting those stages. It also
+    // means the numbering users and the docs already know doesn't shift for a feature that
+    // may still change shape. Number it 0 and renumber the rest if it graduates.
+    GroupParamDescriptor* gAuto = p_Desc.defineGroupParam("gAuto");
+    gAuto->setLabels("Auto Grade (experimental)", "Auto Grade", "Auto Grade");
+    gAuto->setOpen(true);
+    {
+        PushButtonParamDescriptor* btn = p_Desc.definePushButtonParam("probeAnalyze");
+        btn->setLabels("Analyze Frame", "Analyze Frame", "Analyze Frame");
+        btn->setHint("Experimental. Reads the current frame at the node's input and reports what it found below. Does not change the picture or any slider — this exists to prove the plugin can sample the image before any auto-grade feature is built on top of it.");
+        btn->setParent(*gAuto);
+        page->addChild(*btn);
+
+        auto probeLine = [&](const char* name, const char* label, const char* hint) {
+            StringParamDescriptor* s = p_Desc.defineStringParam(name);
+            s->setLabels(label, label, label);
+            s->setStringType(eStringTypeLabel);
+            s->setDefault("(not run)");
+            s->setHint(hint);
+            s->setEnabled(false);
+            s->setParent(*gAuto);
+            page->addChild(*s);
+        };
+        probeLine("probeStatus", "Result",
+                  "Whether pixels came back, the frame size, the sampling step and how many samples were read. 'ALL ZERO' means the host handed over a buffer but it was empty - a different answer from a black shot.");
+        probeLine("probeScene", "Scene",
+                  "Measured on scene light (XYZ luminance after the camera decode, before any grade). Y50 is the median. 'key' is how far that median sits from 18% mid-gray in stops - the exposure correction the shot is asking for, since RAW Exposure is a linear gain in stops. 'DR' is p1 to p99 in stops: how much usable range the shot actually has.");
+        probeLine("probeDisplay", "Display",
+                  "Luma percentiles after the full pipeline at NEUTRAL grade, in your current Output Encode: 1st, 50th, 99th. This is the space Lift/Gamma/Gain work in, so these are the numbers a black-point or highlight target would be set against. No LUT is applied.");
+        probeLine("probeShape", "Shape",
+                  "'hot' is the share above 1.0 in display - bright, but it pulls back fine if the range was captured. 'pin' is the share of the frame sitting ON the source ceiling, with that ceiling's code value after the @ - this is clipping at the sensor, where no exposure move brings anything back. Measured against the clip's own maximum rather than 1.0, because log formats don't all reach the top of the code range (Blackmagic peaks near 0.75). A low pin % means the highlights roll off and the range was captured; a high one means they are stacked on the ceiling and gone. 'sat' is mean HSV saturation over mid-tones only, which is what a Density move would act on.");
+        PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");
+        apply->setLabels("Auto Grade", "Auto Grade", "Auto Grade");
+        apply->setHint("Experimental. Analyses the frame, applies the Cinematic Film Emulation look, and sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
+        apply->setParent(*gAuto);
+        page->addChild(*apply);
+
+        page->addChild(*defineSlider(p_Desc, "autoBias", "Bias",
+            "Which way Auto Grade leans when you press it. 0 uses the measured result as-is. Negative tames the highlights - more Highlight Rolloff, shadows sitting lower - for a shot with blown windows or hot speculars. Positive opens the image up - more Lift, less rolloff - for something dark you want to breathe. Gain is never touched by this: it is set from the measured exposure and that part is not a matter of taste. Updates live once Auto Grade has been pressed - drag it and the image follows. It does nothing on a node that has not been auto-graded, and goes inert after a project reload until you press Auto Grade again.",
+            0.0, -1.0, 1.0, 0.01, gAuto));
+
+        probeLine("probePeak", "Peak",
+                  "p99.9 in display, and how far it runs past p99. A compact blown specular - a window, a lamp - sits far above the bulk of the highlights and gives a high multiplier; a broad bright field like sunlit sand sits just above it. This is the shape of the top end rather than its size, which is what decides whether a shot wants Highlight Rolloff.");
+        probeLine("probeSubject", "Subject",
+                  "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
+        probeLine("probeApplied", "Applied",
+                  "What the Auto Grade button last wrote, and the measurement it came from. Blank until you press it. Analyze Frame never changes anything; only Auto Grade does.");
+    }
 
     // ---- 0. Role + Preset ----
     GroupParamDescriptor* gPreset = p_Desc.defineGroupParam("gPreset");
@@ -1317,56 +1392,6 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     helpLine("help8", "Monitor", "Calibrate; check on a second screen",
              "Calibrate your monitor and have Resolve show your delivery space; check the grade on a second screen before committing.");
 
-    // ---- 9. Auto Grade (experimental probe) ----
-    // Step 1 of the Auto Grade design: this group exists only to answer "can a button read
-    // the frame?". It changes nothing about the picture — it reads pixels and prints what
-    // it found. Collapsed by default; remove the whole group if the answer turns out to be
-    // no, or grow it into the real analysis if yes. See probeAnalyze().
-    GroupParamDescriptor* gAuto = p_Desc.defineGroupParam("gAuto");
-    gAuto->setLabels("9  Auto Grade (experimental)", "9  Auto Grade", "9  Auto Grade");
-    gAuto->setOpen(false);
-    {
-        PushButtonParamDescriptor* btn = p_Desc.definePushButtonParam("probeAnalyze");
-        btn->setLabels("Analyze Frame", "Analyze Frame", "Analyze Frame");
-        btn->setHint("Experimental. Reads the current frame at the node's input and reports what it found below. Does not change the picture or any slider — this exists to prove the plugin can sample the image before any auto-grade feature is built on top of it.");
-        btn->setParent(*gAuto);
-        page->addChild(*btn);
-
-        auto probeLine = [&](const char* name, const char* label, const char* hint) {
-            StringParamDescriptor* s = p_Desc.defineStringParam(name);
-            s->setLabels(label, label, label);
-            s->setStringType(eStringTypeLabel);
-            s->setDefault("(not run)");
-            s->setHint(hint);
-            s->setEnabled(false);
-            s->setParent(*gAuto);
-            page->addChild(*s);
-        };
-        probeLine("probeStatus", "Result",
-                  "Whether pixels came back, the frame size, the sampling step and how many samples were read. 'ALL ZERO' means the host handed over a buffer but it was empty - a different answer from a black shot.");
-        probeLine("probeScene", "Scene",
-                  "Measured on scene light (XYZ luminance after the camera decode, before any grade). Y50 is the median. 'key' is how far that median sits from 18% mid-gray in stops - the exposure correction the shot is asking for, since RAW Exposure is a linear gain in stops. 'DR' is p1 to p99 in stops: how much usable range the shot actually has.");
-        probeLine("probeDisplay", "Display",
-                  "Luma percentiles after the full pipeline at NEUTRAL grade, in your current Output Encode: 1st, 50th, 99th. This is the space Lift/Gamma/Gain work in, so these are the numbers a black-point or highlight target would be set against. No LUT is applied.");
-        probeLine("probeShape", "Shape",
-                  "'hot' is the share above 1.0 in display - bright, but it pulls back fine if the range was captured. 'pin' is the share of the frame sitting ON the source ceiling, with that ceiling's code value after the @ - this is clipping at the sensor, where no exposure move brings anything back. Measured against the clip's own maximum rather than 1.0, because log formats don't all reach the top of the code range (Blackmagic peaks near 0.75). A low pin % means the highlights roll off and the range was captured; a high one means they are stacked on the ceiling and gone. 'sat' is mean HSV saturation over mid-tones only, which is what a Density move would act on.");
-        PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");
-        apply->setLabels("Auto Grade", "Auto Grade", "Auto Grade");
-        apply->setHint("Experimental. Analyses the frame, applies the Cinematic Film Emulation look, and sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
-        apply->setParent(*gAuto);
-        page->addChild(*apply);
-
-        page->addChild(*defineSlider(p_Desc, "autoBias", "Bias",
-            "Which way Auto Grade leans when you press it. 0 uses the measured result as-is. Negative tames the highlights - more Highlight Rolloff, shadows sitting lower - for a shot with blown windows or hot speculars. Positive opens the image up - more Lift, less rolloff - for something dark you want to breathe. Gain is never touched by this: it is set from the measured exposure and that part is not a matter of taste. Set this BEFORE pressing Auto Grade; it is an input to the button, not a live control.",
-            0.0, -1.0, 1.0, 0.01, gAuto));
-
-        probeLine("probePeak", "Peak",
-                  "p99.9 in display, and how far it runs past p99. A compact blown specular - a window, a lamp - sits far above the bulk of the highlights and gives a high multiplier; a broad bright field like sunlit sand sits just above it. This is the shape of the top end rather than its size, which is what decides whether a shot wants Highlight Rolloff.");
-        probeLine("probeSubject", "Subject",
-                  "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
-        probeLine("probeApplied", "Applied",
-                  "What the Auto Grade button last wrote, and the measurement it came from. Blank until you press it. Analyze Frame never changes anything; only Auto Grade does.");
-    }
 }
 
 ImageEffect* OneGradeFactory::createInstance(OfxImageEffectHandle p_Handle, ContextEnum /*p_Context*/)
