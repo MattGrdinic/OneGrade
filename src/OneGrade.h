@@ -1,5 +1,6 @@
 // OneGrade — cross-platform OpenFX color grade plugin for DaVinci Resolve.
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 #include "ofxsImageEffect.h"

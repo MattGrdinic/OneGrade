@@ -1,5 +1,6 @@
 // OneGrade — Metal GPU kernel (Apple). Mirrors src/OneGradePipeline.h.
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 #import <Metal/Metal.h>
 #include <unordered_map>
 #include <mutex>

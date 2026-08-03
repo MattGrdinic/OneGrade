@@ -20,7 +20,10 @@ sampling, built-ins) · `FILM-EMULATION.md` (Cineon → print-stock path + prese
 `CREATING-LUTS.md` (authoring new built-in looks) · `GROUPS.md` (Node Role, the
 pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed) ·
 `AUTO-GRADE.md` (frame measurement, the Gain/Rolloff fits and the footage behind them,
-what is deliberately not set, and the traps found on the way).
+what is deliberately not set, and the traps found on the way). ·
+`ROADMAP.md` (deferred work with the reasoning kept: Match Clip and why adjacent
+clips aren't reachable, gamut compression for exact LUT export, declaring OFX 1.5 colour
+management).
 
 ## The golden rule
 `src/OneGradePipeline.h` (namespace `pg`, CPU) is the **single source of truth** for all
@@ -585,6 +588,16 @@ target 0.42" is a measurement) · skin is most of what "pleasing" means and a lu
 can't find it — a hue-window mask is the biggest quality lever, design for it early.
 
 ## Likely next tasks
+**`docs/ROADMAP.md` is now the single place for deferred work** — it carries the reasoning,
+not just the title, so each item restarts from its conclusion. Read it before re-opening any
+of these. Highlights below; the roadmap has the measurements.
+
+**Match Clip (deferred 2026-08-03, Marc Wielage's idea):** built as a probe, then removed.
+OFX has no timeline concept, so the only way outside the current clip is fetching at another
+time — which makes the user do frame arithmetic. Dropped on shape, not on result. The
+replacement design is **Grab Reference** (measure any shot, match another to it): no temporal
+access, any two clips, reuses `probeAnalyze`. Probe code recoverable from commit `0bbca39`.
+
 **Rolloff smoothness on Gen 5 (user's active thread):** the Highlight Rolloff softclip is
 not yet as smooth as the "Blackmagic Gen 5 Film to Video" LUT, which is the stated target
 for the default Gen 5 path (Cinematic Film preset). Candidates: tune softclip knee/curve,

@@ -1,5 +1,6 @@
 // OneGrade — OpenCL GPU kernel (buffers). Mirrors src/OneGradePipeline.h.
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 #ifdef _WIN64
 #include <Windows.h>

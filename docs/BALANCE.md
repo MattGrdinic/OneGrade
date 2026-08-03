@@ -6,14 +6,14 @@ tone." They are deliberately different math, because casts have different causes
 
 | Control | Where it acts | Math | Best for |
 |---|---|---|---|
-| **RAW Temperature** (Kelvin) | XYZ, right after camera decode | Bradford chromatic adaptation | true white-balance errors (wrong WB at the shoot) |
+| **Scene White Balance** (Kelvin) | XYZ, right after camera decode | Bradford chromatic adaptation | true white-balance errors (wrong WB at the shoot) |
 | **Gain Temp / Gain Tint** | DWG linear, multiplicative | per-channel multiply | casts that live in the highlights; neutralizing lights |
 | **Offset Temp / Offset Tint** | DWG linear, additive | per-channel add | stubborn casts that sit evenly across all tones |
 
 All of this is steps 0 and 3 of `og::process()` in
 [src/OneGradePipeline.h](../src/OneGradePipeline.h), mirrored in the kernels.
 
-## 1. RAW Temperature — physically real white balance
+## 1. Scene White Balance — physically real white balance
 
 This mirrors the Camera RAW tab's Temp control so that tab can stay untouched. It runs
 in **CIE XYZ immediately after the camera decode** — the closest the plugin can get to
