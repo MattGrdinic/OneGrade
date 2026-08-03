@@ -54,7 +54,7 @@
 // reappears and toggles the rest at runtime, which is the mode to be in when fitting new
 // constants or working out why a shot analysed oddly — the numbers are how every one of the
 // current fits was found. See docs/AUTO-GRADE.md.
-static const bool kAnalysisDebugUI = true;    // ON: fitting the Clean auto-grade constants
+static const bool kAnalysisDebugUI = false;
 
 #define kParamCount 13 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff
 
@@ -380,7 +380,8 @@ public:
     void probeSetup(double p_Time);     // is the input actually camera log? + what the host says
     void applyAutoGrade(double p_Time);      // measure, then set the film look + Gain from key
     void applyAutoGradeClean(double p_Time); // measure, then contain the range with no LUT
-    void applyBias();                   // re-derive Rolloff/Lift from the cached measurement
+    void applyBias();                   // offset the grade by Bias, relative to the anchor
+    void armBias();                     // store the current grade as Bias's zero point
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
     double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
     double m_LastGain = 0.80;           // Gain the measurement asked for (bias moves off this)
@@ -393,7 +394,6 @@ public:
     double m_LastD50 = 0.0;
     double m_LastD99 = 0.0;
     bool   m_HaveKey = false;
-    bool   m_AutoApplied = false;       // has Auto Grade run? gates the live Bias drag
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
     void setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
@@ -449,6 +449,14 @@ private:
     OFX::StringParam* m_ProbeShape;
     OFX::StringParam* m_ProbeSubject;
     OFX::DoubleParam* m_AutoBias;
+    // Bias anchor — the grade Bias offsets FROM. Saved with the project (hidden), so the
+    // slider still works after a reload and needs no instance state at all.
+    OFX::BooleanParam* m_BiasArmed;
+    OFX::DoubleParam*  m_BiasGain;
+    OFX::DoubleParam*  m_BiasLift;
+    OFX::DoubleParam*  m_BiasGamma;
+    OFX::DoubleParam*  m_BiasRoll;
+    OFX::DoubleParam*  m_BiasHot;
     OFX::BooleanParam* m_ShowAnalysis;
     OFX::PushButtonParam* m_ProbeBtn;
     OFX::PushButtonParam* m_CleanBtn;
@@ -516,6 +524,12 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeShape   = fetchStringParam("probeShape");
     m_ProbeSubject = fetchStringParam("probeSubject");
     m_AutoBias     = fetchDoubleParam("autoBias");
+    m_BiasArmed    = fetchBooleanParam("biasArmed");
+    m_BiasGain     = fetchDoubleParam("biasGain");
+    m_BiasLift     = fetchDoubleParam("biasLift");
+    m_BiasGamma    = fetchDoubleParam("biasGamma");
+    m_BiasRoll     = fetchDoubleParam("biasRoll");
+    m_BiasHot      = fetchDoubleParam("biasHot");
     m_ShowAnalysis = fetchBooleanParam("showAnalysis");
     m_ProbeBtn     = fetchPushButtonParam("probeAnalyze");
     m_CleanBtn      = fetchPushButtonParam("autoGradeClean");
@@ -952,9 +966,20 @@ void OneGrade::applyAutoGrade(double p_Time)
     // Evidenced by ONE non-zero point, so it is a line through the origin; three controls
     // sit correctly at zero. Cap short of 1.0 - beyond ~0.8 the shoulder starts eating
     // diffuse white, and no measured shot came near it.
-    m_LastGain = gain;   // applyBias() writes it, so a Bias drag stays anchored to this
-    m_AutoApplied = true;
-    applyBias();                       // sets Rolloff + Lift, and writes the Applied line
+    // Rolloff from source clipping, the one fit evidenced across shots. Set here rather than
+    // inside applyBias(), which is now a relative offset and no longer owns any absolute value.
+    const double rolloff = std::min(0.80, std::max(0.00, 0.090 * m_LastPin));
+    m_Gain->setValue(gain);
+    m_Rolloff->setValue(rolloff);
+    m_LastGain = gain;
+
+    armBias();                         // this grade becomes Bias's zero point
+    applyBias();                       // then honour whatever Bias is currently set to
+
+    char msg[128];
+    snprintf(msg, sizeof msg, "Creative G %.3f (key %+.2f)  Roll %.3f (pin %.1f%%)",
+             gain, m_LastKey, rolloff, m_LastPin);
+    m_ProbeApplied->setValue(msg);
     setEnabledness();                  // the preset switches LUT Mode
 }
 
@@ -1024,7 +1049,7 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     m_Density->setValue(0.0);
     m_PostCon->setValue(1.0);
 
-    double tHigh = 0.95, tLow = 0.02, tMid = 0.42, midStr = 0.5, maxGain = 1.0, maxExp = 0.85;
+    double tHigh = 0.94, tLow = 0.05, tMid = 0.70, midStr = 0.838, maxGain = 2.0, maxExp = 0.85;
     m_CleanHigh->getValue(tHigh);
     m_CleanLow->getValue(tLow);
     m_CleanMid->getValue(tMid);
@@ -1038,7 +1063,7 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     //   overshoot k x max(0, ch99 - 1.0)    how far the channels run past display white
     // `hot` is ruled out twice over: it runs backwards, wanting more shoulder on the 35.6%-hot
     // beach than the 17.8%-hot office, which is already comfortable.
-    double shoulder = 0.476;
+    double shoulder = 0.216;
     m_CleanShoulder->getValue(shoulder);
     const double rolloff = std::min(0.80, std::max(0.00,
         std::max(0.090 * m_LastPin, shoulder * std::max(0.0, m_LastD99 - 1.0))));
@@ -1090,9 +1115,10 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     m_Rolloff->setValue(rolloff);
     m_PostExp->setValue(postExp);
 
-    // Bias stays anchored to this gain. m_AutoApplied stays FALSE on purpose: applyBias()
-    // re-derives Lift and Gamma from the FILM recipe's constants, which would undo the
-    // containment the moment the slider moved.
+    // Bias offsets from whatever this solve just wrote — see armBias(). It used to be unsafe
+    // to let Bias touch a Base grade at all, because applyBias() re-derived Lift and Gamma
+    // from the FILM recipe's constants and would have undone the containment on the first
+    // drag. Now that it is a relative offset from a saved anchor, both modes are fine.
     m_LastGain = gain;
 
     // Reports what the solve ACHIEVED, not what it aimed at, so an unreachable target is
@@ -1104,6 +1130,9 @@ void OneGrade::applyAutoGradeClean(double p_Time)
              chain(d50, lift, gain, postExp),
              chain(d99, lift, gain, postExp));
     m_ProbeApplied->setValue(msg);
+
+    armBias();                         // this grade becomes Bias's zero point
+    applyBias();
     setEnabledness();
 }
 
@@ -1144,60 +1173,67 @@ void OneGrade::applyAutoGradeClean(double p_Time)
 // better STATIC defaults -- footage-blind, but it cannot crash anything. See
 // docs/ROADMAP.md.
 
-// Bias: one slider trading highlight restraint against shadow openness, because the
-// measurement can only get a shot into the right neighbourhood — which end of that
+// BIAS — one slider trading highlight restraint against shadow openness, because a
+// measurement can only get a shot into the right neighbourhood; which end of that
 // neighbourhood you want is taste, and taste needs a knob rather than a constant.
-// Negative tames the top (more rolloff, shadows sit down); positive opens the bottom
-// (lift up, rolloff backed off). Zero is the fitted result.
 //
-// It moves Rolloff and Lift specifically because those are the two the user reached for in
-// exactly this situation: "add a touch of highlight rolloff until we bring the highlights
-// below 1023", and "lift darker images a bit". Gain deliberately stays on its measurement —
-// it's the one parameter with a hard physical anchor (distance from mid-gray), and letting
-// a taste control drag it would undo the part that works.
+//   negative -> protect: shoulder the top, deepen the floor, darken mids, pull gain
+//   positive -> open:    drop the shoulder, raise the floor, brighten mids and gain
 //
-// Split out of applyAutoGrade so a Bias drag can re-derive both values from the CACHED
-// measurement, with no re-analysis: it's pure arithmetic on two stored numbers, so it keeps
-// up with a drag. Gated on m_AutoApplied — dragging Bias on a node that was never
-// auto-graded must not silently stamp Lift and Rolloff. That flag and the cached
-// measurement are instance state, so after a project reload the slider goes inert until
-// Auto Grade is pressed again; deliberately inert rather than acting on a stale number.
+// IT IS A RELATIVE OFFSET FROM AN ANCHOR, not a recomputation. The first version wrote
+// ABSOLUTE values -- `lift = 0.11 + bias*0.06`, where 0.11 is the film preset's lift -- so it
+// stamped the film recipe over whatever grade was actually there. Harmless while Creative was
+// the only caller; wrong the moment Base existed, since Base solves its own lift. It also
+// hung off instance state, which made it silently
+// inert after a project reload.
+//
+// The anchor is five hidden params SAVED WITH THE PROJECT, so bias survives a restart and
+// works for both grade modes without either needing to know the other exists. Creative's
+// response is unchanged: at bias 0 the anchor holds exactly what Creative wrote, and the
+// deltas are the same constants as before.
+//
+// If bias is moved on a node that was never auto-graded, the CURRENT parameter values become
+// the anchor. That makes the slider work on a hand-built grade too, and it is safe because
+// changedParam fires before anything else has been touched.
+void OneGrade::armBias()
+{
+    m_BiasGain->setValue(m_Gain->getValue());
+    m_BiasLift->setValue(m_Lift->getValue());
+    m_BiasGamma->setValue(m_Gamma->getValue());
+    m_BiasRoll->setValue(m_Rolloff->getValue());
+    m_BiasHot->setValue(m_LastHot);
+    m_BiasArmed->setValue(true);
+}
+
 void OneGrade::applyBias()
 {
-    if (!m_AutoApplied) return;
-    double bias = 0.0; m_AutoBias->getValue(bias);
+    bool armed = false;
+    m_BiasArmed->getValue(armed);
+    if (!armed) armBias();          // adopt whatever is on the node right now
 
-    // One slider, the whole tonal range. Bias moves all four together so the result stays a
-    // coherent picture rather than a lifted floor on an unchanged image — the first version
-    // drove Lift and Rolloff only, and since Rolloff clamps at 0 for positive bias, opening
-    // a shot up visibly did nothing but raise the floor.
-    //   negative -> protect: shoulder the top, deepen the floor, darken mids, pull gain
-    //   positive -> open:    drop the shoulder, raise the floor, brighten mids and gain
-    //
-    // Gain's response is the one that's measurement-modulated. Brightening a frame that
-    // already has a third of itself above display white just pushes more of it past clipping,
-    // so the positive direction is scaled by remaining headroom and fades to nothing by ~40%
-    // hot. The negative direction is never scaled: pulling gain down is always safe.
-    const double headroom = std::max(0.0, 1.0 - m_LastHot / 40.0);
+    double bias = 0.0; m_AutoBias->getValue(bias);
+    double aGain = 1.0, aLift = 0.0, aGamma = 1.0, aRoll = 0.0, aHot = 0.0;
+    m_BiasGain->getValue(aGain);
+    m_BiasLift->getValue(aLift);
+    m_BiasGamma->getValue(aGamma);
+    m_BiasRoll->getValue(aRoll);
+    m_BiasHot->getValue(aHot);
+
+    // Gain's response is measurement-modulated in one direction only. Brightening a frame
+    // that already has a third of itself above display white just pushes more past clipping,
+    // so the positive direction fades out with remaining headroom and is gone by ~40% hot.
+    // The negative direction is never scaled: pulling gain down is always safe.
+    const double headroom  = std::max(0.0, 1.0 - aHot / 40.0);
     const double gainDelta = (bias >= 0.0) ? bias * 0.08 * headroom : bias * 0.08;
 
-    const double rolloff = std::min(0.80, std::max(0.00, 0.090 * m_LastPin - bias * 0.35));
-    const double lift    = std::min(0.50, std::max(-0.50, 0.11 + bias * 0.06));
-    const double gamma   = std::min(3.00, std::max(0.20, 1.00 + bias * 0.12));
-    const double gain    = std::min(1.20, std::max(0.20, m_LastGain + gainDelta));
+    const double rolloff = std::min(0.80, std::max(0.00, aRoll  - bias * 0.35));
+    const double lift    = std::min(0.50, std::max(-0.50, aLift  + bias * 0.06));
+    const double gamma   = std::min(3.00, std::max(0.20, aGamma + bias * 0.12));
+    const double gain    = std::min(3.00, std::max(0.20, aGain  + gainDelta));
     m_Rolloff->setValue(rolloff);
     m_Lift->setValue(lift);
     m_Gamma->setValue(gamma);
     m_Gain->setValue(gain);
-
-    char msg[128];
-    if (bias != 0.0)
-        snprintf(msg, sizeof msg, "G %.3f Gam %.3f L %.3f R %.3f  bias %+.2f",
-                 gain, gamma, lift, rolloff, bias);
-    else
-        snprintf(msg, sizeof msg, "Gain %.3f (key %+.2f)  Roll %.3f (pin %.1f%%)",
-                 gain, m_LastKey, rolloff, m_LastPin);
-    m_ProbeApplied->setValue(msg);
 }
 
 void OneGrade::setEnabledness()
@@ -1847,6 +1883,21 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "Luma percentiles after the full pipeline at NEUTRAL grade, in your current Output Encode: 1st, 50th, 99th. This is the space Lift/Gamma/Gain work in, so these are the numbers a black-point or highlight target would be set against. No LUT is applied.");
         probeLine("probeShape", "Shape",
                   "'hot' is the share above 1.0 in display - bright, but it pulls back fine if the range was captured. 'pin' is the share of the frame sitting ON the source ceiling, with that ceiling's code value after the @ - this is clipping at the sensor, where no exposure move brings anything back. Measured against the clip's own maximum rather than 1.0, because log formats don't all reach the top of the code range (Blackmagic peaks near 0.75). A low pin % means the highlights roll off and the range was captured; a high one means they are stacked on the ceiling and gone. 'sat' is mean HSV saturation over mid-tones only, which is what a Density move would act on.");
+        // Bias anchor: hidden, saved with the project. See applyBias().
+        {
+            BooleanParamDescriptor* ba = p_Desc.defineBooleanParam("biasArmed");
+            ba->setDefault(false); ba->setIsSecret(true); ba->setParent(*gAuto);
+            page->addChild(*ba);
+            auto anch = [&](const char* n, double def) {
+                DoubleParamDescriptor* d = p_Desc.defineDoubleParam(n);
+                d->setDefault(def); d->setRange(-1e6, 1e6);
+                d->setIsSecret(true); d->setParent(*gAuto);
+                page->addChild(*d);
+            };
+            anch("biasGain", 1.0); anch("biasLift", 0.0); anch("biasGamma", 1.0);
+            anch("biasRoll", 0.0); anch("biasHot", 0.0);
+        }
+
         PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");
 
         // Two buttons, one pair: Base fixes the range, Creative applies a look. They are
@@ -1883,13 +1934,13 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             d->setIncrement(0.01); d->setParent(*gAuto);
             page->addChild(*d);
         };
-        tune("cleanHigh", "Target High", "Where the 99th percentile should land after grading, measured AFTER Highlight Rolloff. 0.95 fills the range without sitting on the clip point.", 0.95, 0.50, 1.00);
-        tune("cleanLow",  "Target Low",  "Where the 0.1st percentile - effectively the darkest part of the picture - should land. Just off zero, so shadows sit above black rather than crushing into it. This is deliberately a much deeper percentile than the highlight end uses: placing p1 here left 1% of the frame below the target and that 1% was visibly crushed.", 0.02, 0.00, 0.30);
-        tune("cleanMid",  "Target Mid",  "Where the median should land if the midtone solve were applied in full. Only a fraction of it is - see Mid Strength.", 0.42, 0.10, 0.90);
-        tune("cleanMaxGain","Max Gain","Ceiling on the Gain the solve may use. 1.0 means it can only ever darken, which is deliberate: a shot whose highlights sit below the target is not clipping, it is just dark, and brightening it destroys the intent. Raise above 1.0 only if you want genuinely underexposed footage pushed up.", 1.00, 0.50, 2.00);
+        tune("cleanHigh", "Target High", "Where the 99th percentile should land after grading, measured AFTER Highlight Rolloff. 0.95 fills the range without sitting on the clip point.", 0.94, 0.50, 1.00);
+        tune("cleanLow",  "Target Low",  "Where the 0.1st percentile - effectively the darkest part of the picture - should land. Just off zero, so shadows sit above black rather than crushing into it. This is deliberately a much deeper percentile than the highlight end uses: placing p1 here left 1% of the frame below the target and that 1% was visibly crushed.", 0.05, 0.00, 0.30);
+        tune("cleanMid",  "Target Mid",  "Where the median should land if the midtone solve were applied in full. Only a fraction of it is - see Mid Strength.", 0.70, 0.10, 0.90);
+        tune("cleanMaxGain","Max Gain","Ceiling on the Gain the solve may use. 1.0 means it can only ever darken, which is deliberate: a shot whose highlights sit below the target is not clipping, it is just dark, and brightening it destroys the intent. Raise above 1.0 only if you want genuinely underexposed footage pushed up.", 2.00, 0.50, 2.00);
         tune("cleanMaxExp","Max Exposure","The most Base may BRIGHTEN a shot, in stops. Darkening is never limited - pulling a blown frame down is always safe - but pushing a dark one up destroys a deliberately low-key image, and the solver cannot tell the difference: it only knows whether it reached the target. A dark car interior asked for +1.74 stops without this; the same shot graded by hand used +0.55.", 0.85, 0.00, 2.00);
-        tune("cleanShoulder","Shoulder","How much Highlight Rolloff to apply per unit of highlight overshoot - how far the channels run past display white before grading. This is the shoulder that stands in for a film stock's, since Lift/Gamma/Gain cannot make an S-curve on its own. Source clipping (pin) sets a floor underneath it. 0 disables the overshoot term and leaves rolloff on source clipping alone, which is what Creative uses.", 0.476, 0.00, 1.50);
-        tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.50, 0.00, 1.00);
+        tune("cleanShoulder","Shoulder","How much Highlight Rolloff to apply per unit of highlight overshoot - how far the channels run past display white before grading. This is the shoulder that stands in for a film stock's, since Lift/Gamma/Gain cannot make an S-curve on its own. Source clipping (pin) sets a floor underneath it. 0 disables the overshoot term and leaves rolloff on source clipping alone, which is what Creative uses.", 0.216, 0.00, 1.50);
+        tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.838, 0.00, 1.00);
 
         apply->setLabels("Creative Grade", "Creative Grade", "Creative Grade");
         apply->setHint("Analyses the frame and applies the Cinematic Film Emulation look on top - use this when you want a finished-looking image straight away rather than something to grade from. Sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
@@ -1897,7 +1948,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         page->addChild(*apply);
 
         page->addChild(*defineSlider(p_Desc, "autoBias", "Bias",
-            "Which way Auto Grade leans when you press it. 0 uses the measured result as-is. Negative protects the picture - shoulders the highlights, deepens the floor, darkens the mids and pulls Gain down - for a shot with blown windows or hot speculars. Positive opens it up - drops the shoulder, raises the floor, brightens the mids and Gain. It moves Lift, Gamma, Gain and Highlight Rolloff together so the whole tonal range stays coherent. The brightening half is limited by how much of the frame is already above white, so it will not push a blown shot further into clipping. Updates live once Auto Grade has been pressed - drag it and the image follows. It does nothing on a node that has not been auto-graded, and goes inert after a project reload until you press Auto Grade again.",
+            "Leans the result across the whole tonal range. Negative protects the highlights (shoulder up, floor down, mids darker, gain pulled); positive opens the image up (floor and mids up, shoulder off). Zero is the grade exactly as Base or Creative left it. It is an OFFSET from that grade rather than a recalculation, so it works with either button, keeps working after the project is reopened, and can be used on a grade you built by hand - the first move adopts the current settings as its zero point.",
             0.0, -1.0, 1.0, 0.01, gAuto));
 
         probeLine("probePeak", "Peak",
