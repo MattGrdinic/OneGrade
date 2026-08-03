@@ -367,6 +367,7 @@ private:
     OFX::StringParam* m_ProbeScene;
     OFX::StringParam* m_ProbeDisplay;
     OFX::StringParam* m_ProbeShape;
+    OFX::StringParam* m_ProbeSubject;
 };
 
 OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
@@ -403,6 +404,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeScene   = fetchStringParam("probeScene");
     m_ProbeDisplay = fetchStringParam("probeDisplay");
     m_ProbeShape   = fetchStringParam("probeShape");
+    m_ProbeSubject = fetchStringParam("probeSubject");
 
     populateLookLut();
     setEnabledness();
@@ -459,6 +461,7 @@ void OneGrade::probeAnalyze(double p_Time)
     m_ProbeScene->setValue("");
     m_ProbeDisplay->setValue("");
     m_ProbeShape->setValue("");
+    m_ProbeSubject->setValue("");
     if (!m_SrcClip || !m_SrcClip->isConnected()) { m_ProbeStatus->setValue("No source clip connected"); return; }
 
     try {
@@ -477,17 +480,22 @@ void OneGrade::probeAnalyze(double p_Time)
         // Measure the NEUTRAL node: the analysis has to describe the footage, not the grade
         // already on it, or clicking twice would chase its own tail. Camera and Output
         // Encode are the user's, since they decide what space the numbers even mean.
-        int camera = 0, encode = 0;
+        int camera = 0, encode = 0, lutMode = 0;
         m_Camera->getValue(camera);
         m_Encode->getValue(encode);
+        m_LutMode->getValue(lutMode);
+        // Use the EFFECTIVE encode, the same override the render applies: with a LUT
+        // selected the Output Encode param is not what gets rendered, so measuring against
+        // it would report a display curve the user is not looking at.
+        if (lutSelected()) encode = (lutMode == 2) ? 3 : 0;
         float neutral[kParamCount] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
 
         // Coarse grid, ~200k samples: percentiles don't need every pixel, and a button that
         // stalls the UI on an 8K frame is its own kind of failure.
         const int step = std::max(1, (int)(std::sqrt((double)(w * h) / 200000.0) + 0.5));
-        std::vector<float> sceneY, dispL;
+        std::vector<float> sceneY, dispL, skinY;
         sceneY.reserve(220000); dispL.reserve(220000);
-        long long clipped = 0;
+        long long hot = 0, srcClip = 0;
         double satSum = 0.0; long long satN = 0;
         bool anyNonZero = false;
 
@@ -497,6 +505,11 @@ void OneGrade::probeAnalyze(double p_Time)
             for (int x = 0; x < w; x += step) {
                 const float* p = row + (size_t)x * 4;
                 if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) anyNonZero = true;
+                // Clipped at the SOURCE — a log code pinned at the top of its range means
+                // the sensor ran out and the detail is gone. Distinct from 'hot', which is
+                // merely bright in display and pulls back fine if the range was captured.
+                // This is the difference between "overexposed, recoverable" and "lost".
+                if (p[0] >= 0.995f || p[1] >= 0.995f || p[2] >= 0.995f) ++srcClip;
 
                 // Scene luminance: decode to camera-linear, then XYZ Y. Neutral RAW, so no
                 // exposure gain and white_balance() at 6500 is identity — skipped, not
@@ -510,14 +523,22 @@ void OneGrade::probeAnalyze(double p_Time)
                 og::process(camera, encode, neutral, p[0], p[1], p[2], dr, dg, db);
                 const float L = 0.2126f*dr + 0.7152f*dg + 0.0722f*db;
                 dispL.push_back(L);
-                if (L > 0.95f) ++clipped;
+                if (L > 1.0f) ++hot;   // above display white: lost on export unless rolled off
 
+                float hh, ss, vv; og::rgb2hsv(dr, dg, db, hh, ss, vv);
                 // Saturation on mid-tones only: shadows and blown highlights both report
                 // meaningless saturation, and it's the mids that a Density move addresses.
-                if (L > 0.15f && L < 0.85f) {
-                    float hh, ss, vv; og::rgb2hsv(dr, dg, db, hh, ss, vv);
-                    satSum += ss; ++satN;
-                }
+                if (L > 0.15f && L < 0.85f) { satSum += ss; ++satN; }
+
+                // Crude skin mask: warm hue, moderate saturation, not crushed or blown.
+                // Exists because frame-median exposure is subject-blind — a dark interior
+                // drags the median down and asks for a push that would blow the windows
+                // and overexpose a face that was already fine. Deliberately reported with
+                // its own coverage %, because this mask cannot tell skin from sand: on a
+                // desert shot it will match most of the frame, and that is the tell.
+                if (hh >= 0.01f && hh <= 0.11f && ss >= 0.15f && ss <= 0.55f &&
+                    vv >= 0.15f && vv <= 0.95f)
+                    skinY.push_back(xyz[1]);
             }
         }
         const size_t n = dispL.size();
@@ -548,9 +569,22 @@ void OneGrade::probeAnalyze(double p_Time)
         m_ProbeScene->setValue(m2);
         snprintf(m2, sizeof m2, "p1 %.3f  p50 %.3f  p99 %.3f", d1, d50, d99);
         m_ProbeDisplay->setValue(m2);
-        snprintf(m2, sizeof m2, "clip %.2f%%  sat %.3f", 100.0 * (double)clipped / (double)n,
+        snprintf(m2, sizeof m2, "hot %.1f%%  src %.2f%%  sat %.3f",
+                 100.0 * (double)hot / (double)n, 100.0 * (double)srcClip / (double)n,
                  satN ? satSum / (double)satN : 0.0);
         m_ProbeShape->setValue(m2);
+
+        // Subject key: the same exposure question asked of skin-toned pixels only. Where
+        // the two keys disagree, the frame median is the one that's wrong.
+        const double skinFrac = 100.0 * (double)skinY.size() / (double)n;
+        if (skinY.size() >= 200) {
+            const double sy = pct(skinY, 0.50);
+            const double skey = (sy > 1e-6) ? std::log2(0.18 / sy) : 0.0;
+            snprintf(m2, sizeof m2, "skin %.1f%%  Y %.4f  key %+.2f EV", skinFrac, sy, skey);
+        } else {
+            snprintf(m2, sizeof m2, "skin %.1f%% - too few to trust", skinFrac);
+        }
+        m_ProbeSubject->setValue(m2);
     }
     catch (std::exception& e) {
         char m2[96]; snprintf(m2, sizeof m2, "threw: %.60s", e.what());
@@ -1171,7 +1205,9 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         probeLine("probeDisplay", "Display",
                   "Luma percentiles after the full pipeline at NEUTRAL grade, in your current Output Encode: 1st, 50th, 99th. This is the space Lift/Gamma/Gain work in, so these are the numbers a black-point or highlight target would be set against. No LUT is applied.");
         probeLine("probeShape", "Shape",
-                  "'clip' is the share of samples above 0.95 in display - how much is already at or near white. 'sat' is mean HSV saturation over mid-tones only (shadows and blown highlights report meaningless saturation), which is what a Density move would act on.");
+                  "'hot' is the share above 1.0 in display - bright, but it pulls back fine if the range was captured. 'src' is the share clipped at the SOURCE, where the camera log is pinned at the top of its range and the detail is genuinely gone. High hot with low src means overexposed and recoverable; high src means no exposure move will bring it back. 'sat' is mean HSV saturation over mid-tones only, which is what a Density move would act on.");
+        probeLine("probeSubject", "Subject",
+                  "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
     }
 }
 

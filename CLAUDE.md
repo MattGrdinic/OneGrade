@@ -408,7 +408,30 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
    Camera + Output Encode. Measuring the *neutral* node is deliberate: analysing the graded
    result would make a second click chase its own tail. Percentiles via `nth_element` over
    the kept samples (~200k, under a megabyte) rather than a histogram — no binning error.
-   Reports Y50 / key EV / DR stops, display p1-p50-p99, clip % and mid-tone saturation.
+   Reports Y50 / key EV / DR stops, display p1-p50-p99, hot/src/sat, and a subject row.
+
+   **`key` VALIDATED on footage (4 shots, 2026-08-02).** It orders exposure correctly
+   across ~4 stops: overexposed cactus **-1.79 EV** (Y50 0.62) · bright interview **-1.05**
+   · golden-hour desert **-0.79** · dark car interior **+2.37** (Y50 0.035). Direction and
+   magnitude both read the way a colorist would call it, so it's a sound basis for step 3.
+
+   **Two things that footage taught us, both now measured:**
+   - **`hot` (bright in display) is NOT `src` (clipped at the sensor).** The user's cactus
+     shot is 36% hot but "we had the range on camera" — pulling exposure down recovers it.
+     A shot pinned at the top of its log range does not recover at any exposure. `src`
+     counts input samples ≥ 0.995, and it's the difference between "overexposed" and
+     "lost". Any auto-exposure that ignores this will happily "fix" unrecoverable frames.
+   - **Frame-median exposure is subject-blind.** The car-interior shot asks for **+2.37 EV**
+     because a dark interior dominates the frame — applying it would blow the windows and
+     overexpose a face that was already fine. Hence the Subject row: the same key asked of
+     skin-toned pixels only, with its coverage % alongside. **The mask cannot tell skin from
+     sand** — on a desert shot it matches most of the frame, and a high coverage % is the
+     tell that the number means nothing. Where the two keys disagree, frame median is wrong.
+
+   Display stats use the **effective** encode (same LUT override as the render), not the
+   Output Encode param — with a LUT on, the param isn't what's being rendered. The Scene
+   row (Y50/key/DR) is encode-independent and is the robust one to build heuristics on;
+   the Display row shifts with the encode and is only comparable between shots that share it.
 3. **Wire the unambiguous params** — exposure (median to target), lift (1st percentile to a
    *lifted* floor, not 0), gain (99.5th just under clip), rolloff (from energy above the
    knee — the one that genuinely NEEDS analysis; a fixed knee can't know).
