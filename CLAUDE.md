@@ -416,17 +416,31 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
    magnitude both read the way a colorist would call it, so it's a sound basis for step 3.
 
    **Two things that footage taught us, both now measured:**
-   - **`hot` (bright in display) is NOT `src` (clipped at the sensor).** The user's cactus
+   - **`hot` (bright in display) is NOT `pin` (clipped at the sensor).** The user's cactus
      shot is 36% hot but "we had the range on camera" — pulling exposure down recovers it.
-     A shot pinned at the top of its log range does not recover at any exposure. `src`
-     counts input samples ≥ 0.995, and it's the difference between "overexposed" and
-     "lost". Any auto-exposure that ignores this will happily "fix" unrecoverable frames.
+     A shot pinned at the top of its log range does not recover at any exposure. Any
+     auto-exposure that ignores this will happily "fix" unrecoverable frames.
+     **Do NOT test source clipping against 1.0.** First attempt used `>= 0.995` and was
+     wrong: a raw waveform with the node disabled showed **Blackmagic log peaking at
+     ~768/1023 ≈ 0.75** with a textured, unpinned top. A fixed 1.0-ish threshold therefore
+     reports 0% on *every* Blackmagic shot, blown ones included. What identifies clipping is
+     a **pile-up at whatever this clip's own maximum is** — a real highlight rolls off with
+     falling density, a clipped one stacks samples on the ceiling. So `pin` = share within
+     `max(0.002, srcMax*0.004)` of the observed max, reported as `pin %@srcMax`.
+     Generalises across cameras and log formats for free.
    - **Frame-median exposure is subject-blind.** The car-interior shot asks for **+2.37 EV**
      because a dark interior dominates the frame — applying it would blow the windows and
      overexpose a face that was already fine. Hence the Subject row: the same key asked of
      skin-toned pixels only, with its coverage % alongside. **The mask cannot tell skin from
      sand** — on a desert shot it matches most of the frame, and a high coverage % is the
      tell that the number means nothing. Where the two keys disagree, frame median is wrong.
+
+   **The Scene row is grade-independent — confirmed by accident and worth relying on.** The
+   same cactus frame read `Y50 0.6236 / key -1.79 / DR 6.5` both ungraded and with a Custom
+   Look at Mix 1.0, while the Display row moved (p1 0.126 -> 0.201, the LUT lifting blacks).
+   So Analyze can be clicked on an already-graded node and still describe the *footage* — no
+   tail-chasing, no "only use on a fresh node" caveat needed in the UI. Exposure, DR and the
+   subject key come from the Scene row; only black-point and rolloff targets need Display.
 
    Display stats use the **effective** encode (same LUT override as the render), not the
    Output Encode param — with a LUT on, the param isn't what's being rendered. The Scene

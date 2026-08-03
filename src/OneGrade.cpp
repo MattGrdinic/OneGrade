@@ -495,7 +495,9 @@ void OneGrade::probeAnalyze(double p_Time)
         const int step = std::max(1, (int)(std::sqrt((double)(w * h) / 200000.0) + 0.5));
         std::vector<float> sceneY, dispL, skinY;
         sceneY.reserve(220000); dispL.reserve(220000);
-        long long hot = 0, srcClip = 0;
+        long long hot = 0;
+        std::vector<float> srcTop;   // per-sample max input channel, for ceiling detection
+        srcTop.reserve(220000);
         double satSum = 0.0; long long satN = 0;
         bool anyNonZero = false;
 
@@ -505,11 +507,7 @@ void OneGrade::probeAnalyze(double p_Time)
             for (int x = 0; x < w; x += step) {
                 const float* p = row + (size_t)x * 4;
                 if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) anyNonZero = true;
-                // Clipped at the SOURCE — a log code pinned at the top of its range means
-                // the sensor ran out and the detail is gone. Distinct from 'hot', which is
-                // merely bright in display and pulls back fine if the range was captured.
-                // This is the difference between "overexposed, recoverable" and "lost".
-                if (p[0] >= 0.995f || p[1] >= 0.995f || p[2] >= 0.995f) ++srcClip;
+                srcTop.push_back(std::max(p[0], std::max(p[1], p[2])));
 
                 // Scene luminance: decode to camera-linear, then XYZ Y. Neutral RAW, so no
                 // exposure gain and white_balance() at 6500 is identity — skipped, not
@@ -569,9 +567,22 @@ void OneGrade::probeAnalyze(double p_Time)
         m_ProbeScene->setValue(m2);
         snprintf(m2, sizeof m2, "p1 %.3f  p50 %.3f  p99 %.3f", d1, d50, d99);
         m_ProbeDisplay->setValue(m2);
-        snprintf(m2, sizeof m2, "hot %.1f%%  src %.2f%%  sat %.3f",
-                 100.0 * (double)hot / (double)n, 100.0 * (double)srcClip / (double)n,
-                 satN ? satSum / (double)satN : 0.0);
+        // Source clipping, measured against the CLIP'S OWN ceiling rather than an assumed
+        // 1.0. Blackmagic log peaks around 0.75 of the code range (confirmed on a waveform
+        // with the node disabled), so a fixed "> 0.995" test reports 0% on every Blackmagic
+        // shot — including genuinely blown ones. What actually identifies clipping is a
+        // PILE-UP at whatever the top of this clip's distribution happens to be: a real
+        // highlight rolls off with falling density, a clipped one stacks samples on the
+        // ceiling. So: find the max, then count how much of the frame is sitting on it.
+        float srcMax = 0.f;
+        for (float v : srcTop) if (v > srcMax) srcMax = v;
+        const float eps = std::max(0.002f, srcMax * 0.004f);
+        long long pinned = 0;
+        for (float v : srcTop) if (v >= srcMax - eps) ++pinned;
+
+        snprintf(m2, sizeof m2, "hot %.1f%%  pin %.2f%%@%.3f  sat %.3f",
+                 100.0 * (double)hot / (double)n, 100.0 * (double)pinned / (double)n,
+                 srcMax, satN ? satSum / (double)satN : 0.0);
         m_ProbeShape->setValue(m2);
 
         // Subject key: the same exposure question asked of skin-toned pixels only. Where
@@ -1205,7 +1216,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         probeLine("probeDisplay", "Display",
                   "Luma percentiles after the full pipeline at NEUTRAL grade, in your current Output Encode: 1st, 50th, 99th. This is the space Lift/Gamma/Gain work in, so these are the numbers a black-point or highlight target would be set against. No LUT is applied.");
         probeLine("probeShape", "Shape",
-                  "'hot' is the share above 1.0 in display - bright, but it pulls back fine if the range was captured. 'src' is the share clipped at the SOURCE, where the camera log is pinned at the top of its range and the detail is genuinely gone. High hot with low src means overexposed and recoverable; high src means no exposure move will bring it back. 'sat' is mean HSV saturation over mid-tones only, which is what a Density move would act on.");
+                  "'hot' is the share above 1.0 in display - bright, but it pulls back fine if the range was captured. 'pin' is the share of the frame sitting ON the source ceiling, with that ceiling's code value after the @ - this is clipping at the sensor, where no exposure move brings anything back. Measured against the clip's own maximum rather than 1.0, because log formats don't all reach the top of the code range (Blackmagic peaks near 0.75). A low pin % means the highlights roll off and the range was captured; a high one means they are stacked on the ceiling and gone. 'sat' is mean HSV saturation over mid-tones only, which is what a Density move would act on.");
         probeLine("probeSubject", "Subject",
                   "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
     }
