@@ -1097,8 +1097,6 @@ void OneGrade::applyAutoGradeClean(double p_Time)
         gain = og_solve(0.05, 3.0, tHigh, [&](double g) { return withRolloff(og_grade_display(d99, lift, gamma, g)); });
         if (gain > maxGain) gain = maxGain;
         lift = og_solve(-0.5, 0.5, tLow,  [&](double l) { return og_grade_display(d01, l, gamma, gain); });
-        const double gSolved = og_solve(0.2, 3.0, tMid, [&](double gm) { return og_grade_display(d50, lift, gm, gain); });
-        gamma = 1.0 + midStr * (gSolved - 1.0);
     }
 
     // THE MIDTONE MOVES WITH POST EXPOSURE, NOT GAMMA -- the structural lesson from Creative.
@@ -1161,17 +1159,34 @@ void OneGrade::applyAutoGradeClean(double p_Time)
             a01 = q(0.001); a50 = q(0.50); a99 = q(0.99);
         };
 
-        // Apply, measure, edit, repeat — capped at 20 passes. It normally settles in two or
-        // three; the cap only exists so an unreachable target (Gain pinned at its ceiling on
-        // a very dark shot, say) can't spin. The BEST result is kept rather than the last,
+        // Apply, measure, edit, repeat — capped at 6 passes. It normally settles in two or
+        // three, and past that the remaining error is structural rather than something more
+        // passes fix, so a low cap costs nothing and keeps the button responsive. The BEST result is kept rather than the last,
         // so a late step that overshoots can never make the outcome worse than an earlier
         // one — the loop is allowed to fail to improve, never to regress.
         double bestErr = 1e9, bg = gain, bl = lift, bgm = gamma, bpe = postExp;
         double lastErr = 1e9;
         int stalled = 0;
-        for (iters = 1; iters <= 20; ++iters) {
+        double tMidEff = tMid;
+        for (iters = 1; iters <= 6; ++iters) {
             measure(gain, lift, gamma);
-            const double eHigh = tHigh - a99, eLow = tLow - a01, eMid = tMid - a50;
+
+            // MID STRENGTH HAS TO MOVE THE TARGET, NOT THE STEP. Damping the correction does
+            // nothing in a loop that iterates until the error is small -- it only changes how
+            // many passes it takes to arrive at exactly the same place. That was the bug: every
+            // shot was being driven to Target Mid no matter what Mid Strength said, so the
+            // office's naturally bright midtone was pulled down to 0.42 like everything else,
+            // and swapping gamma for post-exposure changed the vehicle while the destination
+            // stayed put ("about the same result").
+            //
+            // Now the shot's OWN midtone, measured on the first pass with post-exposure still
+            // at zero, is blended toward the target in stops. Mid Strength 0 keeps the shot
+            // exactly as exposed, 1 forces it to the target, 0.5 splits the difference -- which
+            // is what the control always claimed to do.
+            if (iters == 1 && a50 > 1e-4 && tMid > 1e-4)
+                tMidEff = a50 * std::pow(tMid / a50, midStr);
+
+            const double eHigh = tHigh - a99, eLow = tLow - a01, eMid = tMidEff - a50;
             const double err = std::fabs(eHigh) + std::fabs(eLow) + 0.5 * std::fabs(eMid);
             if (err < bestErr) { bestErr = err; bg = gain; bl = lift; bgm = gamma; bpe = postExp; }
 
@@ -1195,8 +1210,8 @@ void OneGrade::applyAutoGradeClean(double p_Time)
             // log2 of the ratio. midStr backs it off, for the same reason it backed gamma off
             // -- a deliberately dark shot should stay dark, and driving every median to the
             // same number is the mistake this feature has already had to unlearn once.
-            if (a50 > 1e-4 && tMid > 1e-4) {
-                const double want = std::log2(tMid / a50) * midStr;
+            if (a50 > 1e-4 && tMidEff > 1e-4) {
+                const double want = std::log2(tMidEff / a50);
                 postExp = std::min(2.0, std::max(-2.0, postExp + damp * want));
             }
         }
