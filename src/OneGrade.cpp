@@ -457,6 +457,7 @@ private:
     OFX::DoubleParam* m_CleanMid;      // where p50 should land
     OFX::DoubleParam* m_CleanMidStr;   // how much of the midtone solve to apply
     OFX::DoubleParam* m_CleanMaxGain;  // ceiling on Gain: 1.0 = never brighten
+    OFX::DoubleParam* m_CleanShoulder; // rolloff per unit of highlight overshoot
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 
@@ -522,6 +523,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_CleanMid      = fetchDoubleParam("cleanMid");
     m_CleanMidStr   = fetchDoubleParam("cleanMidStr");
     m_CleanMaxGain  = fetchDoubleParam("cleanMaxGain");
+    m_CleanShoulder = fetchDoubleParam("cleanShoulder");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
@@ -1024,7 +1026,28 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     // solve placed. Ignoring it made the solve quietly undershoot: on an interview frame the
     // top was aimed at 0.90 and landed near 0.83, because a 6% pin drove Rolloff to ~0.55 and
     // the softclip ate the difference. Predict through it so the target means something.
-    const double rolloff = std::min(0.80, std::max(0.00, 0.090 * m_LastPin));
+    // ROLLOFF: the only shoulder Base has, and the reason it can look digital next to
+    // Creative. Lift/Gamma/Gain is a three-parameter family that cannot make an S-curve --
+    // gamma is one power law and cannot shape a toe and a shoulder independently -- so
+    // without a print LUT the softclip is what stands in for the film response.
+    //
+    // Two drivers, whichever asks for more:
+    //   pin       -- source-clipped patches, flat and detail-free, need softening. Fitted
+    //                for Creative (0.090 per %) where the print LUT already shouldered
+    //                everything else, so it is a FLOOR here, not the whole story.
+    //   overshoot -- how far the channels run past display white before the grade. This is
+    //                what a film stock's shoulder is actually for, and it is what Creative's
+    //                fit could not see because the LUT was doing the job.
+    //
+    // Evidenced by a hand-dialled value: the beach shot wanted 0.271 where pin gives 0.022
+    // (pin 0.25%, ch99 1.569). `hot` is ruled out again and for the same reason as in
+    // Creative -- it runs backwards, making the 35.6%-hot beach need more than the
+    // 17.8%-hot office, which already sits comfortably at 0.556.
+    double shoulder = 0.476;
+    m_CleanShoulder->getValue(shoulder);
+    const double rollPin  = 0.090 * m_LastPin;
+    const double rollOver = shoulder * std::max(0.0, m_LastD99 - 1.0);
+    const double rolloff  = std::min(0.80, std::max(0.00, std::max(rollPin, rollOver)));
     auto withRolloff = [&](double v) {
         return rolloff > 0.0 ? (double)og::softclip((float)v, (float)rolloff) : v;
     };
@@ -1258,6 +1281,7 @@ void OneGrade::setEnabledness()
     m_CleanMid->setIsSecret(!debug);
     m_CleanMidStr->setIsSecret(!debug);
     m_CleanMaxGain->setIsSecret(!debug);
+    m_CleanShoulder->setIsSecret(!debug);
 
     const bool lutOn = lutSelected();
     m_Encode->setEnabled(look && !lutOn);
@@ -1863,6 +1887,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         tune("cleanLow",  "Target Low",  "Where the 0.1st percentile - effectively the darkest part of the picture - should land. Just off zero, so shadows sit above black rather than crushing into it. This is deliberately a much deeper percentile than the highlight end uses: placing p1 here left 1% of the frame below the target and that 1% was visibly crushed.", 0.02, 0.00, 0.30);
         tune("cleanMid",  "Target Mid",  "Where the median should land if the midtone solve were applied in full. Only a fraction of it is - see Mid Strength.", 0.42, 0.10, 0.90);
         tune("cleanMaxGain","Max Gain","Ceiling on the Gain the solve may use. 1.0 means it can only ever darken, which is deliberate: a shot whose highlights sit below the target is not clipping, it is just dark, and brightening it destroys the intent. Raise above 1.0 only if you want genuinely underexposed footage pushed up.", 1.00, 0.50, 2.00);
+        tune("cleanShoulder","Shoulder","How much Highlight Rolloff to apply per unit of highlight overshoot - how far the channels run past display white before grading. This is the shoulder that stands in for a film stock's, since Lift/Gamma/Gain cannot make an S-curve on its own. Source clipping (pin) sets a floor underneath it. 0 disables the overshoot term and leaves rolloff on source clipping alone, which is what Creative uses.", 0.476, 0.00, 1.50);
         tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.50, 0.00, 1.00);
 
         apply->setLabels("Creative Grade", "Creative Grade", "Creative Grade");
