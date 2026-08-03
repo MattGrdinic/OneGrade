@@ -827,6 +827,7 @@ void OneGrade::probeAnalyze(double p_Time)
         const double d1 = pct(dispL, 0.01), d50 = pct(dispL, 0.50), d99 = pct(dispL, 0.99);
         // Base-solve percentiles: per channel, not luma. See the dispC declaration.
         const double c01 = pct(dispC, 0.001), c50 = pct(dispC, 0.50), c99 = pct(dispC, 0.99);
+        const double c999 = pct(dispC, 0.999);   // per-channel extreme, for the Base white point
         const double d999 = pct(dispL, 0.999);
         const double y1 = pct(sceneY, 0.01), y50 = pct(sceneY, 0.50), y99 = pct(sceneY, 0.99);
 
@@ -866,7 +867,11 @@ void OneGrade::probeAnalyze(double p_Time)
         // the very top runs past the bulk - a compact specular core sits far above p99,
         // a broad bright field sits just above it. peak = p99.9 / p99.
         const double peak = (d99 > 1e-6) ? d999 / d99 : 1.0;
-        snprintf(m2, sizeof m2, "p99.9 %.3f  peak x%.2f", d999, peak);
+        // ch99.9 vs ch99 says how compact the very top is. A big gap means a small specular
+        // region is dragging the whole picture down when p99 is forced to the target; a small
+        // gap means the highlights are a broad field and containing them is honest.
+        snprintf(m2, sizeof m2, "p99.9 %.3f peak x%.2f | ch99.9 %.3f x%.2f",
+                 d999, peak, c999, (c99 > 1e-6) ? c999 / c99 : 1.0);
         m_ProbePeak->setValue(m2);
 
         m_LastD01 = c01; m_LastD50 = c50; m_LastD99 = c99;   // per-channel, for the Base solve
