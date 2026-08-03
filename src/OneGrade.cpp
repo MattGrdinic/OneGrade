@@ -388,6 +388,11 @@ public:
     // Display-space percentiles from the last analyse, at NEUTRAL params. Cached because the
     // Clean auto-grade solves against them directly: the grade curve is monotonic, so it maps
     // percentiles exactly, and three numbers stand in for the whole frame (see solveClean()).
+    // Raw source samples (r,g,b triples) from the last analyse. Kept so the Base solve can
+    // re-run the WHOLE pipeline over them at candidate settings without another fetchImage —
+    // measure, adjust, measure again, which is the only way to be right about stages that
+    // interact (Density shifts the very percentiles the grade is trying to place).
+    std::vector<float> m_Samples;
     double m_LastD01 = 0.0;   // p0.1 — the BLACK POINT the solve places (not p1, see below)
     double m_LastD1  = 0.0;
     double m_LastD50 = 0.0;
@@ -754,6 +759,7 @@ void OneGrade::probeAnalyze(double p_Time)
         long long hot = 0;
         std::vector<float> srcTop;   // per-sample max input channel, for ceiling detection
         srcTop.reserve(220000);
+        m_Samples.clear(); m_Samples.reserve(660000);
         double satSum = 0.0; long long satN = 0;
         bool anyNonZero = false;
 
@@ -764,6 +770,7 @@ void OneGrade::probeAnalyze(double p_Time)
                 const float* p = row + (size_t)x * 4;
                 if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) anyNonZero = true;
                 srcTop.push_back(std::max(p[0], std::max(p[1], p[2])));
+                m_Samples.push_back(p[0]); m_Samples.push_back(p[1]); m_Samples.push_back(p[2]);
 
                 // Scene luminance: decode to camera-linear, then XYZ Y. Neutral scene stage, so no
                 // exposure gain and white_balance() at 6500 is identity — skipped, not
@@ -1077,23 +1084,96 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     const double d01 = m_LastD01, d50 = m_LastD50, d99 = m_LastD99;
     double gain = 1.0, lift = 0.0, gamma = 1.0;
 
-    // Three rounds is plenty: the controls pivot on different ends, so each pass barely
-    // disturbs the previous one. Ranges are the params' own limits.
+    // PASS 1 — closed-form, on the percentiles measured at neutral. Cheap and gets close, but
+    // it is a MODEL: it assumes the only thing between the measurement and the result is
+    // Lift/Gamma/Gain. That stopped being true when Base started setting Density, which runs
+    // at step 4, BEFORE the grade at step 6, and moves the very percentiles this is placing.
     for (int pass = 0; pass < 3; ++pass) {
         gain = og_solve(0.05, 3.0, tHigh, [&](double g) { return withRolloff(og_grade_display(d99, lift, gamma, g)); });
-        // NEVER BRIGHTEN, by default. Containment is about not clipping, and a shot whose
-        // top sits below the target isn't clipping - it's just dark, which is usually the
-        // point. Without this the solver drags a moody interior's p99 from 0.55 up to 0.90
-        // and blows it out. This is the same clamp, for the same reason, that the film Auto
-        // Grade needed: the user's own grade on that shot pulled Gain DOWN to 0.714. Their
-        // grading behaviour, not a convention, is the evidence.
         if (gain > maxGain) gain = maxGain;
         lift = og_solve(-0.5, 0.5, tLow,  [&](double l) { return og_grade_display(d01, l, gamma, gain); });
-        // Gamma runs "backwards" (a larger gamma raises the midtone, and og_solve assumes the
-        // probe increases with its argument) — which it does here, since v^(1/gamma) grows
-        // with gamma for v < 1. Solve, then back off toward neutral.
         const double gSolved = og_solve(0.2, 3.0, tMid, [&](double gm) { return og_grade_display(d50, lift, gm, gain); });
         gamma = 1.0 + midStr * (gSolved - 1.0);
+    }
+
+    // PASS 2 — apply, measure, correct, repeat. Runs the REAL pipeline over the cached source
+    // samples at the candidate settings, so what it reads is what the node renders: density,
+    // rolloff, the encode, all of it. No model to be wrong.
+    //
+    // This is what makes the number in the readout trustworthy rather than predicted, and it
+    // is why the loop exists at all: a one-shot solve can only be as right as its model of
+    // everything downstream, and the whole history of this feature is discovering another
+    // stage the model did not know about (the encode, then rolloff, then luma-vs-channel,
+    // then density). Measuring the finished picture ends that class of bug.
+    int iters = 0;
+    double a01 = 0, a50 = 0, a99 = 0;
+    // Same camera Base just pinned, and the same display-referred encode probeAnalyze
+    // measured in — a measurement taken in a different space than the render describes
+    // something other than what you see, which this feature has already been bitten by.
+    int encSel = 1;
+    m_Encode->getValueAtTime(p_Time, encSel);
+    const int camera  = 11;                                  // set above: PQ smooth decode
+    const int dispEnc = (encSel <= 2) ? encSel : 1;          // Base never sets a LUT
+    if (m_Samples.size() >= 300) {
+        std::vector<float> out;
+        out.reserve(m_Samples.size());
+        auto measure = [&](double gn, double lf, double gm) {
+            float P[kParamCount] = {0};
+            P[2] = (float)density; P[3] = (float)lf; P[4] = (float)gm; P[5] = (float)gn;
+            P[9] = 1.f; P[11] = 6500.f; P[12] = (float)rolloff;
+            out.clear();
+            for (size_t k = 0; k + 2 < m_Samples.size(); k += 3) {
+                float r, g, b;
+                og_full_chain(camera, dispEnc, P, nullptr, 0, 0.f,
+                              m_Samples[k], m_Samples[k+1], m_Samples[k+2], r, g, b);
+                out.push_back(r); out.push_back(g); out.push_back(b);
+            }
+            auto q = [&](double frac) {
+                size_t k = (size_t)(frac * (out.size() - 1));
+                std::nth_element(out.begin(), out.begin() + k, out.end());
+                return (double)out[k];
+            };
+            a01 = q(0.001); a50 = q(0.50); a99 = q(0.99);
+        };
+
+        // Apply, measure, edit, repeat — capped at 20 passes. It normally settles in two or
+        // three; the cap only exists so an unreachable target (Gain pinned at its ceiling on
+        // a very dark shot, say) can't spin. The BEST result is kept rather than the last,
+        // so a late step that overshoots can never make the outcome worse than an earlier
+        // one — the loop is allowed to fail to improve, never to regress.
+        double bestErr = 1e9, bg = gain, bl = lift, bgm = gamma;
+        double lastErr = 1e9;
+        int stalled = 0;
+        for (iters = 1; iters <= 20; ++iters) {
+            measure(gain, lift, gamma);
+            const double eHigh = tHigh - a99, eLow = tLow - a01, eMid = tMid - a50;
+            const double err = std::fabs(eHigh) + std::fabs(eLow) + 0.5 * std::fabs(eMid);
+            if (err < bestErr) { bestErr = err; bg = gain; bl = lift; bgm = gamma; }
+
+            if (std::fabs(eHigh) < 0.003 && std::fabs(eLow) < 0.003 && std::fabs(eMid) < 0.008) break;
+            // Stop when it stops paying: two passes without a real improvement means the
+            // remaining error is structural (a clamped control, or targets that can't all be
+            // met at once), not something more iterations will fix.
+            if (err > lastErr - 1e-4) { if (++stalled >= 2) break; } else stalled = 0;
+            lastErr = err;
+
+            // Each correction acts on the control that owns that end. Damping starts high and
+            // eases off: the three still interact a little, and rolloff is compressive near
+            // the top, so an undamped step can oscillate instead of settling.
+            const double damp = (iters <= 3) ? 0.7 : 0.45;
+            if (a99 > 1e-4 && gain < maxGain - 1e-6) {
+                double f = std::min(1.25, std::max(0.80, tHigh / a99));
+                gain = std::min(maxGain, std::max(0.05, gain * (1.0 + damp * (f - 1.0))));
+            }
+            lift = std::min(0.50, std::max(-0.50, lift + damp * eLow));
+            if (a50 > 1e-4 && a50 < 0.999 && tMid > 1e-4) {
+                const double gFull = gamma * (std::log(a50) / std::log(tMid));
+                const double gWant = 1.0 + midStr * (gFull - 1.0);
+                gamma = std::min(3.00, std::max(0.20, gamma + damp * (gWant - gamma)));
+            }
+        }
+        gain = bg; lift = bl; gamma = bgm;
+        measure(gain, lift, gamma);   // re-measure the kept result, so the readout is true
     }
 
     gain  = std::min(3.00, std::max(0.05, gain));
@@ -1114,12 +1194,11 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     // a very flat log frame pins Lift at its limit and still can't get the floor down - and
     // silently pinning a slider while reporting success is the shape of bug this codebase
     // keeps finding. The achieved triple makes it visible.
+    // Reports the MEASURED result and how many passes it took, not a prediction. If a target
+    // is unreachable the numbers say so instead of quietly pinning a slider.
     char msg[160];
-    snprintf(msg, sizeof msg, "Base G %.2f Gam %.2f L %+.2f R %.2f D %.2f -> %.2f/%.2f/%.2f",
-             gain, gamma, lift, rolloff, density,
-             withRolloff(og_grade_display(d01, lift, gamma, gain)),
-             withRolloff(og_grade_display(d50, lift, gamma, gain)),
-             withRolloff(og_grade_display(d99, lift, gamma, gain)));
+    snprintf(msg, sizeof msg, "Base G %.2f Gam %.2f L %+.2f R %.2f D %.2f -> %.2f/%.2f/%.2f (%dx)",
+             gain, gamma, lift, rolloff, density, a01, a50, a99, iters);
     m_ProbeApplied->setValue(msg);
     setEnabledness();
 }

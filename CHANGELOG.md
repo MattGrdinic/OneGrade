@@ -113,6 +113,21 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   so it squashed whatever the solve had placed: an interview frame aimed at 0.90 landed near
   0.83 because a 6% pin drove Rolloff to ~0.55. The target means something now.
 - Target High raised to **0.95**, so the picture fills the range rather than stopping short.
+- **It applies, measures, edits, and repeats** — up to 20 passes, typically settling in two
+  or three. The closed-form solve gets a good starting point, then each pass runs the *real*
+  pipeline over the cached source samples and reads the finished picture back: density,
+  rolloff, encode, all of it. No model to be wrong about.
+  - This exists because a one-shot solve is only ever as right as its model of everything
+    downstream, and the history of this feature is discovering another stage the model
+    didn't know about — first the encode, then rolloff, then luma-vs-channel, then Density
+    (which runs *before* the grade and moves the very percentiles being placed). Measuring
+    the finished picture ends that whole class of bug.
+  - The **best** result is kept rather than the last, so a late overshooting step can never
+    make the outcome worse than an earlier one. It's allowed to fail to improve, never to
+    regress. It also stops early when two passes bring no real improvement, since the
+    remaining error is then structural — a clamped control, or targets that can't all be met
+    at once — rather than something more passes would fix.
+  - Costs ~39 ms per pass at 220k samples; the readout reports the pass count.
 - **It never brightens.** Gain is capped at 1.0 by default. A shot whose highlights sit
   below the target isn't clipping — it's dark, which is usually deliberate. Without the cap
   the solver dragged a moody interior's p99 from 0.55 up to 0.90 and blew it out; the user's
