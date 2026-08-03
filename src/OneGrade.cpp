@@ -738,8 +738,15 @@ void OneGrade::probeAnalyze(double p_Time)
         // stalls the UI on an 8K frame is its own kind of failure.
         const int step = std::max(1, (int)(std::sqrt((double)(w * h) / 200000.0) + 0.5));
         std::vector<float> sceneY, dispL, skinY;
+        // Per-CHANNEL display values, kept separately from luma. The Base solve places its
+        // percentiles on these, because a channel is what clips: a waveform shows R, G and B
+        // independently, and on a saturated highlight they spread far apart. Containing luma
+        // at 0.95 put blue over 1023 on a real interview frame while the luma number said the
+        // target had been hit exactly. Measuring a summary statistic instead of the quantity
+        // that actually fails is the same mistake as measuring in the wrong encode.
+        std::vector<float> dispC;
         double skinR = 0.0, skinG = 0.0, skinB = 0.0;   // skin chromaticity, for a warmth read
-        sceneY.reserve(220000); dispL.reserve(220000);
+        sceneY.reserve(220000); dispL.reserve(220000); dispC.reserve(660000);
         long long hot = 0;
         std::vector<float> srcTop;   // per-sample max input channel, for ceiling detection
         srcTop.reserve(220000);
@@ -766,6 +773,7 @@ void OneGrade::probeAnalyze(double p_Time)
                 og::process(camera, dispEnc, neutral, p[0], p[1], p[2], dr, dg, db);
                 const float L = 0.2126f*dr + 0.7152f*dg + 0.0722f*db;
                 dispL.push_back(L);
+                dispC.push_back(dr); dispC.push_back(dg); dispC.push_back(db);
                 if (L > 1.0f) ++hot;   // above display white: lost on export unless rolled off
 
                 float hh, ss, vv; og::rgb2hsv(dr, dg, db, hh, ss, vv);
@@ -806,7 +814,8 @@ void OneGrade::probeAnalyze(double p_Time)
         // previous call, so three ranks cost three linear passes — still far cheaper than
         // a full sort, and exact where a histogram would only be as good as its bin width.
         const double d1 = pct(dispL, 0.01), d50 = pct(dispL, 0.50), d99 = pct(dispL, 0.99);
-        const double d01 = pct(dispL, 0.001);   // black point for the Base solve, see applyAutoGradeClean
+        // Base-solve percentiles: per channel, not luma. See the dispC declaration.
+        const double c01 = pct(dispC, 0.001), c50 = pct(dispC, 0.50), c99 = pct(dispC, 0.99);
         const double d999 = pct(dispL, 0.999);
         const double y1 = pct(sceneY, 0.01), y50 = pct(sceneY, 0.50), y99 = pct(sceneY, 0.99);
 
@@ -823,7 +832,9 @@ void OneGrade::probeAnalyze(double p_Time)
         m_ProbeStatus->setValue(m2);
         snprintf(m2, sizeof m2, "Y50 %.4f  key %+.2f EV  DR %.1f st", y50, key, dr_stops);
         m_ProbeScene->setValue(m2);
-        snprintf(m2, sizeof m2, "p1 %.3f  p50 %.3f  p99 %.3f  @%s", d1, d50, d99, encName);
+        // Luma percentiles on the left (comparable with every earlier reading), and the two
+        // per-channel numbers the Base solve actually places on the right.
+        snprintf(m2, sizeof m2, "p1 %.3f p50 %.3f p99 %.3f @%s | ch %.3f-%.3f", d1, d50, d99, encName, c01, c99);
         m_ProbeDisplay->setValue(m2);
         // Source clipping, measured against the CLIP'S OWN ceiling rather than an assumed
         // 1.0. Blackmagic log peaks around 0.75 of the code range (confirmed on a waveform
@@ -847,7 +858,8 @@ void OneGrade::probeAnalyze(double p_Time)
         snprintf(m2, sizeof m2, "p99.9 %.3f  peak x%.2f", d999, peak);
         m_ProbePeak->setValue(m2);
 
-        m_LastD01 = d01; m_LastD1 = d1; m_LastD50 = d50; m_LastD99 = d99;   // for the Base solve
+        m_LastD01 = c01; m_LastD50 = c50; m_LastD99 = c99;   // per-channel, for the Base solve
+        m_LastD1 = d1;                                       // luma p1, reported only
         m_LastPin = 100.0 * (double)pinned / (double)n;
         m_LastHot = 100.0 * (double)hot / (double)n;
         snprintf(m2, sizeof m2, "hot %.1f%%  pin %.2f%%@%.3f  sat %.3f",
