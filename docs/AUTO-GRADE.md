@@ -233,8 +233,29 @@ deliberately inert rather than acting on a stale measurement.
 
 ## 8. Reading the panel
 
-Tick **Show analysis** to reveal the measurements. Off by default so the panel stays a
-grading panel; on when a shot behaves oddly and the numbers matter.
+**In a shipping build the panel shows two controls: Auto Grade and Bias.** That is
+deliberate — it is what a colorist needs, and the measurements are of interest to whoever
+is *tuning* the thing, not to whoever is using it.
+
+### Turning the analysis UI back on
+
+The debug surface — the **Show analysis** checkbox, the **Analyze Frame** button, the six
+measurement rows and the **Applied** readout — is hidden behind a compile-time switch in
+`src/OneGrade.cpp`:
+
+```c
+static const bool kAnalysisDebugUI = false;   // -> true, rebuild
+```
+
+Flip it, rebuild, and the checkbox reappears and toggles the rest at runtime. The params
+always exist and always work; only their visibility changes, so saved projects and the
+measurement itself are unaffected either way.
+
+**This is the mode to be in when fitting new constants or working out why a shot analysed
+oddly.** Every fit in this document was found by staring at those rows across real footage —
+`pin` versus `hot` for rolloff, `key` versus hand-set Gain, the skin coverage % that exposed
+a mask measuring its own filter. There is no way to extend this feature responsibly without
+them.
 
 | Row | Reads |
 |---|---|

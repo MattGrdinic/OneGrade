@@ -534,9 +534,15 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
    is measurement-modulated**: the positive direction scales by `max(0, 1 - hot/40)` so
    brightening fades out on a frame that's already a third above white; the negative
    direction is never scaled, since pulling gain down is always safe. `m_LastGain` holds the
-   measured value so a Bias drag stays anchored to it instead of drifting. **`showAnalysis`**
-   checkbox (default off) secrets the readout rows via `setIsSecret`, driven from
-   `setEnabledness()` so it survives a project load.** (both at the user's request, 2026-08-02: "the bias adjustment is great, the only
+   measured value so a Bias drag stays anchored to it instead of drifting. **The whole analysis UI is
+   hidden in shipping builds** behind `static const bool kAnalysisDebugUI = false` in
+   `OneGrade.cpp` — the `showAnalysis` checkbox, the Analyze Frame button, the six readout
+   rows and the Applied line. A colorist sees only Auto Grade + Bias. **FUTURE WORK: flip
+   that constant and rebuild to get the debug panel back** — it's the mode to be in when
+   fitting new constants, since every current fit was found by reading those rows across
+   real footage. Visibility only: the params exist and work either way, so nothing about
+   saved projects depends on it. Secrets are applied in `setEnabledness()` so they survive a
+   project load.** (both at the user's request, 2026-08-02: "the bias adjustment is great, the only
    thing is to make it real time"). `applyBias()` is split out of `applyAutoGrade()` so a
    drag re-derives Rolloff and Lift from the **cached** measurement — pure arithmetic on two
    stored numbers, no re-analysis, so it keeps up with the drag. Gated on `m_AutoApplied`:

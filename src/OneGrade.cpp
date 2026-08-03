@@ -39,6 +39,18 @@
 #define kSupportsMultiResolution    false
 #define kSupportsMultipleClipPARs   false
 
+// Master switch for the Auto Grade analysis UI. While false the whole debug surface is
+// hidden — the "Show analysis" checkbox, the Analyze Frame button, the six measurement rows
+// and the Applied readout — leaving just Auto Grade and Bias, which is all a colorist needs.
+// The params still exist and still work; only their visibility is off, so nothing about
+// saved projects or the measurement itself depends on this.
+//
+// FUTURE WORK: flip this to true and rebuild to get the debug panel back. The checkbox
+// reappears and toggles the rest at runtime, which is the mode to be in when fitting new
+// constants or working out why a shot analysed oddly — the numbers are how every one of the
+// current fits was found. See docs/AUTO-GRADE.md.
+static const bool kAnalysisDebugUI = false;
+
 #define kParamCount 13 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff
 
 // Folder scanned for built-in / film-look LUTs (Resolve's default LUT install).
@@ -378,6 +390,7 @@ private:
     OFX::StringParam* m_ProbeSubject;
     OFX::DoubleParam* m_AutoBias;
     OFX::BooleanParam* m_ShowAnalysis;
+    OFX::PushButtonParam* m_ProbeBtn;
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 };
@@ -419,6 +432,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeSubject = fetchStringParam("probeSubject");
     m_AutoBias     = fetchDoubleParam("autoBias");
     m_ShowAnalysis = fetchBooleanParam("showAnalysis");
+    m_ProbeBtn     = fetchPushButtonParam("probeAnalyze");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
 
@@ -814,17 +828,22 @@ void OneGrade::setEnabledness()
     // wasn't using, so picking a LUT read as the node silently blowing the contrast out
     // (github issue). Grey it AND spell out what is actually being rendered — a greyed
     // control still showing the old value is only half the truth.
-    // Analysis readout: hidden by default so the panel stays a grading panel, one checkbox
-    // away when a shot behaves oddly and the numbers matter. Driven from setEnabledness()
-    // rather than only from changedParam so the state survives a project load.
+    // Analysis UI. Gated twice: on the compile-time master switch (see kAnalysisDebugUI —
+    // currently off, so a colorist sees only Auto Grade and Bias) and, when that's on, on the
+    // runtime checkbox. Driven from setEnabledness() rather than only from changedParam so
+    // the state survives a project load.
     bool showAnalysis = false;
     m_ShowAnalysis->getValue(showAnalysis);
-    m_ProbeScene->setIsSecret(!showAnalysis);
-    m_ProbeDisplay->setIsSecret(!showAnalysis);
-    m_ProbePeak->setIsSecret(!showAnalysis);
-    m_ProbeShape->setIsSecret(!showAnalysis);
-    m_ProbeSubject->setIsSecret(!showAnalysis);
-    m_ProbeStatus->setIsSecret(!showAnalysis);
+    const bool debug = kAnalysisDebugUI && showAnalysis;
+    m_ShowAnalysis->setIsSecret(!kAnalysisDebugUI);
+    m_ProbeBtn->setIsSecret(!debug);       // Analyze Frame — measures without applying
+    m_ProbeApplied->setIsSecret(!debug);   // what the last Auto Grade wrote
+    m_ProbeScene->setIsSecret(!debug);
+    m_ProbeDisplay->setIsSecret(!debug);
+    m_ProbePeak->setIsSecret(!debug);
+    m_ProbeShape->setIsSecret(!debug);
+    m_ProbeSubject->setIsSecret(!debug);
+    m_ProbeStatus->setIsSecret(!debug);
 
     const bool lutOn = lutSelected();
     m_Encode->setEnabled(look && !lutOn);
