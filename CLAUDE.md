@@ -450,10 +450,25 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
    tail-chasing, no "only use on a fresh node" caveat needed in the UI. Exposure, DR and the
    subject key come from the Scene row; only black-point and rolloff targets need Display.
 
-   Display stats use the **effective** encode (same LUT override as the render), not the
-   Output Encode param — with a LUT on, the param isn't what's being rendered. The Scene
-   row (Y50/key/DR) is encode-independent and is the robust one to build heuristics on;
-   the Display row shifts with the encode and is only comparable between shots that share it.
+   Display stats start from the **effective** encode (same LUT override as the render) but
+   **fall back to Gamma 2.2 when that isn't display-referred** — a Film Look forces Cineon,
+   and analysing in Cineon silently breaks two things: it clamps to [0,1] so `hot` reads a
+   flat 0% on a blown frame, and it compresses chroma so the skin mask's saturation window
+   stops matching faces. Both were observed on one shot when only the LUT mode changed —
+   `hot` 22.9% -> 0.0%, skin coverage -> 1.6%. **Percentile and hue thresholds are only
+   meaningful in the space they were chosen for.** The Display row now prints which encode
+   it used (`@Scene` / `@2.2` / `@2.4`). The Scene row is encode-independent and is the
+   robust one to build heuristics on.
+
+   **`key` IS DESCRIPTIVE, NOT PRESCRIPTIVE — the single most important finding so far.**
+   The dark car-interior shot asks for **+2.37 EV** (frame) and **+2.25 EV** (skin-masked),
+   i.e. the subject mask did *not* rescue it. But the user's own grade on that shot is trim
+   exposure **+0.55** with Gain pulled to 0.714 — roughly a quarter of what `key` demands.
+   A moody low-key interior is *supposed* to have a low median; "move the median to 0.18"
+   would flatten every deliberately dark shot into mid-gray mush. So step 3 must NOT map
+   key -> exposure directly. Options to try: apply a fraction of key, clamp hard (±1 EV),
+   or only correct when the shot falls outside a plausible band. Also note 18% grey is the
+   wrong *target* for skin specifically — lit skin sits roughly a stop above mid-gray.
 3. **Wire the unambiguous params** — exposure (median to target), lift (1st percentile to a
    *lifted* floor, not 0), gain (99.5th just under clip), rolloff (from energy above the
    knee — the one that genuinely NEEDS analysis; a fixed knee can't know).

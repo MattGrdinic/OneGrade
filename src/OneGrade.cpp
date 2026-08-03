@@ -484,10 +484,20 @@ void OneGrade::probeAnalyze(double p_Time)
         m_Camera->getValue(camera);
         m_Encode->getValue(encode);
         m_LutMode->getValue(lutMode);
-        // Use the EFFECTIVE encode, the same override the render applies: with a LUT
+        // Start from the EFFECTIVE encode, the same override the render applies: with a LUT
         // selected the Output Encode param is not what gets rendered, so measuring against
-        // it would report a display curve the user is not looking at.
+        // it would report a curve the user isn't looking at.
         if (lutSelected()) encode = (lutMode == 2) ? 3 : 0;
+        // ...but the analysis must land in a DISPLAY-REFERRED space, so fall back to Gamma
+        // 2.2 when the effective encode isn't one. A Film Look forces Cineon, and Cineon is
+        // a log encode: it clamps to [0,1] (so 'hot' reads a flat 0% on a genuinely blown
+        // frame) and it compresses chroma (so the skin mask's saturation window, tuned for
+        // display RGB, stops matching faces). Both were observed on the interview shot -
+        // hot fell 22.9% -> 0.0% and skin coverage collapsed to 1.6% - purely from the
+        // encode underneath, with no change to the picture. Percentile and hue thresholds
+        // are only meaningful in the space they were chosen for.
+        const int dispEnc = (encode <= 2) ? encode : 1;
+        const char* encName = (dispEnc == 0) ? "Scene" : (dispEnc == 1) ? "2.2" : "2.4";
         float neutral[kParamCount] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
 
         // Coarse grid, ~200k samples: percentiles don't need every pixel, and a button that
@@ -518,7 +528,7 @@ void OneGrade::probeAnalyze(double p_Time)
 
                 // Display: the actual render path at neutral grade.
                 float dr, dg, db;
-                og::process(camera, encode, neutral, p[0], p[1], p[2], dr, dg, db);
+                og::process(camera, dispEnc, neutral, p[0], p[1], p[2], dr, dg, db);
                 const float L = 0.2126f*dr + 0.7152f*dg + 0.0722f*db;
                 dispL.push_back(L);
                 if (L > 1.0f) ++hot;   // above display white: lost on export unless rolled off
@@ -573,7 +583,7 @@ void OneGrade::probeAnalyze(double p_Time)
         m_ProbeStatus->setValue(m2);
         snprintf(m2, sizeof m2, "Y50 %.4f  key %+.2f EV  DR %.1f st", y50, key, dr_stops);
         m_ProbeScene->setValue(m2);
-        snprintf(m2, sizeof m2, "p1 %.3f  p50 %.3f  p99 %.3f", d1, d50, d99);
+        snprintf(m2, sizeof m2, "p1 %.3f  p50 %.3f  p99 %.3f  @%s", d1, d50, d99, encName);
         m_ProbeDisplay->setValue(m2);
         // Source clipping, measured against the CLIP'S OWN ceiling rather than an assumed
         // 1.0. Blackmagic log peaks around 0.75 of the code range (confirmed on a waveform
