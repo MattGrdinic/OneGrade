@@ -17,6 +17,7 @@
 #include <map>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <cmath>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -53,7 +54,7 @@
 // reappears and toggles the rest at runtime, which is the mode to be in when fitting new
 // constants or working out why a shot analysed oddly — the numbers are how every one of the
 // current fits was found. See docs/AUTO-GRADE.md.
-static const bool kAnalysisDebugUI = false;
+static const bool kAnalysisDebugUI = true;    // ON: fitting the Clean auto-grade constants
 
 #define kParamCount 13 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff
 
@@ -377,12 +378,20 @@ public:
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
     void probeAnalyze(double p_Time);   // measure the frame and report (writes m_LastKey)
     void probeSetup(double p_Time);     // is the input actually camera log? + what the host says
-    void applyAutoGrade(double p_Time); // measure, then set the film look + Gain from key
+    void applyAutoGrade(double p_Time);      // measure, then set the film look + Gain from key
+    void applyAutoGradeClean(double p_Time); // measure, then contain the range with no LUT
+    void autoInitOnce();                     // first-drop auto-grade, guarded so it runs once
     void applyBias();                   // re-derive Rolloff/Lift from the cached measurement
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
     double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
     double m_LastGain = 0.80;           // Gain the measurement asked for (bias moves off this)
     double m_LastHot = 0.0;             // % of frame above display white — headroom for brightening
+    // Display-space percentiles from the last analyse, at NEUTRAL params. Cached because the
+    // Clean auto-grade solves against them directly: the grade curve is monotonic, so it maps
+    // percentiles exactly, and three numbers stand in for the whole frame (see solveClean()).
+    double m_LastD1  = 0.0;
+    double m_LastD50 = 0.0;
+    double m_LastD99 = 0.0;
     bool   m_HaveKey = false;
     bool   m_AutoApplied = false;       // has Auto Grade run? gates the live Bias drag
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
@@ -442,6 +451,14 @@ private:
     OFX::DoubleParam* m_AutoBias;
     OFX::BooleanParam* m_ShowAnalysis;
     OFX::PushButtonParam* m_ProbeBtn;
+    OFX::PushButtonParam* m_CleanBtn;
+    OFX::DoubleParam* m_CleanHigh;     // where p99 should land  (containment target)
+    OFX::DoubleParam* m_CleanLow;      // where p1  should land
+    OFX::DoubleParam* m_CleanMid;      // where p50 should land
+    OFX::DoubleParam* m_CleanMidStr;   // how much of the midtone solve to apply
+    OFX::DoubleParam* m_CleanMaxGain;  // ceiling on Gain: 1.0 = never brighten
+    OFX::BooleanParam* m_AutoInitDone;    // saved: has the first-drop grade already run?
+    OFX::BooleanParam* m_AutoInitEnable;  // user switch for the first-drop grade
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 
@@ -501,6 +518,14 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_AutoBias     = fetchDoubleParam("autoBias");
     m_ShowAnalysis = fetchBooleanParam("showAnalysis");
     m_ProbeBtn     = fetchPushButtonParam("probeAnalyze");
+    m_CleanBtn      = fetchPushButtonParam("autoGradeClean");
+    m_CleanHigh     = fetchDoubleParam("cleanHigh");
+    m_CleanLow      = fetchDoubleParam("cleanLow");
+    m_CleanMid      = fetchDoubleParam("cleanMid");
+    m_CleanMidStr   = fetchDoubleParam("cleanMidStr");
+    m_CleanMaxGain  = fetchDoubleParam("cleanMaxGain");
+    m_AutoInitDone  = fetchBooleanParam("autoInitDone");
+    m_AutoInitEnable= fetchBooleanParam("autoInitEnable");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
@@ -514,6 +539,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
 
     populateLookLut();
     setEnabledness();
+    autoInitOnce();     // first drop only; guarded by a saved param so a reload can't re-stamp
 }
 
 // Grey out whatever the current Node Role doesn't own, then apply the LUT-mode rule
@@ -824,6 +850,7 @@ void OneGrade::probeAnalyze(double p_Time)
         snprintf(m2, sizeof m2, "p99.9 %.3f  peak x%.2f", d999, peak);
         m_ProbePeak->setValue(m2);
 
+        m_LastD1 = d1; m_LastD50 = d50; m_LastD99 = d99;   // for solveClean()
         m_LastPin = 100.0 * (double)pinned / (double)n;
         m_LastHot = 100.0 * (double)hot / (double)n;
         snprintf(m2, sizeof m2, "hot %.1f%%  pin %.2f%%@%.3f  sat %.3f",
@@ -911,6 +938,161 @@ void OneGrade::applyAutoGrade(double p_Time)
     m_AutoApplied = true;
     applyBias();                       // sets Rolloff + Lift, and writes the Applied line
     setEnabledness();                  // the preset switches LUT Mode
+}
+
+// The grade curve, evaluated on a DISPLAY value. This is the exact arithmetic of step 6 in
+// og::process(), and for a display-referred output encode it needs no round trip: the grade
+// happens in `r709_g_enc(x, dg)` and the output encode is that same function, so the
+// encode/decode pair on either side cancels. What is left acts straight on the numbers the
+// analysis measured.
+//
+// The property that makes this useful: it is MONOTONIC. A monotonic map commutes with
+// percentiles, so pushing the measured p1 / p50 / p99 through it gives exactly the graded
+// p1 / p50 / p99 — three scalars stand in for the whole frame, and the solve below costs
+// nothing instead of re-measuring 200k samples per iteration.
+static double og_grade_display(double d, double lift, double gamma, double gain)
+{
+    return (double)og::lgg_core((float)d, (float)lift, (float)gamma, (float)gain);
+}
+
+// Monotonic 1-D bisection: find the parameter value that lands `probe` on `target`.
+// Bisection rather than a closed-form inverse because the three controls interact and the
+// closed form would have to be re-derived every time step 6 changes — this cannot drift.
+static double og_solve(double lo, double hi, double target,
+                       const std::function<double(double)>& probe)
+{
+    for (int i = 0; i < 40; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        if (probe(mid) < target) lo = mid; else hi = mid;
+    }
+    return 0.5 * (lo + hi);
+}
+
+// CLEAN AUTO GRADE — "drop the node and the picture is already a sane starting point".
+//
+// Different question from the film Auto Grade, and a much better posed one. That button
+// fits the USER'S TASTE (what gain did they choose on this shot?), which took four hand
+// graded shots to pin down and is only evidenced over the range those shots covered. This
+// one enforces a CONTAINMENT property — nothing crushed at 0, nothing clipped at 1023 —
+// which is objective. There is no preference to fit: a frame either fits inside the range
+// or it doesn't, and that is measurable on any footage from anyone.
+//
+// So the solve is direct rather than fitted:
+//   gain  places the top    (p99 -> targetHigh)   gain pivots black, so it moves the top most
+//   lift  places the bottom (p1  -> targetLow)    lift pivots white, so it moves the floor
+//   gamma places the middle (p50 -> targetMid)    gamma pivots both ends, so it moves only mids
+// Each control owns the end it pivots away from, which is why three 1-D solves converge in a
+// couple of rounds instead of needing a real optimiser — they are nearly orthogonal.
+//
+// GAMMA IS DELIBERATELY ONLY PART-APPLIED (`midStrength`). Driving the median to a fixed
+// target on every shot is the exact mistake the film Auto Grade had to unlearn: a moody
+// low-key interior is SUPPOSED to sit low, and "move the median to mid-gray" flattens every
+// deliberately dark shot into mush. Containment at the two ends is safe to enforce because
+// clipping is a defect; the midtone is intent, so it only gets pulled part of the way.
+void OneGrade::applyAutoGradeClean(double p_Time)
+{
+    probeAnalyze(p_Time);
+    if (!m_HaveKey) return;             // probeAnalyze has already said why
+
+    // No LUT, no film tint, no density: the PQ smooth decode is meant to do the work, and
+    // everything this writes is a range correction rather than a look.
+    m_Camera->setValue(11);             // Rec.2100 PQ - Smooth Decode
+    m_LutMode->setValue(0);
+    m_LutMix->setValue(1.0);
+    m_Temp->setValue(0.0);   m_Tint->setValue(0.0);
+    m_OffTemp->setValue(0.0); m_OffTint->setValue(0.0);
+    m_Density->setValue(0.0);
+    m_PostExp->setValue(0.0); m_PostCon->setValue(1.0);
+
+    double tHigh = 0.90, tLow = 0.02, tMid = 0.42, midStr = 0.5, maxGain = 1.0;
+    m_CleanHigh->getValue(tHigh);
+    m_CleanLow->getValue(tLow);
+    m_CleanMid->getValue(tMid);
+    m_CleanMidStr->getValue(midStr);
+    m_CleanMaxGain->getValue(maxGain);
+
+    const double d1 = m_LastD1, d50 = m_LastD50, d99 = m_LastD99;
+    double gain = 1.0, lift = 0.0, gamma = 1.0;
+
+    // Three rounds is plenty: the controls pivot on different ends, so each pass barely
+    // disturbs the previous one. Ranges are the params' own limits.
+    for (int pass = 0; pass < 3; ++pass) {
+        gain = og_solve(0.05, 3.0, tHigh, [&](double g) { return og_grade_display(d99, lift, gamma, g); });
+        // NEVER BRIGHTEN, by default. Containment is about not clipping, and a shot whose
+        // top sits below the target isn't clipping - it's just dark, which is usually the
+        // point. Without this the solver drags a moody interior's p99 from 0.55 up to 0.90
+        // and blows it out. This is the same clamp, for the same reason, that the film Auto
+        // Grade needed: the user's own grade on that shot pulled Gain DOWN to 0.714. Their
+        // grading behaviour, not a convention, is the evidence.
+        if (gain > maxGain) gain = maxGain;
+        lift = og_solve(-0.5, 0.5, tLow,  [&](double l) { return og_grade_display(d1, l, gamma, gain); });
+        // Gamma runs "backwards" (a larger gamma raises the midtone, and og_solve assumes the
+        // probe increases with its argument) — which it does here, since v^(1/gamma) grows
+        // with gamma for v < 1. Solve, then back off toward neutral.
+        const double gSolved = og_solve(0.2, 3.0, tMid, [&](double gm) { return og_grade_display(d50, lift, gm, gain); });
+        gamma = 1.0 + midStr * (gSolved - 1.0);
+    }
+
+    // Rolloff keeps the one fit that IS evidenced across shots: source clipping, not
+    // brightness. See applyAutoGrade() for the table that ruled out `hot` and p99.9/p99.
+    const double rolloff = std::min(0.80, std::max(0.00, 0.090 * m_LastPin));
+
+    gain  = std::min(3.00, std::max(0.05, gain));
+    lift  = std::min(0.50, std::max(-0.50, lift));
+    gamma = std::min(3.00, std::max(0.20, gamma));
+
+    m_Gain->setValue(gain);
+    m_Lift->setValue(lift);
+    m_Gamma->setValue(gamma);
+    m_Rolloff->setValue(rolloff);
+
+    // Bias is anchored to this gain, so a drag afterwards works the same as it does for the
+    // film button. m_AutoApplied stays FALSE on purpose: Bias re-derives Lift/Gamma from the
+    // FILM recipe's constants, which would undo the containment solve the moment it moved.
+    m_LastGain = gain;
+
+    // Report what the solve ACHIEVED, not just what it set. A target can be unreachable -
+    // a very flat log frame pins Lift at its limit and still can't get the floor down - and
+    // silently pinning a slider while reporting success is the shape of bug this codebase
+    // keeps finding. The achieved triple makes it visible.
+    char msg[160];
+    snprintf(msg, sizeof msg, "Clean G %.2f Gam %.2f L %+.2f R %.2f -> %.2f/%.2f/%.2f",
+             gain, gamma, lift, rolloff,
+             og_grade_display(d1, lift, gamma, gain),
+             og_grade_display(d50, lift, gamma, gain),
+             og_grade_display(d99, lift, gamma, gain));
+    m_ProbeApplied->setValue(msg);
+    setEnabledness();
+}
+
+// First-drop auto grade. Runs the Clean solve once, when the node is created, so a freshly
+// dropped OneGrade is already a reasonable starting point instead of a bright lifted one.
+//
+// GUARDED BY A SAVED PARAM, not by instance state. `autoInitDone` is a hidden boolean that
+// persists in the project, so on reload it is already true and this does nothing. Without
+// that, every project open would re-measure the current frame and stamp over the user's
+// saved grade — the same class of bug the presets' eChangeUserEdit guard exists to prevent,
+// and far more destructive here because it would need no user action at all.
+//
+// Wrapped in every sense: whether a host will hand over an image this early is UNTESTED
+// (Auto Grade's own step 1 had to establish that fetchImage works in changedParam, and this
+// is earlier still). If it throws or the clip isn't ready, the node simply keeps its
+// defaults, which is exactly today's behaviour.
+void OneGrade::autoInitOnce()
+{
+    bool done = false;
+    m_AutoInitDone->getValue(done);
+    if (done) return;
+    m_AutoInitDone->setValue(true);     // set FIRST, so a throw can't leave it retrying forever
+
+    bool enabled = true;
+    m_AutoInitEnable->getValue(enabled);
+    if (!enabled) return;
+
+    try {
+        if (m_SrcClip && m_SrcClip->isConnected()) applyAutoGradeClean(0.0);
+    }
+    catch (...) { /* no image this early — defaults stand, which is the old behaviour */ }
 }
 
 // Bias: one slider trading highlight restraint against shadow openness, because the
@@ -1041,6 +1223,14 @@ void OneGrade::setEnabledness()
     m_ProbeShape->setIsSecret(!debug);
     m_ProbeSubject->setIsSecret(!debug);
     m_ProbeStatus->setIsSecret(!debug);
+    // Containment targets are exposed only in the debug panel: they are how the Clean
+    // constants get fitted on footage, and a shipping panel should carry the result, not the
+    // dials that produced it.
+    m_CleanHigh->setIsSecret(!debug);
+    m_CleanLow->setIsSecret(!debug);
+    m_CleanMid->setIsSecret(!debug);
+    m_CleanMidStr->setIsSecret(!debug);
+    m_CleanMaxGain->setIsSecret(!debug);
 
     const bool lutOn = lutSelected();
     m_Encode->setEnabled(look && !lutOn);
@@ -1190,6 +1380,9 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     }
     // Experimental Auto Grade probe. Guarded on eChangeUserEdit like the preset: a project
     // load must never trigger a frame fetch.
+    else if (p_ParamName == "autoGradeClean" && p_Args.reason == OFX::eChangeUserEdit) {
+        applyAutoGradeClean(p_Args.time);
+    }
     else if (p_ParamName == "setupCheck" && p_Args.reason == OFX::eChangeUserEdit) {
         probeSetup(p_Args.time);
     }
@@ -1604,8 +1797,65 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         probeLine("probeShape", "Shape",
                   "'hot' is the share above 1.0 in display - bright, but it pulls back fine if the range was captured. 'pin' is the share of the frame sitting ON the source ceiling, with that ceiling's code value after the @ - this is clipping at the sensor, where no exposure move brings anything back. Measured against the clip's own maximum rather than 1.0, because log formats don't all reach the top of the code range (Blackmagic peaks near 0.75). A low pin % means the highlights roll off and the range was captured; a high one means they are stacked on the ceiling and gone. 'sat' is mean HSV saturation over mid-tones only, which is what a Density move would act on.");
         PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");
-        apply->setLabels("Auto Grade", "Auto Grade", "Auto Grade");
-        apply->setHint("Experimental. Analyses the frame, applies the Cinematic Film Emulation look, and sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
+
+        // Two buttons, one pair: Base fixes the range, Creative applies a look. They are
+        // adjacent and named as siblings because that is the whole affordance — OFX has no
+        // layout hint in this SDK and Resolve lays parameters out one per row, so a shared
+        // horizontal line isn't available. Naming and order carry it instead.
+        {
+            StringParamDescriptor* tip = p_Desc.defineStringParam("autoTip");
+            tip->setLabels("Start", "Start", "Start");
+            tip->setStringType(eStringTypeLabel);
+            tip->setDefault("Base = correct the range. Creative = add a look.");
+            tip->setHint("Base Grade measures the frame and places its range so nothing is crushed at 0 or clipped at 1023 - a neutral, gradable starting point with no LUT. Creative Grade does the same measurement but applies the Cinematic Film Emulation look on top. Base first if you intend to grade; Creative if you want a finished-looking image straight away.");
+            tip->setEnabled(false);
+            tip->setParent(*gAuto);
+            page->addChild(*tip);
+        }
+
+        // Base: the range-correcting starting point. Listed before the creative button
+        // because it is the one most users want — no LUT, no tint, just the smooth decode
+        // with the frame's range brought inside 0-1023 so there is somewhere to grade from.
+        PushButtonParamDescriptor* cb = p_Desc.definePushButtonParam("autoGradeClean");
+        cb->setLabels("Base Grade", "Base Grade", "Base Grade");
+        cb->setHint("Measure the frame and set Lift/Gamma/Gain so the picture sits inside the displayable range - nothing crushed at 0, nothing clipped at 1023 - with NO LUT and no film tint. The camera is set to the smooth decode and left to do the work. This is a starting point to grade FROM, not a look: it corrects range, never taste. Balance and Density are explicitly zeroed. Highlight Rolloff still comes from measured source clipping. Everything it writes is an ordinary slider value you can drag afterwards.");
+        cb->setParent(*gAuto);
+        page->addChild(*cb);
+
+        BooleanParamDescriptor* ai = p_Desc.defineBooleanParam("autoInitEnable");
+        ai->setLabels("Grade on drop", "Grade on drop", "Grade on drop");
+        ai->setHint("Run Base Grade automatically the first time this node is created, so a freshly dropped OneGrade already sits in a gradable place instead of bright and lifted. Runs ONCE per node: the fact that it has run is saved with the project, so reopening never re-measures and never overwrites your grade. Turn off if you would rather start from the raw defaults.");
+        ai->setDefault(true);
+        ai->setParent(*gAuto);
+        page->addChild(*ai);
+
+        // Saved, hidden, and the entire safety mechanism for grade-on-drop: it persists in
+        // the project, so on reload it is already true and the auto grade cannot re-fire.
+        BooleanParamDescriptor* ad = p_Desc.defineBooleanParam("autoInitDone");
+        ad->setLabels("(auto-init done)", "(auto-init done)", "(auto-init done)");
+        ad->setDefault(false);
+        ad->setIsSecret(true);
+        ad->setParent(*gAuto);
+        page->addChild(*ad);
+
+        // Containment targets — the knobs the Clean constants get fitted with. Debug-only.
+        auto tune = [&](const char* name, const char* label, const char* hint,
+                        double def, double lo, double hi) {
+            DoubleParamDescriptor* d = p_Desc.defineDoubleParam(name);
+            d->setLabels(label, label, label);
+            d->setHint(hint);
+            d->setDefault(def); d->setRange(lo, hi); d->setDisplayRange(lo, hi);
+            d->setIncrement(0.01); d->setParent(*gAuto);
+            page->addChild(*d);
+        };
+        tune("cleanHigh", "Target High", "Where the 99th percentile should land after grading. Below 1.0 on purpose, so bright detail has somewhere to go instead of sitting on the clip point.", 0.90, 0.50, 1.00);
+        tune("cleanLow",  "Target Low",  "Where the 1st percentile should land. Just off zero, so shadows are not crushed against black.", 0.02, 0.00, 0.30);
+        tune("cleanMid",  "Target Mid",  "Where the median should land if the midtone solve were applied in full. Only a fraction of it is - see Mid Strength.", 0.42, 0.10, 0.90);
+        tune("cleanMaxGain","Max Gain","Ceiling on the Gain the solve may use. 1.0 means it can only ever darken, which is deliberate: a shot whose highlights sit below the target is not clipping, it is just dark, and brightening it destroys the intent. Raise above 1.0 only if you want genuinely underexposed footage pushed up.", 1.00, 0.50, 2.00);
+        tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.50, 0.00, 1.00);
+
+        apply->setLabels("Creative Grade", "Creative Grade", "Creative Grade");
+        apply->setHint("Analyses the frame and applies the Cinematic Film Emulation look on top - use this when you want a finished-looking image straight away rather than something to grade from. Sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
         apply->setParent(*gAuto);
         page->addChild(*apply);
 

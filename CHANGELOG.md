@@ -91,6 +91,39 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   near-exact and is noted as future work — it changes the look, so it isn't being smuggled
   in behind an export button.
 
+### Added — Base Grade, and a sane picture on drop
+
+- **Two buttons now, named for what they do: "Base Grade" and "Creative Grade".** Base
+  measures the frame and places its range so nothing is crushed at 0 or clipped at 1023 —
+  a neutral, gradable starting point with **no LUT and no film tint**, letting the smooth
+  decode do the work. Creative is the previous Auto Grade: same measurement, film emulation
+  look on top.
+- **Base solves rather than fits, and that's the point.** Creative Grade had to be fitted to
+  four hand-graded shots because "what gain did they choose" is a taste question. "Is
+  anything clipped" is not — it is objective, and true on anyone's footage. So Base places
+  p99 with Gain, p1 with Lift and p50 with Gamma, each control owning the end it pivots away
+  from, via three 1-D solves on the measured percentiles.
+- **It never brightens.** Gain is capped at 1.0 by default. A shot whose highlights sit
+  below the target isn't clipping — it's dark, which is usually deliberate. Without the cap
+  the solver dragged a moody interior's p99 from 0.55 up to 0.90 and blew it out; the user's
+  own grade on that shot pulled Gain *down* to 0.714. Same clamp, same reason, as Creative.
+- **The midtone is only half-applied** (`Mid Strength`, default 0.5). Driving every shot's
+  median to a fixed target is exactly the mistake Creative had to unlearn — it flattens
+  deliberately dark shots into mid-gray. Containment at the ends is safe to enforce because
+  clipping is a defect; the midtone is intent.
+- **"Grade on drop"** runs Base Grade once when the node is created, so a freshly dropped
+  OneGrade already sits somewhere gradable. Guarded by a **saved** param, so reopening a
+  project can never re-measure and stamp over your grade — and wrapped, because whether a
+  host hands over an image that early is untested. If it can't, the node keeps its defaults,
+  which is exactly the old behaviour.
+- The readout reports what the solve **achieved**, not just what it set: a target can be
+  unreachable, and silently pinning a slider while reporting success is a bug shape this
+  project keeps finding.
+- Internal: `lgg_core()` extracted into `OneGradePipeline.h` so the solver and the pipeline
+  share one definition of the grade curve. Test 14 proves the premise the solver rests on —
+  that evaluating `lgg_core` on a measured display percentile predicts what the pipeline
+  actually renders — across 3 encodes, 3 cameras and 3 grades.
+
 ### Added — Check Input (setup sanity check)
 
 - **A "Check Input" button in Setup / Help** reads the frame and says whether this node is

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <array>
 
 static int g_fail = 0;
 static void check(bool ok, const std::string& name) {
@@ -283,6 +284,43 @@ int main() {
             }
         }
         check(ok, "LUT export: bake is exact on-lattice, close on the grey axis");
+    }
+
+    // 14. CLEAN AUTO GRADE premise: grading a measured DISPLAY percentile through lgg_core
+    //     predicts exactly what the pipeline renders for that input.
+    //
+    //     This is the whole basis of the containment solver. It measures the frame once at
+    //     neutral, then places p1/p50/p99 by evaluating lgg_core on three scalars instead of
+    //     re-rendering 200k samples per iteration. That shortcut is only valid because, for a
+    //     display-referred encode, the grade happens in r709_g_enc(x, dg) and the output
+    //     encode IS that same function -- so the encode/decode pair on either side of step 6
+    //     cancels and the grade acts directly on the measured numbers.
+    //
+    //     If step 6 ever stops being expressible that way, the solver silently starts placing
+    //     percentiles somewhere other than where it claims. This catches that.
+    {
+        bool ok = true;
+        for (int enc : {0, 1, 2}) {                    // Scene OETF, gamma 2.2, gamma 2.4
+            for (int cam : {0, 2, 11}) {
+                for (float x = 0.10f; x <= 0.90f; x += 0.08f) {
+                    float P0[13]; neutral13(P0);
+                    float n_r, n_g, n_b;
+                    og::process(cam, enc, P0, x, x, x, n_r, n_g, n_b);   // neutral = "measured"
+
+                    for (auto lgg : { std::array<float,3>{0.05f, 1.15f, 0.80f},
+                                      std::array<float,3>{-0.03f, 0.90f, 1.30f},
+                                      std::array<float,3>{0.12f, 1.00f, 0.55f} }) {
+                        float P1[13]; neutral13(P1);
+                        P1[3] = lgg[0]; P1[4] = lgg[1]; P1[5] = lgg[2];
+                        float a_r, a_g, a_b;
+                        og::process(cam, enc, P1, x, x, x, a_r, a_g, a_b);       // actual render
+                        const float pred = og::lgg_core(n_r, lgg[0], lgg[1], lgg[2]);  // prediction
+                        ok &= close(pred, a_r, 1.5e-3f);
+                    }
+                }
+            }
+        }
+        check(ok, "Clean auto grade: lgg_core on a display percentile predicts the render");
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
