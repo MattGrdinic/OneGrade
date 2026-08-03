@@ -1041,7 +1041,7 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     double density = 0.284;
     m_CleanDensity->getValue(density);
     m_Density->setValue(density);
-    m_PostExp->setValue(0.0); m_PostCon->setValue(1.0);
+    m_PostCon->setValue(1.0);   // postExp is solved below, not zeroed
 
     double tHigh = 0.90, tLow = 0.02, tMid = 0.42, midStr = 0.5, maxGain = 1.0;
     m_CleanHigh->getValue(tHigh);
@@ -1101,6 +1101,25 @@ void OneGrade::applyAutoGradeClean(double p_Time)
         gamma = 1.0 + midStr * (gSolved - 1.0);
     }
 
+    // THE MIDTONE MOVES WITH POST EXPOSURE, NOT GAMMA -- the structural lesson from Creative.
+    //
+    // Creative looks right on a bright shot because of the ORDER it works in: Gain pulled
+    // hard (beach, key -1.77 -> 0.464), the print LUT shoulders the top, then postExp +0.55
+    // brings the midtones back. Gain down, shoulder, exposure back up: that is an S-curve
+    // built out of three separate stages, and it is why the subject stays bright while the
+    // highlights never run past 1023.
+    //
+    // Base has every piece and was throwing the last one away. What makes postExp the right
+    // control is WHERE it sits: after the encode and BEFORE softclip. So it lifts the mids
+    // while the shoulder catches whatever that pushes into the top. Gamma cannot do this --
+    // it pivots black AND white, so it can never trade highlight room for midtone
+    // brightness, which is exactly the trade the user described Creative making.
+    //
+    // Gamma is therefore left at 1.0 and postExp does the work. The loop below balances the
+    // three against each other on the real rendered picture.
+    gamma = 1.0;
+    double postExp = 0.0;
+
     // PASS 2 — apply, measure, correct, repeat. Runs the REAL pipeline over the cached source
     // samples at the candidate settings, so what it reads is what the node renders: density,
     // rolloff, the encode, all of it. No model to be wrong.
@@ -1125,6 +1144,7 @@ void OneGrade::applyAutoGradeClean(double p_Time)
         auto measure = [&](double gn, double lf, double gm) {
             float P[kParamCount] = {0};
             P[2] = (float)density; P[3] = (float)lf; P[4] = (float)gm; P[5] = (float)gn;
+            P[8] = (float)postExp;   // trim exposure: after the encode, before the shoulder
             P[9] = 1.f; P[11] = 6500.f; P[12] = (float)rolloff;
             out.clear();
             for (size_t k = 0; k + 2 < m_Samples.size(); k += 3) {
@@ -1146,14 +1166,14 @@ void OneGrade::applyAutoGradeClean(double p_Time)
         // a very dark shot, say) can't spin. The BEST result is kept rather than the last,
         // so a late step that overshoots can never make the outcome worse than an earlier
         // one — the loop is allowed to fail to improve, never to regress.
-        double bestErr = 1e9, bg = gain, bl = lift, bgm = gamma;
+        double bestErr = 1e9, bg = gain, bl = lift, bgm = gamma, bpe = postExp;
         double lastErr = 1e9;
         int stalled = 0;
         for (iters = 1; iters <= 20; ++iters) {
             measure(gain, lift, gamma);
             const double eHigh = tHigh - a99, eLow = tLow - a01, eMid = tMid - a50;
             const double err = std::fabs(eHigh) + std::fabs(eLow) + 0.5 * std::fabs(eMid);
-            if (err < bestErr) { bestErr = err; bg = gain; bl = lift; bgm = gamma; }
+            if (err < bestErr) { bestErr = err; bg = gain; bl = lift; bgm = gamma; bpe = postExp; }
 
             if (std::fabs(eHigh) < 0.003 && std::fabs(eLow) < 0.003 && std::fabs(eMid) < 0.008) break;
             // Stop when it stops paying: two passes without a real improvement means the
@@ -1171,13 +1191,16 @@ void OneGrade::applyAutoGradeClean(double p_Time)
                 gain = std::min(maxGain, std::max(0.05, gain * (1.0 + damp * (f - 1.0))));
             }
             lift = std::min(0.50, std::max(-0.50, lift + damp * eLow));
-            if (a50 > 1e-4 && a50 < 0.999 && tMid > 1e-4) {
-                const double gFull = gamma * (std::log(a50) / std::log(tMid));
-                const double gWant = 1.0 + midStr * (gFull - 1.0);
-                gamma = std::min(3.00, std::max(0.20, gamma + damp * (gWant - gamma)));
+            // Midtone in stops: postExp is a multiply in display space, so the correction is
+            // log2 of the ratio. midStr backs it off, for the same reason it backed gamma off
+            // -- a deliberately dark shot should stay dark, and driving every median to the
+            // same number is the mistake this feature has already had to unlearn once.
+            if (a50 > 1e-4 && tMid > 1e-4) {
+                const double want = std::log2(tMid / a50) * midStr;
+                postExp = std::min(2.0, std::max(-2.0, postExp + damp * want));
             }
         }
-        gain = bg; lift = bl; gamma = bgm;
+        gain = bg; lift = bl; gamma = bgm; postExp = bpe;
         measure(gain, lift, gamma);   // re-measure the kept result, so the readout is true
     }
 
@@ -1189,6 +1212,7 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     m_Lift->setValue(lift);
     m_Gamma->setValue(gamma);
     m_Rolloff->setValue(rolloff);
+    m_PostExp->setValue(postExp);
 
     // Bias is anchored to this gain, so a drag afterwards works the same as it does for the
     // film button. m_AutoApplied stays FALSE on purpose: Bias re-derives Lift/Gamma from the
@@ -1202,8 +1226,8 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     // Reports the MEASURED result and how many passes it took, not a prediction. If a target
     // is unreachable the numbers say so instead of quietly pinning a slider.
     char msg[160];
-    snprintf(msg, sizeof msg, "Base G %.2f Gam %.2f L %+.2f R %.2f D %.2f -> %.2f/%.2f/%.2f (%dx)",
-             gain, gamma, lift, rolloff, density, a01, a50, a99, iters);
+    snprintf(msg, sizeof msg, "Base G %.2f E%+.2f L %+.2f R %.2f D %.2f -> %.2f/%.2f/%.2f (%dx)",
+             gain, postExp, lift, rolloff, density, a01, a50, a99, iters);
     m_ProbeApplied->setValue(msg);
     setEnabledness();
 }
