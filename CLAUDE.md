@@ -18,7 +18,9 @@ when touching the matching code): `GAMMA.md` (transfer functions, grade curve, e
 balance) · `DENSITY.md` (HSV-in-DI-log saturation) · `LUTS.md` (discovery, parsing,
 sampling, built-ins) · `FILM-EMULATION.md` (Cineon → print-stock path + preset recipe) ·
 `CREATING-LUTS.md` (authoring new built-in looks) · `GROUPS.md` (Node Role, the
-pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed).
+pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed) ·
+`AUTO-GRADE.md` (frame measurement, the Gain/Rolloff fits and the footage behind them,
+what is deliberately not set, and the traps found on the way).
 
 ## The golden rule
 `src/OneGradePipeline.h` (namespace `pg`, CPU) is the **single source of truth** for all
@@ -381,6 +383,206 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
   plugin is opinionated" says this to users out loud (added 2026-08-02, user's call): it's a
   look-first tool, family resemblance to a CST/RAW-tab neutral, not a match. Say this when
   users report "it doesn't look like a plain CST".
+
+## Auto Grade ("magic button") — user's idea, in progress from 2026-08-02
+One click that reads the frame, measures it, and sets the sliders to a pleasing cinematic
+starting point (creamy lifted lows, exposure on the key, smooth shoulder). **Why it's
+tractable where general image analysis isn't: the output is PARAM VALUES, not pixels.**
+`og::process()` and the three kernels are untouched — no golden-rule 4-file mirror, no
+CPU/GPU reduction agreement, no per-frame temporal instability (click once, values freeze).
+It is `applyPreset()` with the numbers measured instead of hardcoded, same
+`eChangeUserEdit` guard.
+
+**Staged, because two questions decide whether it's real:**
+1. **Probe — can a button read pixels outside `render`?** `probeAnalyze()` + the
+   "9 Auto Grade (experimental)" group. Fetches the source image in `changedParam`, walks a
+   coarse grid, reports size/percentiles into two label params. Wrapped in try/catch:
+   fetchImage outside render may throw, return null, or hand back zeros, and all three are
+   answers. `anyNonZero` is tracked separately so "empty buffer" stays distinguishable from
+   "black shot". **ANSWERED YES — validated in Resolve 2026-08-02:** a 4K frame came back
+   from `fetchImage` inside `changedParam`, 230400 samples, plausible log percentiles
+   (p1 0.240 / p50 0.465 / p99 0.725). The button approach is viable; the feature stays in
+   the param layer.
+2. **Analysis + readout only — BUILT, awaiting on-footage sanity check.** Measures through
+   the *real* pipeline, not a parallel copy: scene luminance is **XYZ Y from `to_XYZ`**
+   (exact and gamut-agnostic — Rec.709 luma weights are wrong against DWG primaries), and
+   display values come from **`og::process()` itself at neutral params**, using the user's
+   Camera + Output Encode. Measuring the *neutral* node is deliberate: analysing the graded
+   result would make a second click chase its own tail. Percentiles via `nth_element` over
+   the kept samples (~200k, under a megabyte) rather than a histogram — no binning error.
+   Reports Y50 / key EV / DR stops, display p1-p50-p99, hot/src/sat, and a subject row.
+
+   **`key` VALIDATED on footage (4 shots, 2026-08-02).** It orders exposure correctly
+   across ~4 stops: overexposed cactus **-1.79 EV** (Y50 0.62) · bright interview **-1.05**
+   · golden-hour desert **-0.79** · dark car interior **+2.37** (Y50 0.035). Direction and
+   magnitude both read the way a colorist would call it, so it's a sound basis for step 3.
+
+   **Two things that footage taught us, both now measured:**
+   - **`hot` (bright in display) is NOT `pin` (clipped at the sensor).** The user's cactus
+     shot is 36% hot but "we had the range on camera" — pulling exposure down recovers it.
+     A shot pinned at the top of its log range does not recover at any exposure. Any
+     auto-exposure that ignores this will happily "fix" unrecoverable frames.
+     **Do NOT test source clipping against 1.0.** First attempt used `>= 0.995` and was
+     wrong: a raw waveform with the node disabled showed **Blackmagic log peaking at
+     ~768/1023 ≈ 0.75** with a textured, unpinned top. A fixed 1.0-ish threshold therefore
+     reports 0% on *every* Blackmagic shot, blown ones included. What identifies clipping is
+     a **pile-up at whatever this clip's own maximum is** — a real highlight rolls off with
+     falling density, a clipped one stacks samples on the ceiling. So `pin` = share within
+     `max(0.002, srcMax*0.004)` of the observed max, reported as `pin %@srcMax`.
+     Generalises across cameras and log formats for free.
+   - **Frame-median exposure is subject-blind.** The car-interior shot asks for **+2.37 EV**
+     because a dark interior dominates the frame — applying it would blow the windows and
+     overexpose a face that was already fine. Hence the Subject row: the same key asked of
+     skin-toned pixels only, with its coverage % alongside. **The mask cannot tell skin from
+     sand** — on a desert shot it matches most of the frame, and a high coverage % is the
+     tell that the number means nothing (desert frame: **39.7%** coverage = sand, not a face
+     — the guard working as designed). Where the two keys disagree, frame median is wrong.
+     **Select the mask on CHROMATICITY ONLY.** v1 also gated on display luma 0.15-0.95 and
+     that is self-fulfilling: it picks mid-tone pixels by construction, so their median
+     lands near mid-gray and the key reads ~0 on every shot. Caught on the desert frame —
+     masked Y 0.2100 against a frame median of 0.6236, i.e. a filter artefact reported as a
+     measurement. Only a minimal luma guard remains (too dark / too blown for hue to mean
+     anything). **General lesson: a selection rule that constrains the quantity being
+     measured produces a number that describes the filter, not the footage.**
+
+   **The Scene row is grade-independent — confirmed by accident and worth relying on.** The
+   same cactus frame read `Y50 0.6236 / key -1.79 / DR 6.5` both ungraded and with a Custom
+   Look at Mix 1.0, while the Display row moved (p1 0.126 -> 0.201, the LUT lifting blacks).
+   So Analyze can be clicked on an already-graded node and still describe the *footage* — no
+   tail-chasing, no "only use on a fresh node" caveat needed in the UI. Exposure, DR and the
+   subject key come from the Scene row; only black-point and rolloff targets need Display.
+
+   Display stats start from the **effective** encode (same LUT override as the render) but
+   **fall back to Gamma 2.2 when that isn't display-referred** — a Film Look forces Cineon,
+   and analysing in Cineon silently breaks two things: it clamps to [0,1] so `hot` reads a
+   flat 0% on a blown frame, and it compresses chroma so the skin mask's saturation window
+   stops matching faces. Both were observed on one shot when only the LUT mode changed —
+   `hot` 22.9% -> 0.0%, skin coverage -> 1.6%. **Percentile and hue thresholds are only
+   meaningful in the space they were chosen for.** The Display row now prints which encode
+   it used (`@Scene` / `@2.2` / `@2.4`). The Scene row is encode-independent and is the
+   robust one to build heuristics on.
+
+   **`key` IS DESCRIPTIVE, NOT PRESCRIPTIVE — the single most important finding so far.**
+   The dark car-interior shot asks for **+2.37 EV** (frame) and **+2.25 EV** (skin-masked),
+   i.e. the subject mask did *not* rescue it. But the user's own grade on that shot is trim
+   exposure **+0.55** with Gain pulled to 0.714 — roughly a quarter of what `key` demands.
+   A moody low-key interior is *supposed* to have a low median; "move the median to 0.18"
+   would flatten every deliberately dark shot into mid-gray mush. So step 3 must NOT map
+   key -> exposure directly. Options to try: apply a fraction of key, clamp hard (±1 EV),
+   or only correct when the shot falls outside a plausible band. Also note 18% grey is the
+   wrong *target* for skin specifically — lit skin sits roughly a stop above mid-gray.
+3. **BUILT — and it turned out to be one slider, not five.** Four hand-graded shots
+   (2026-08-02) were the **Cinematic Film Emulation preset with exactly one value moved:
+   Gain**. Lift, gamma, density, trim, and the `Gain Temp -0.220 / Gain Tint 0.090` tint
+   were **identical across all four** — the user's words: "the filmic look has a bit of a
+   tint, an opinionated look if you will". The car-interior grade *is* the untouched preset.
+   And Gain tracks the measured key:
+
+   | shot | key | gain | fit `0.80 + 0.19*key` |
+   |---|---|---|---|
+   | car interior | +2.60 | 0.800 | 0.800 (clamped) |
+   | desert | -0.79 | 0.642 | 0.650 |
+   | interview | -1.04 | 0.655 | 0.602 |
+   | cactus | -1.96 | 0.407 | 0.428 |
+
+   Three of four within 0.02. The interview is the outlier and explains itself: the only
+   shot on a different camera (F-Log2) with **RAW Exposure already at -0.50**, so part of
+   its correction happened upstream of Gain. `applyAutoGrade()` = `applyPreset(1)` then
+   `gain = clamp(0.80 + 0.19*key, 0.30, 0.80)`.
+
+   **The clamp at the preset value for key >= 0 is the important half.** It's how "key is
+   descriptive, not prescriptive" gets resolved: a dark shot is never pushed up, so a
+   deliberately low-key interior keeps its intent. That came out of a clamp, not a special
+   case. Floor at 0.30 because the fit is only evidenced to about -2 EV; the bare line
+   reaches zero near -4 EV.
+4. **Warmth + rolloff — the two gaps the user named after trying the button** ("the auto
+   grade is quite cool and highlights are quite harsh", interview shot, 2026-08-02). Their
+   grade fixed both with controls the button doesn't touch: **RAW Temperature 6500 -> 9242**
+   and **Density 0.436**, plus **Rolloff 0.557**. Measurements added for these, not yet
+   fitted — need a data pass on the fixed build first:
+   - **ROLLOFF SOLVED — it's `pin` (source clipping), and nothing else.** Measured across
+     four shots on the fixed build:
+
+     | shot | hot | **pin** | peak | user's rolloff |
+     |---|---|---|---|---|
+     | cactus | 33.7% | **0.00%** | x1.12 | **0** |
+     | car | 6.4% | **0.00%** | x1.05 | **0** |
+     | desert dirt | 0.0% | **0.00%** | x1.05 | **0** |
+     | interview | 17.8% | **6.18%** | x1.00 | **0.557** |
+
+     `rolloff = min(0.80, 0.090 * pin%)`. Physically right: rolloff softens flat
+     detail-free patches, and clipped-at-source *is* flat and detail-free, while a merely
+     bright frame keeps its texture and needs nothing. **Two candidates are ruled out by
+     that table** — `hot` runs backwards (33.7% -> 0, 17.8% -> 0.557), and so does
+     `p99.9/p99`, my own hypothesis: a big blown window puts p99 and p99.9 on the *same
+     plateau*, so the interview scores the *lowest* multiplier. Evidenced by one non-zero
+     point; three controls sit correctly at zero.
+   - **WARMTH IS NOT DERIVABLE FROM `R/G`** — and may not be derivable at all. Only two of
+     the four shots have a real face (interview skin 3.4%, car 10.3%; cactus 46.5% and
+     desert 72.2% are sand). Those two measure **R/G 1.21 and 1.22** — indistinguishable —
+     yet the user warmed one to **RAW Temp 9242** and left the other at 6500. The warmed
+     shot is also the only one on a different camera (Fuji F-Log2), which points at a
+     *shoot* property rather than an image-content one. B/G was truncated in the panel and
+     is now visible; if it doesn't separate them either, **the button should leave warmth
+     alone rather than guess.** Not every control the user touches is a correction — some
+     are taste, and taste has no measurement to fit.
+
+5. **Bias slider (`autoBias`, -1..+1, default 0) — LIVE, moves FOUR params, group sits FIRST
+   in the panel.** Driving Lift + Rolloff only wasn't enough (user: "all that seems to happen
+   now is we change lift") — Rolloff clamps at 0 for positive bias, so opening a shot up did
+   nothing but raise the floor. Now Lift/Gamma/Gain/Rolloff move together. **Gain's response
+   is measurement-modulated**: the positive direction scales by `max(0, 1 - hot/40)` so
+   brightening fades out on a frame that's already a third above white; the negative
+   direction is never scaled, since pulling gain down is always safe. `m_LastGain` holds the
+   measured value so a Bias drag stays anchored to it instead of drifting. **The whole analysis UI is
+   hidden in shipping builds** behind `static const bool kAnalysisDebugUI = false` in
+   `OneGrade.cpp` — the `showAnalysis` checkbox, the Analyze Frame button, the six readout
+   rows and the Applied line. A colorist sees only Auto Grade + Bias. **FUTURE WORK: flip
+   that constant and rebuild to get the debug panel back** — it's the mode to be in when
+   fitting new constants, since every current fit was found by reading those rows across
+   real footage. Visibility only: the params exist and work either way, so nothing about
+   saved projects depends on it. Secrets are applied in `setEnabledness()` so they survive a
+   project load.** (both at the user's request, 2026-08-02: "the bias adjustment is great, the only
+   thing is to make it real time"). `applyBias()` is split out of `applyAutoGrade()` so a
+   drag re-derives Rolloff and Lift from the **cached** measurement — pure arithmetic on two
+   stored numbers, no re-analysis, so it keeps up with the drag. Gated on `m_AutoApplied`:
+   dragging Bias on a node that was never auto-graded must not silently stamp values, and
+   since that flag and the cached measurement are instance state, the slider goes **inert
+   after a project reload** until Auto Grade is pressed again — deliberately inert rather
+   than acting on a stale number. The group is **unnumbered** while experimental: 0-8 is the
+   pipeline in application order and this isn't a pipeline stage, plus it keeps the numbering
+   in the README and users' heads from shifting for a feature that may still change shape.
+   Number it 0 and renumber the rest if it graduates.
+
+   User's request after using the button Negative tames the top (rolloff up, lift down), positive opens the bottom
+   (lift up, rolloff down), 0 = the fitted result. `rolloff = clamp(0.090*pin - bias*0.35)`,
+   `lift = clamp(0.11 + bias*0.06)`. It moves **Rolloff and Lift only** — those are the two
+   the user reached for in exactly this situation ("add a touch of highlight rolloff until
+   we bring the highlights below 1023", "lift darker images a bit"). **Gain stays on its
+   measurement**: it's the one parameter with a hard physical anchor, and letting a taste
+   control drag it would undo the part that works. It's an *input to the button*, read when
+   pressed — not a live control.
+
+**KNOWN LIMITATION — a shot whose exposure changes mid-take.** The user's car clip cranes
+from a bright exterior into a dark interior. Auto Grade on the exterior frame produces an
+excellent exterior and too dark an interior; clicking again inside produces an excellent
+interior. This is single-frame analysis meeting a multi-stop change, and the right answer
+is to split the clip, which the user reached independently. **Frame-based is a feature
+here, not a defect** — the user picks which moment it optimises for by parking the
+playhead. Say that rather than trying to engineer around it.
+
+**Fit to the USER's grades, not to a convention.** Every textbook target tried before this
+(median -> 18% grey) contradicted what the user actually does. Four shots of ground truth
+beat the convention immediately. Re-fit the constants if the style shifts; they're two
+numbers in `applyAutoGrade()`.
+
+**Design rules agreed up front:** percentiles, never means (one blown practical wrecks a
+mean) · subsample to ~200k samples (a button that stalls on 8K is its own failure) ·
+**the button writes visible slider values the user can then adjust** — a starting point
+that shows its work, not a black box, so a bad analysis costs one undo rather than trust ·
+**no LUT selection in v1** ("warm scene therefore Golden Hour" is a guess; "median 0.31,
+target 0.42" is a measurement) · skin is most of what "pleasing" means and a luma histogram
+can't find it — a hue-window mask is the biggest quality lever, design for it early.
 
 ## Likely next tasks
 **Rolloff smoothness on Gen 5 (user's active thread):** the Highlight Rolloff softclip is

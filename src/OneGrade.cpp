@@ -39,6 +39,18 @@
 #define kSupportsMultiResolution    false
 #define kSupportsMultipleClipPARs   false
 
+// Master switch for the Auto Grade analysis UI. While false the whole debug surface is
+// hidden — the "Show analysis" checkbox, the Analyze Frame button, the six measurement rows
+// and the Applied readout — leaving just Auto Grade and Bias, which is all a colorist needs.
+// The params still exist and still work; only their visibility is off, so nothing about
+// saved projects or the measurement itself depends on this.
+//
+// FUTURE WORK: flip this to true and rebuild to get the debug panel back. The checkbox
+// reappears and toggles the rest at runtime, which is the mode to be in when fitting new
+// constants or working out why a shot analysed oddly — the numbers are how every one of the
+// current fits was found. See docs/AUTO-GRADE.md.
+static const bool kAnalysisDebugUI = false;
+
 #define kParamCount 13 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff
 
 // Folder scanned for built-in / film-look LUTs (Resolve's default LUT install).
@@ -327,6 +339,15 @@ public:
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName);
     void setEnabledness();
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
+    void probeAnalyze(double p_Time);   // measure the frame and report (writes m_LastKey)
+    void applyAutoGrade(double p_Time); // measure, then set the film look + Gain from key
+    void applyBias();                   // re-derive Rolloff/Lift from the cached measurement
+    double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
+    double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
+    double m_LastGain = 0.80;           // Gain the measurement asked for (bias moves off this)
+    double m_LastHot = 0.0;             // % of frame above display white — headroom for brightening
+    bool   m_HaveKey = false;
+    bool   m_AutoApplied = false;       // has Auto Grade run? gates the live Bias drag
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
     void setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
@@ -360,6 +381,18 @@ private:
     OFX::ChoiceParam* m_LookLut;
     OFX::DoubleParam* m_LutMix;
     CubeLUT           m_Lut;        // cached loaded LUT
+
+    // Auto Grade probe (experimental) — see probeAnalyze().
+    OFX::StringParam* m_ProbeStatus;
+    OFX::StringParam* m_ProbeScene;
+    OFX::StringParam* m_ProbeDisplay;
+    OFX::StringParam* m_ProbeShape;
+    OFX::StringParam* m_ProbeSubject;
+    OFX::DoubleParam* m_AutoBias;
+    OFX::BooleanParam* m_ShowAnalysis;
+    OFX::PushButtonParam* m_ProbeBtn;
+    OFX::StringParam* m_ProbePeak;
+    OFX::StringParam* m_ProbeApplied;
 };
 
 OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
@@ -392,6 +425,16 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_LookGroup= fetchChoiceParam("lookGroup");
     m_LookLut  = fetchChoiceParam("lookLut");
     m_LutMix   = fetchDoubleParam("lutMix");
+    m_ProbeStatus  = fetchStringParam("probeStatus");
+    m_ProbeScene   = fetchStringParam("probeScene");
+    m_ProbeDisplay = fetchStringParam("probeDisplay");
+    m_ProbeShape   = fetchStringParam("probeShape");
+    m_ProbeSubject = fetchStringParam("probeSubject");
+    m_AutoBias     = fetchDoubleParam("autoBias");
+    m_ShowAnalysis = fetchBooleanParam("showAnalysis");
+    m_ProbeBtn     = fetchPushButtonParam("probeAnalyze");
+    m_ProbePeak    = fetchStringParam("probePeak");
+    m_ProbeApplied = fetchStringParam("probeApplied");
 
     populateLookLut();
     setEnabledness();
@@ -419,6 +462,330 @@ bool OneGrade::lutSelected()
     m_LookLut->getValue(li);
     m_FilmLut->getValue(fi);
     return !resolveLutPath(mode, gi, li, fi).empty();
+}
+
+// AUTO GRADE ANALYSIS — step 2 of the "magic button" (2026-08-02).
+//
+// Step 1 answered the only question that could have killed the idea: Resolve DOES hand
+// over pixels from outside a render call (validated in Resolve, 4K frame, 230400 samples).
+// So a button can measure the frame and write slider values, and the whole feature stays
+// in the param layer — no kernel work, no golden-rule mirror.
+//
+// This step measures and REPORTS ONLY. Nothing is written to a slider yet: the numbers
+// have to be shown to describe real shots correctly before any of them is allowed to move
+// the picture. Wiring comes in step 3.
+//
+// The measurement runs the samples through the REAL pipeline, not a parallel copy of it:
+//   - scene luminance is XYZ Y straight out of `to_XYZ`, which is exact and gamut-agnostic
+//     (Rec.709 luma weights would be wrong against DWG primaries)
+//   - display values come from `og::process()` itself at neutral params, so what's measured
+//     is what the node would render with the grade zeroed
+// Percentiles come from `nth_element` over the kept samples rather than a histogram: at
+// ~200k samples the memory is under a megabyte and it removes binning error entirely.
+//
+// Everything stays wrapped: fetchImage outside render may throw, return null, or hand back
+// zeros, and all three are answers as long as we survive them. `anyNonZero` is tracked
+// separately because an empty buffer and a black shot both read as p1 = p50 = p99 = 0.
+void OneGrade::probeAnalyze(double p_Time)
+{
+    m_ProbeScene->setValue("");
+    m_ProbeDisplay->setValue("");
+    m_ProbeShape->setValue("");
+    m_ProbeSubject->setValue("");
+    m_ProbePeak->setValue("");
+    if (!m_SrcClip || !m_SrcClip->isConnected()) { m_ProbeStatus->setValue("No source clip connected"); return; }
+
+    try {
+        std::unique_ptr<OFX::Image> src(m_SrcClip->fetchImage(p_Time));
+        if (!src.get()) { m_ProbeStatus->setValue("fetchImage returned null"); return; }
+
+        const OfxRectI b = src->getBounds();
+        const int w = b.x2 - b.x1, h = b.y2 - b.y1;
+        if (w <= 0 || h <= 0) { m_ProbeStatus->setValue("Empty bounds"); return; }
+        if (src->getPixelDepth() != OFX::eBitDepthFloat ||
+            src->getPixelComponents() != OFX::ePixelComponentRGBA) {
+            char m2[64]; snprintf(m2, sizeof m2, "%dx%d but not float RGBA", w, h);
+            m_ProbeStatus->setValue(m2); return;
+        }
+
+        // Measure the NEUTRAL node: the analysis has to describe the footage, not the grade
+        // already on it, or clicking twice would chase its own tail. Camera and Output
+        // Encode are the user's, since they decide what space the numbers even mean.
+        int camera = 0, encode = 0, lutMode = 0;
+        m_Camera->getValue(camera);
+        m_Encode->getValue(encode);
+        m_LutMode->getValue(lutMode);
+        // Start from the EFFECTIVE encode, the same override the render applies: with a LUT
+        // selected the Output Encode param is not what gets rendered, so measuring against
+        // it would report a curve the user isn't looking at.
+        if (lutSelected()) encode = (lutMode == 2) ? 3 : 0;
+        // ...but the analysis must land in a DISPLAY-REFERRED space, so fall back to Gamma
+        // 2.2 when the effective encode isn't one. A Film Look forces Cineon, and Cineon is
+        // a log encode: it clamps to [0,1] (so 'hot' reads a flat 0% on a genuinely blown
+        // frame) and it compresses chroma (so the skin mask's saturation window, tuned for
+        // display RGB, stops matching faces). Both were observed on the interview shot -
+        // hot fell 22.9% -> 0.0% and skin coverage collapsed to 1.6% - purely from the
+        // encode underneath, with no change to the picture. Percentile and hue thresholds
+        // are only meaningful in the space they were chosen for.
+        const int dispEnc = (encode <= 2) ? encode : 1;
+        const char* encName = (dispEnc == 0) ? "Scene" : (dispEnc == 1) ? "2.2" : "2.4";
+        float neutral[kParamCount] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+
+        // Coarse grid, ~200k samples: percentiles don't need every pixel, and a button that
+        // stalls the UI on an 8K frame is its own kind of failure.
+        const int step = std::max(1, (int)(std::sqrt((double)(w * h) / 200000.0) + 0.5));
+        std::vector<float> sceneY, dispL, skinY;
+        double skinR = 0.0, skinG = 0.0, skinB = 0.0;   // skin chromaticity, for a warmth read
+        sceneY.reserve(220000); dispL.reserve(220000);
+        long long hot = 0;
+        std::vector<float> srcTop;   // per-sample max input channel, for ceiling detection
+        srcTop.reserve(220000);
+        double satSum = 0.0; long long satN = 0;
+        bool anyNonZero = false;
+
+        for (int y = b.y1; y < b.y2; y += step) {
+            const float* row = static_cast<const float*>(src->getPixelAddress(b.x1, y));
+            if (!row) continue;
+            for (int x = 0; x < w; x += step) {
+                const float* p = row + (size_t)x * 4;
+                if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) anyNonZero = true;
+                srcTop.push_back(std::max(p[0], std::max(p[1], p[2])));
+
+                // Scene luminance: decode to camera-linear, then XYZ Y. Neutral RAW, so no
+                // exposure gain and white_balance() at 6500 is identity — skipped, not
+                // approximated.
+                float lin[3] = { og::decode_log(camera, p[0]), og::decode_log(camera, p[1]), og::decode_log(camera, p[2]) };
+                float xyz[3]; og::to_XYZ(camera, lin, xyz);
+                sceneY.push_back(xyz[1]);
+
+                // Display: the actual render path at neutral grade.
+                float dr, dg, db;
+                og::process(camera, dispEnc, neutral, p[0], p[1], p[2], dr, dg, db);
+                const float L = 0.2126f*dr + 0.7152f*dg + 0.0722f*db;
+                dispL.push_back(L);
+                if (L > 1.0f) ++hot;   // above display white: lost on export unless rolled off
+
+                float hh, ss, vv; og::rgb2hsv(dr, dg, db, hh, ss, vv);
+                // Saturation on mid-tones only: shadows and blown highlights both report
+                // meaningless saturation, and it's the mids that a Density move addresses.
+                if (L > 0.15f && L < 0.85f) { satSum += ss; ++satN; }
+
+                // Crude skin mask: warm hue, plausible saturation. Exists because
+                // frame-median exposure is subject-blind — a dark interior drags the median
+                // down and asks for a push that would blow the windows and overexpose a
+                // face that was already fine. Reported with its own coverage %, because
+                // this mask cannot tell skin from sand: on a desert shot it matches ~40% of
+                // the frame, and that is the tell.
+                //
+                // Selection is on CHROMATICITY ONLY. A luminance window here (the first
+                // version used display 0.15-0.95) is self-fulfilling: it picks mid-tone
+                // pixels by construction, so their median lands near mid-gray and the key
+                // reads ~0 on every shot. Caught on the desert frame, where masked Y came
+                // back 0.21 against a frame median of 0.62 — a filter artefact, not a
+                // measurement. The only luma guard left excludes pixels too dark or too
+                // blown for their hue to mean anything.
+                if (hh >= 0.01f && hh <= 0.11f && ss >= 0.10f && ss <= 0.65f &&
+                    vv >= 0.03f && vv <= 1.05f) {
+                    skinY.push_back(xyz[1]);
+                    skinR += dr; skinG += dg; skinB += db;
+                }
+            }
+        }
+        const size_t n = dispL.size();
+        if (n == 0) { m_ProbeStatus->setValue("Bounds ok but no rows readable"); return; }
+
+        auto pct = [](std::vector<float>& v, double frac) {
+            size_t k = (size_t)(frac * (v.size() - 1));
+            std::nth_element(v.begin(), v.begin() + k, v.end());
+            return (double)v[k];
+        };
+        // Each nth_element is O(n) and correct whatever state the vector is left in by the
+        // previous call, so three ranks cost three linear passes — still far cheaper than
+        // a full sort, and exact where a histogram would only be as good as its bin width.
+        const double d1 = pct(dispL, 0.01), d50 = pct(dispL, 0.50), d99 = pct(dispL, 0.99);
+        const double d999 = pct(dispL, 0.999);
+        const double y1 = pct(sceneY, 0.01), y50 = pct(sceneY, 0.50), y99 = pct(sceneY, 0.99);
+
+        // The two numbers a heuristic would actually act on. Key: how far the median sits
+        // from 18% mid-gray, in stops — that IS the exposure correction, since RAW Exposure
+        // is a linear gain in stops. DR: the scene's usable range, p1 to p99, which says
+        // whether there is room to lift blacks and roll highlights or the shot is already flat.
+        const double key = (y50 > 1e-6) ? std::log2(0.18 / y50) : 0.0;
+        m_LastKey = key; m_HaveKey = true;
+        const double dr_stops = (y1 > 1e-6 && y99 > y1) ? std::log2(y99 / y1) : 0.0;
+
+        char m2[128];
+        snprintf(m2, sizeof m2, "%s %dx%d step %d n=%zu", anyNonZero ? "OK" : "ALL ZERO", w, h, step, n);
+        m_ProbeStatus->setValue(m2);
+        snprintf(m2, sizeof m2, "Y50 %.4f  key %+.2f EV  DR %.1f st", y50, key, dr_stops);
+        m_ProbeScene->setValue(m2);
+        snprintf(m2, sizeof m2, "p1 %.3f  p50 %.3f  p99 %.3f  @%s", d1, d50, d99, encName);
+        m_ProbeDisplay->setValue(m2);
+        // Source clipping, measured against the CLIP'S OWN ceiling rather than an assumed
+        // 1.0. Blackmagic log peaks around 0.75 of the code range (confirmed on a waveform
+        // with the node disabled), so a fixed "> 0.995" test reports 0% on every Blackmagic
+        // shot — including genuinely blown ones. What actually identifies clipping is a
+        // PILE-UP at whatever the top of this clip's distribution happens to be: a real
+        // highlight rolls off with falling density, a clipped one stacks samples on the
+        // ceiling. So: find the max, then count how much of the frame is sitting on it.
+        float srcMax = 0.f;
+        for (float v : srcTop) if (v > srcMax) srcMax = v;
+        const float eps = std::max(0.002f, srcMax * 0.004f);
+        long long pinned = 0;
+        for (float v : srcTop) if (v >= srcMax - eps) ++pinned;
+
+        // Highlight SHAPE, not size. A big bright landscape and a small blown window both
+        // raise 'hot', but only the second needs a rolloff: the user gave a 36%-hot cactus
+        // rolloff 0 and a 22.9%-hot interview rolloff 0.557. What separates them is how far
+        // the very top runs past the bulk - a compact specular core sits far above p99,
+        // a broad bright field sits just above it. peak = p99.9 / p99.
+        const double peak = (d99 > 1e-6) ? d999 / d99 : 1.0;
+        snprintf(m2, sizeof m2, "p99.9 %.3f  peak x%.2f", d999, peak);
+        m_ProbePeak->setValue(m2);
+
+        m_LastPin = 100.0 * (double)pinned / (double)n;
+        m_LastHot = 100.0 * (double)hot / (double)n;
+        snprintf(m2, sizeof m2, "hot %.1f%%  pin %.2f%%@%.3f  sat %.3f",
+                 100.0 * (double)hot / (double)n, 100.0 * (double)pinned / (double)n,
+                 srcMax, satN ? satSum / (double)satN : 0.0);
+        m_ProbeShape->setValue(m2);
+
+        // Subject key: the same exposure question asked of skin-toned pixels only. Where
+        // the two keys disagree, the frame median is the one that's wrong.
+        const double skinFrac = 100.0 * (double)skinY.size() / (double)n;
+        if (skinY.size() >= 200) {
+            const double sy = pct(skinY, 0.50);
+            const double skey = (sy > 1e-6) ? std::log2(0.18 / sy) : 0.0;
+            // Warmth as the skin's own chromaticity: R/G and B/G of the masked pixels.
+            // The user's fix for "too cool" on this footage was RAW Temperature 6500 ->
+            // 9242, so what has to be measurable is how far skin sits from where skin
+            // should sit - not a global grey-world guess, which a teal shirt would skew.
+            const double g = (skinG > 1e-6) ? skinG : 1.0;
+            // Short enough that B/G isn't truncated in the panel — the first version cut it
+            // off, and B/G is the half that might carry a cool cast.
+            snprintf(m2, sizeof m2, "%.0f%% k%+.2f RG%.2f BG%.2f",
+                     skinFrac, skey, skinR / g, skinB / g);
+        } else {
+            snprintf(m2, sizeof m2, "skin %.1f%% - too few to trust", skinFrac);
+        }
+        m_ProbeSubject->setValue(m2);
+    }
+    catch (std::exception& e) {
+        char m2[96]; snprintf(m2, sizeof m2, "threw: %.60s", e.what());
+        m_ProbeStatus->setValue(m2);
+    }
+    catch (...) { m_ProbeStatus->setValue("fetchImage threw (unknown)"); }
+}
+
+// AUTO GRADE — step 3, fitted to the user's own grades rather than to a convention.
+//
+// Four hand-graded shots (2026-08-02) turned out to be the Cinematic Film Emulation preset
+// with exactly ONE slider moved per shot: Gain. Everything else — lift, gamma, density,
+// trim, and the Gain Temp -0.220 / Gain Tint 0.090 tint that gives the look its character —
+// was identical across all four. The car-interior grade IS the untouched preset.
+//
+// And Gain tracks the measured key:
+//     shot        key      gain
+//     car       +2.60      0.800   (= preset, untouched)
+//     desert    -0.79      0.642
+//     interview -1.04      0.655
+//     cactus    -1.96      0.407
+// which a line fits to within 0.02 on three of the four:  gain = 0.80 + 0.19*key.
+// (The interview is the outlier and explains itself: the only shot on a different camera,
+// with RAW Exposure already at -0.50, so part of its correction happened upstream of Gain.)
+//
+// The clamp at the preset value for key >= 0 is the important half. It means a dark shot is
+// never pushed up — the earlier finding that `key` is descriptive rather than prescriptive
+// (a low-key interior is *supposed* to sit low, and chasing 18% grey would flatten it) is
+// handled by refusing to act in that direction at all, rather than by a special case.
+//
+// Writes ordinary slider values the user can then drag. That is the whole design: a
+// starting point that shows its work, so a bad analysis costs one undo, not trust.
+void OneGrade::applyAutoGrade(double p_Time)
+{
+    probeAnalyze(p_Time);              // fills m_LastKey, and reports what it saw
+    if (!m_HaveKey) return;            // analysis failed; probeAnalyze has already said why
+
+    applyPreset(1);                    // Cinematic Film Emulation (Kodak 2383 D60)
+
+    // Fitted from the user's grades. Floor exists because the fit is only evidenced out to
+    // about -2 EV; beyond that it extrapolates, and an unclamped line reaches 0 near -4 EV.
+    const double gain = std::min(0.80, std::max(0.30, 0.80 + 0.19 * m_LastKey));
+
+    // Highlight Rolloff from SOURCE CLIPPING, which is the only measurement that separated
+    // the user's rolloff choices:
+    //     cactus      pin 0.00%   rolloff 0        (33.7% hot, but nothing clipped)
+    //     car         pin 0.00%   rolloff 0
+    //     desert      pin 0.00%   rolloff 0
+    //     interview   pin 6.18%   rolloff 0.557    (blown windows)
+    // 0.557/6.18 = 0.090 per percent. Physically right, too: rolloff exists to soften flat
+    // detail-free patches, and clipped-at-source IS flat and detail-free. A merely bright
+    // frame keeps its texture and wants nothing. Two earlier candidates are ruled out by
+    // this table - `hot` runs the wrong way (33.7% -> 0, 17.8% -> 0.557), and so does
+    // p99.9/p99, because a big blown window makes p99 and p99.9 land on the same plateau.
+    // Evidenced by ONE non-zero point, so it is a line through the origin; three controls
+    // sit correctly at zero. Cap short of 1.0 - beyond ~0.8 the shoulder starts eating
+    // diffuse white, and no measured shot came near it.
+    m_LastGain = gain;   // applyBias() writes it, so a Bias drag stays anchored to this
+    m_AutoApplied = true;
+    applyBias();                       // sets Rolloff + Lift, and writes the Applied line
+    setEnabledness();                  // the preset switches LUT Mode
+}
+
+// Bias: one slider trading highlight restraint against shadow openness, because the
+// measurement can only get a shot into the right neighbourhood — which end of that
+// neighbourhood you want is taste, and taste needs a knob rather than a constant.
+// Negative tames the top (more rolloff, shadows sit down); positive opens the bottom
+// (lift up, rolloff backed off). Zero is the fitted result.
+//
+// It moves Rolloff and Lift specifically because those are the two the user reached for in
+// exactly this situation: "add a touch of highlight rolloff until we bring the highlights
+// below 1023", and "lift darker images a bit". Gain deliberately stays on its measurement —
+// it's the one parameter with a hard physical anchor (distance from mid-gray), and letting
+// a taste control drag it would undo the part that works.
+//
+// Split out of applyAutoGrade so a Bias drag can re-derive both values from the CACHED
+// measurement, with no re-analysis: it's pure arithmetic on two stored numbers, so it keeps
+// up with a drag. Gated on m_AutoApplied — dragging Bias on a node that was never
+// auto-graded must not silently stamp Lift and Rolloff. That flag and the cached
+// measurement are instance state, so after a project reload the slider goes inert until
+// Auto Grade is pressed again; deliberately inert rather than acting on a stale number.
+void OneGrade::applyBias()
+{
+    if (!m_AutoApplied) return;
+    double bias = 0.0; m_AutoBias->getValue(bias);
+
+    // One slider, the whole tonal range. Bias moves all four together so the result stays a
+    // coherent picture rather than a lifted floor on an unchanged image — the first version
+    // drove Lift and Rolloff only, and since Rolloff clamps at 0 for positive bias, opening
+    // a shot up visibly did nothing but raise the floor.
+    //   negative -> protect: shoulder the top, deepen the floor, darken mids, pull gain
+    //   positive -> open:    drop the shoulder, raise the floor, brighten mids and gain
+    //
+    // Gain's response is the one that's measurement-modulated. Brightening a frame that
+    // already has a third of itself above display white just pushes more of it past clipping,
+    // so the positive direction is scaled by remaining headroom and fades to nothing by ~40%
+    // hot. The negative direction is never scaled: pulling gain down is always safe.
+    const double headroom = std::max(0.0, 1.0 - m_LastHot / 40.0);
+    const double gainDelta = (bias >= 0.0) ? bias * 0.08 * headroom : bias * 0.08;
+
+    const double rolloff = std::min(0.80, std::max(0.00, 0.090 * m_LastPin - bias * 0.35));
+    const double lift    = std::min(0.50, std::max(-0.50, 0.11 + bias * 0.06));
+    const double gamma   = std::min(3.00, std::max(0.20, 1.00 + bias * 0.12));
+    const double gain    = std::min(1.20, std::max(0.20, m_LastGain + gainDelta));
+    m_Rolloff->setValue(rolloff);
+    m_Lift->setValue(lift);
+    m_Gamma->setValue(gamma);
+    m_Gain->setValue(gain);
+
+    char msg[128];
+    if (bias != 0.0)
+        snprintf(msg, sizeof msg, "G %.3f Gam %.3f L %.3f R %.3f  bias %+.2f",
+                 gain, gamma, lift, rolloff, bias);
+    else
+        snprintf(msg, sizeof msg, "Gain %.3f (key %+.2f)  Roll %.3f (pin %.1f%%)",
+                 gain, m_LastKey, rolloff, m_LastPin);
+    m_ProbeApplied->setValue(msg);
 }
 
 void OneGrade::setEnabledness()
@@ -461,6 +828,23 @@ void OneGrade::setEnabledness()
     // wasn't using, so picking a LUT read as the node silently blowing the contrast out
     // (github issue). Grey it AND spell out what is actually being rendered — a greyed
     // control still showing the old value is only half the truth.
+    // Analysis UI. Gated twice: on the compile-time master switch (see kAnalysisDebugUI —
+    // currently off, so a colorist sees only Auto Grade and Bias) and, when that's on, on the
+    // runtime checkbox. Driven from setEnabledness() rather than only from changedParam so
+    // the state survives a project load.
+    bool showAnalysis = false;
+    m_ShowAnalysis->getValue(showAnalysis);
+    const bool debug = kAnalysisDebugUI && showAnalysis;
+    m_ShowAnalysis->setIsSecret(!kAnalysisDebugUI);
+    m_ProbeBtn->setIsSecret(!debug);       // Analyze Frame — measures without applying
+    m_ProbeApplied->setIsSecret(!debug);   // what the last Auto Grade wrote
+    m_ProbeScene->setIsSecret(!debug);
+    m_ProbeDisplay->setIsSecret(!debug);
+    m_ProbePeak->setIsSecret(!debug);
+    m_ProbeShape->setIsSecret(!debug);
+    m_ProbeSubject->setIsSecret(!debug);
+    m_ProbeStatus->setIsSecret(!debug);
+
     const bool lutOn = lutSelected();
     m_Encode->setEnabled(look && !lutOn);
     if (!look)
@@ -605,6 +989,19 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
         }
         setEnabledness();
     }
+    // Experimental Auto Grade probe. Guarded on eChangeUserEdit like the preset: a project
+    // load must never trigger a frame fetch.
+    else if (p_ParamName == "probeAnalyze" && p_Args.reason == OFX::eChangeUserEdit) {
+        probeAnalyze(p_Args.time);
+    }
+    else if (p_ParamName == "probeApply" && p_Args.reason == OFX::eChangeUserEdit) {
+        applyAutoGrade(p_Args.time);
+    }
+    // Live: re-derive Rolloff/Lift as the slider moves. No re-analysis, so it keeps up.
+    else if (p_ParamName == "autoBias" && p_Args.reason == OFX::eChangeUserEdit) {
+        applyBias();
+    }
+    else if (p_ParamName == "showAnalysis") setEnabledness();
     // Only on a real user edit — project load / plugin edits must not re-stamp the preset
     // over values the user has since tweaked.
     else if (p_ParamName == "preset" && p_Args.reason == OFX::eChangeUserEdit) {
@@ -786,6 +1183,66 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     dstClip->setSupportsTiles(kSupportsTiles);
 
     PageParamDescriptor* page = p_Desc.definePageParam("Controls");
+
+    // ---- Auto Grade (experimental) ----
+    // First in the panel, at the user's request: it's the one-click entry point, so it
+    // shouldn't be buried under nine groups of manual controls. Deliberately UNNUMBERED
+    // while it's experimental — the 0-8 sequence below is the pipeline in the order it's
+    // applied, and this isn't a pipeline stage, it's a way of setting those stages. It also
+    // means the numbering users and the docs already know doesn't shift for a feature that
+    // may still change shape. Number it 0 and renumber the rest if it graduates.
+    GroupParamDescriptor* gAuto = p_Desc.defineGroupParam("gAuto");
+    gAuto->setLabels("Auto Grade (experimental)", "Auto Grade", "Auto Grade");
+    gAuto->setOpen(true);
+    {
+        BooleanParamDescriptor* show = p_Desc.defineBooleanParam("showAnalysis");
+        show->setLabels("Show analysis", "Show analysis", "Show analysis");
+        show->setHint("Reveal the frame measurements Auto Grade works from - exposure key, dynamic range, display percentiles, highlight shape, source clipping and the skin read. Off by default so the panel stays a grading panel; turn it on when a shot behaves oddly and you want to see why. Purely informational, it changes nothing.");
+        show->setDefault(false);
+        show->setParent(*gAuto);
+        page->addChild(*show);
+
+        PushButtonParamDescriptor* btn = p_Desc.definePushButtonParam("probeAnalyze");
+        btn->setLabels("Analyze Frame", "Analyze Frame", "Analyze Frame");
+        btn->setHint("Experimental. Reads the current frame at the node's input and reports what it found below. Does not change the picture or any slider — this exists to prove the plugin can sample the image before any auto-grade feature is built on top of it.");
+        btn->setParent(*gAuto);
+        page->addChild(*btn);
+
+        auto probeLine = [&](const char* name, const char* label, const char* hint) {
+            StringParamDescriptor* s = p_Desc.defineStringParam(name);
+            s->setLabels(label, label, label);
+            s->setStringType(eStringTypeLabel);
+            s->setDefault("(not run)");
+            s->setHint(hint);
+            s->setEnabled(false);
+            s->setParent(*gAuto);
+            page->addChild(*s);
+        };
+        probeLine("probeStatus", "Result",
+                  "Whether pixels came back, the frame size, the sampling step and how many samples were read. 'ALL ZERO' means the host handed over a buffer but it was empty - a different answer from a black shot.");
+        probeLine("probeScene", "Scene",
+                  "Measured on scene light (XYZ luminance after the camera decode, before any grade). Y50 is the median. 'key' is how far that median sits from 18% mid-gray in stops - the exposure correction the shot is asking for, since RAW Exposure is a linear gain in stops. 'DR' is p1 to p99 in stops: how much usable range the shot actually has.");
+        probeLine("probeDisplay", "Display",
+                  "Luma percentiles after the full pipeline at NEUTRAL grade, in your current Output Encode: 1st, 50th, 99th. This is the space Lift/Gamma/Gain work in, so these are the numbers a black-point or highlight target would be set against. No LUT is applied.");
+        probeLine("probeShape", "Shape",
+                  "'hot' is the share above 1.0 in display - bright, but it pulls back fine if the range was captured. 'pin' is the share of the frame sitting ON the source ceiling, with that ceiling's code value after the @ - this is clipping at the sensor, where no exposure move brings anything back. Measured against the clip's own maximum rather than 1.0, because log formats don't all reach the top of the code range (Blackmagic peaks near 0.75). A low pin % means the highlights roll off and the range was captured; a high one means they are stacked on the ceiling and gone. 'sat' is mean HSV saturation over mid-tones only, which is what a Density move would act on.");
+        PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");
+        apply->setLabels("Auto Grade", "Auto Grade", "Auto Grade");
+        apply->setHint("Experimental. Analyses the frame, applies the Cinematic Film Emulation look, and sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
+        apply->setParent(*gAuto);
+        page->addChild(*apply);
+
+        page->addChild(*defineSlider(p_Desc, "autoBias", "Bias",
+            "Which way Auto Grade leans when you press it. 0 uses the measured result as-is. Negative protects the picture - shoulders the highlights, deepens the floor, darkens the mids and pulls Gain down - for a shot with blown windows or hot speculars. Positive opens it up - drops the shoulder, raises the floor, brightens the mids and Gain. It moves Lift, Gamma, Gain and Highlight Rolloff together so the whole tonal range stays coherent. The brightening half is limited by how much of the frame is already above white, so it will not push a blown shot further into clipping. Updates live once Auto Grade has been pressed - drag it and the image follows. It does nothing on a node that has not been auto-graded, and goes inert after a project reload until you press Auto Grade again.",
+            0.0, -1.0, 1.0, 0.01, gAuto));
+
+        probeLine("probePeak", "Peak",
+                  "p99.9 in display, and how far it runs past p99. A compact blown specular - a window, a lamp - sits far above the bulk of the highlights and gives a high multiplier; a broad bright field like sunlit sand sits just above it. This is the shape of the top end rather than its size, which is what decides whether a shot wants Highlight Rolloff.");
+        probeLine("probeSubject", "Subject",
+                  "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
+        probeLine("probeApplied", "Applied",
+                  "What the Auto Grade button last wrote, and the measurement it came from. Blank until you press it. Analyze Frame never changes anything; only Auto Grade does.");
+    }
 
     // ---- 0. Role + Preset ----
     GroupParamDescriptor* gPreset = p_Desc.defineGroupParam("gPreset");
@@ -995,6 +1452,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
              "Your DELIVERY curve, baked into the render. Independent of Timeline Color Space - do NOT change it to match. Rec.709 (Gamma 2.2) is the default (web/YouTube); Gamma 2.4 for broadcast; Rec.709 (Scene) for a scene-referred hand-off.");
     helpLine("help8", "Monitor", "Calibrate; check on a second screen",
              "Calibrate your monitor and have Resolve show your delivery space; check the grade on a second screen before committing.");
+
 }
 
 ImageEffect* OneGradeFactory::createInstance(OfxImageEffectHandle p_Handle, ContextEnum /*p_Context*/)
