@@ -330,6 +330,7 @@ public:
     void probeAnalyze(double p_Time);   // measure the frame and report (writes m_LastKey)
     void applyAutoGrade(double p_Time); // measure, then set the film look + Gain from key
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
+    double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
     bool   m_HaveKey = false;
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
@@ -620,6 +621,7 @@ void OneGrade::probeAnalyze(double p_Time)
         snprintf(m2, sizeof m2, "p99.9 %.3f  peak x%.2f", d999, peak);
         m_ProbePeak->setValue(m2);
 
+        m_LastPin = 100.0 * (double)pinned / (double)n;
         snprintf(m2, sizeof m2, "hot %.1f%%  pin %.2f%%@%.3f  sat %.3f",
                  100.0 * (double)hot / (double)n, 100.0 * (double)pinned / (double)n,
                  srcMax, satN ? satSum / (double)satN : 0.0);
@@ -636,7 +638,9 @@ void OneGrade::probeAnalyze(double p_Time)
             // 9242, so what has to be measurable is how far skin sits from where skin
             // should sit - not a global grey-world guess, which a teal shirt would skew.
             const double g = (skinG > 1e-6) ? skinG : 1.0;
-            snprintf(m2, sizeof m2, "skin %.1f%% key %+.2f  R/G %.2f B/G %.2f",
+            // Short enough that B/G isn't truncated in the panel — the first version cut it
+            // off, and B/G is the half that might carry a cool cast.
+            snprintf(m2, sizeof m2, "%.0f%% k%+.2f RG%.2f BG%.2f",
                      skinFrac, skey, skinR / g, skinB / g);
         } else {
             snprintf(m2, sizeof m2, "skin %.1f%% - too few to trust", skinFrac);
@@ -686,8 +690,26 @@ void OneGrade::applyAutoGrade(double p_Time)
     const double gain = std::min(0.80, std::max(0.30, 0.80 + 0.19 * m_LastKey));
     m_Gain->setValue(gain);
 
+    // Highlight Rolloff from SOURCE CLIPPING, which is the only measurement that separated
+    // the user's rolloff choices:
+    //     cactus      pin 0.00%   rolloff 0        (33.7% hot, but nothing clipped)
+    //     car         pin 0.00%   rolloff 0
+    //     desert      pin 0.00%   rolloff 0
+    //     interview   pin 6.18%   rolloff 0.557    (blown windows)
+    // 0.557/6.18 = 0.090 per percent. Physically right, too: rolloff exists to soften flat
+    // detail-free patches, and clipped-at-source IS flat and detail-free. A merely bright
+    // frame keeps its texture and wants nothing. Two earlier candidates are ruled out by
+    // this table - `hot` runs the wrong way (33.7% -> 0, 17.8% -> 0.557), and so does
+    // p99.9/p99, because a big blown window makes p99 and p99.9 land on the same plateau.
+    // Evidenced by ONE non-zero point, so it is a line through the origin; three controls
+    // sit correctly at zero. Cap short of 1.0 - beyond ~0.8 the shoulder starts eating
+    // diffuse white, and no measured shot came near it.
+    const double rolloff = std::min(0.80, 0.090 * m_LastPin);
+    m_Rolloff->setValue(rolloff);
+
     char msg[96];
-    snprintf(msg, sizeof msg, "Film look, Gain %.3f from key %+.2f EV", gain, m_LastKey);
+    snprintf(msg, sizeof msg, "Gain %.3f (key %+.2f)  Roll %.3f (pin %.1f%%)",
+             gain, m_LastKey, rolloff, m_LastPin);
     m_ProbeApplied->setValue(msg);
     setEnabledness();                  // the preset switches LUT Mode
 }

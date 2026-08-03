@@ -498,13 +498,32 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
    grade fixed both with controls the button doesn't touch: **RAW Temperature 6500 -> 9242**
    and **Density 0.436**, plus **Rolloff 0.557**. Measurements added for these, not yet
    fitted — need a data pass on the fixed build first:
-   - **`peak` = p99.9 / p99.** Rolloff is NOT a function of `hot`: the user gave a
-     **36%-hot cactus rolloff 0** and a **22.9%-hot interview rolloff 0.557**. Size of the
-     bright region is the wrong signal; *shape* of the top end is the right one. A compact
-     blown specular (window, lamp) runs far past the bulk; a broad sunlit field sits just
-     above it. That distinction is what makes a shot look "harsh".
-   - **skin `R/G` and `B/G`** in display. Warmth has to be measured on skin, not grey-world:
-     a teal shirt filling a third of the frame would drag any global estimate cold.
+   - **ROLLOFF SOLVED — it's `pin` (source clipping), and nothing else.** Measured across
+     four shots on the fixed build:
+
+     | shot | hot | **pin** | peak | user's rolloff |
+     |---|---|---|---|---|
+     | cactus | 33.7% | **0.00%** | x1.12 | **0** |
+     | car | 6.4% | **0.00%** | x1.05 | **0** |
+     | desert dirt | 0.0% | **0.00%** | x1.05 | **0** |
+     | interview | 17.8% | **6.18%** | x1.00 | **0.557** |
+
+     `rolloff = min(0.80, 0.090 * pin%)`. Physically right: rolloff softens flat
+     detail-free patches, and clipped-at-source *is* flat and detail-free, while a merely
+     bright frame keeps its texture and needs nothing. **Two candidates are ruled out by
+     that table** — `hot` runs backwards (33.7% -> 0, 17.8% -> 0.557), and so does
+     `p99.9/p99`, my own hypothesis: a big blown window puts p99 and p99.9 on the *same
+     plateau*, so the interview scores the *lowest* multiplier. Evidenced by one non-zero
+     point; three controls sit correctly at zero.
+   - **WARMTH IS NOT DERIVABLE FROM `R/G`** — and may not be derivable at all. Only two of
+     the four shots have a real face (interview skin 3.4%, car 10.3%; cactus 46.5% and
+     desert 72.2% are sand). Those two measure **R/G 1.21 and 1.22** — indistinguishable —
+     yet the user warmed one to **RAW Temp 9242** and left the other at 6500. The warmed
+     shot is also the only one on a different camera (Fuji F-Log2), which points at a
+     *shoot* property rather than an image-content one. B/G was truncated in the panel and
+     is now visible; if it doesn't separate them either, **the button should leave warmth
+     alone rather than guess.** Not every control the user touches is a correction — some
+     are taste, and taste has no measurement to fit.
 
 **Fit to the USER's grades, not to a convention.** Every textbook target tried before this
 (median -> 18% grey) contradicted what the user actually does. Four shots of ground truth
