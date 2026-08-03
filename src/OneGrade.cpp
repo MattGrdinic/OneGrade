@@ -383,6 +383,18 @@ private:
     OFX::DoubleParam* m_LutMix;
     CubeLUT           m_Lut;        // cached loaded LUT
 
+    // Per-stage bypass — one checkbox per pipeline group, so a stage can be auditioned in
+    // and out without zeroing its sliders and putting them back. Enforced at RENDER by
+    // forcing the stage's params neutral (same mechanism as Node Role), never by a separate
+    // code path, so a bypassed stage is exactly a neutral stage and nothing can drift.
+    // The Input Transform has no bypass: the camera decode is structural, not an effect —
+    // "bypassing" it would emit raw log, which is never what the checkbox would mean.
+    OFX::BooleanParam* m_BypBalance;
+    OFX::BooleanParam* m_BypDensity;
+    OFX::BooleanParam* m_BypExposure;
+    OFX::BooleanParam* m_BypLut;
+    OFX::BooleanParam* m_BypTrim;
+
     // Auto Grade probe (experimental) — see probeAnalyze().
     OFX::StringParam* m_ProbeStatus;
     OFX::StringParam* m_ProbeScene;
@@ -426,6 +438,11 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_LookGroup= fetchChoiceParam("lookGroup");
     m_LookLut  = fetchChoiceParam("lookLut");
     m_LutMix   = fetchDoubleParam("lutMix");
+    m_BypBalance  = fetchBooleanParam("bypassBalance");
+    m_BypDensity  = fetchBooleanParam("bypassDensity");
+    m_BypExposure = fetchBooleanParam("bypassExposure");
+    m_BypLut      = fetchBooleanParam("bypassLut");
+    m_BypTrim     = fetchBooleanParam("bypassTrim");
     m_ProbeStatus  = fetchStringParam("probeStatus");
     m_ProbeScene   = fetchStringParam("probeScene");
     m_ProbeDisplay = fetchStringParam("probeDisplay");
@@ -457,6 +474,14 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
 // LUT dropdown is the louder tell anyway.
 bool OneGrade::lutSelected()
 {
+    // A bypassed LUT stage owns nothing, so it must hand Output Encode back to the user —
+    // otherwise bypassing the look would leave the encode pinned to the LUT's working curve
+    // and the "bypass" would still be changing the picture. Mirrors the render, which
+    // clears lutOk on the same condition before the encode coupling runs.
+    bool byp = false;
+    m_BypLut->getValue(byp);
+    if (byp) return false;
+
     int mode = 0, gi = 0, li = 0, fi = 0;
     m_LutMode->getValue(mode);
     m_LookGroup->getValue(gi);
@@ -804,19 +829,35 @@ void OneGrade::setEnabledness()
     m_RawExp->setEnabled(src);
     m_RawTemp->setEnabled(src);
 
+    // Per-stage bypass greys its own group's sliders on top of whatever the role allows.
+    // The checkboxes themselves stay live for any stage the role owns, so auditioning is
+    // one click in and one click out.
+    bool bypBal = false, bypDen = false, bypExp = false, bypLut = false, bypTrim = false;
+    m_BypBalance->getValue(bypBal);
+    m_BypDensity->getValue(bypDen);
+    m_BypExposure->getValue(bypExp);
+    m_BypLut->getValue(bypLut);
+    m_BypTrim->getValue(bypTrim);
+
+    m_BypBalance->setEnabled(look);
+    m_BypDensity->setEnabled(look);
+    m_BypExposure->setEnabled(look);
+    m_BypLut->setEnabled(look);
+    m_BypTrim->setEnabled(look);
+
     m_Preset->setEnabled(look);
-    m_Temp->setEnabled(look);
-    m_Tint->setEnabled(look);
-    m_OffTemp->setEnabled(look);
-    m_OffTint->setEnabled(look);
-    m_Density->setEnabled(look);
-    m_Lift->setEnabled(look);
-    m_Gamma->setEnabled(look);
-    m_Gain->setEnabled(look);
-    m_PostExp->setEnabled(look);
-    m_PostCon->setEnabled(look);
-    m_Rolloff->setEnabled(look);
-    m_LutMode->setEnabled(look);
+    m_Temp->setEnabled(look && !bypBal);
+    m_Tint->setEnabled(look && !bypBal);
+    m_OffTemp->setEnabled(look && !bypBal);
+    m_OffTint->setEnabled(look && !bypBal);
+    m_Density->setEnabled(look && !bypDen);
+    m_Lift->setEnabled(look && !bypExp);
+    m_Gamma->setEnabled(look && !bypExp);
+    m_Gain->setEnabled(look && !bypExp);
+    m_PostExp->setEnabled(look && !bypTrim);
+    m_PostCon->setEnabled(look && !bypTrim);
+    m_Rolloff->setEnabled(look && !bypTrim);
+    m_LutMode->setEnabled(look && !bypLut);
 
     // Input Transform pins the encode to DaVinci Wide Gamut / Intermediate — the hand-off
     // to the clip-level grade — so it isn't the user's to pick. An active LUT pins it too
@@ -853,15 +894,17 @@ void OneGrade::setEnabledness()
     else if (lutOn)
         m_EncodeNote->setValue(mode == 2 ? "Film LUT owns this: Cineon in, 709 out"
                                          : "Look LUT owns this: Rec.709 (Scene)");
+    else if (bypLut && mode != 0)
+        m_EncodeNote->setValue("LUT bypassed - the encode above is used");
     else if (mode != 0)
         m_EncodeNote->setValue("No LUT found - the encode above is used");
     else
         m_EncodeNote->setValue("");
 
-    m_FilmLut->setEnabled(look && mode == 2);
-    m_LookGroup->setEnabled(look && mode == 1);
-    m_LookLut->setEnabled(look && mode == 1);
-    m_LutMix->setEnabled(look && mode != 0);
+    m_FilmLut->setEnabled(look && !bypLut && mode == 2);
+    m_LookGroup->setEnabled(look && !bypLut && mode == 1);
+    m_LookLut->setEnabled(look && !bypLut && mode == 1);
+    m_LutMix->setEnabled(look && !bypLut && mode != 0);
 }
 
 // Rebuild the Look LUT dropdown to list only the currently selected group's LUTs.
@@ -1058,7 +1101,22 @@ void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArgum
     m_FilmLut->getValueAtTime(p_Args.time, filmLut);
     const std::string lutPath = resolveLutPath(lutMode, lookGroup, lookLut, filmLut);
     const float lutMix = (float)m_LutMix->getValueAtTime(p_Args.time);
-    const bool lutOk   = !lutPath.empty() && m_Lut.load(lutPath);
+
+    // Per-stage bypass, read before the encode coupling below because bypassing the LUT
+    // stage has to release the encode override too — otherwise the "bypass" would still be
+    // rendering the LUT's working curve, which is a visible change and therefore not a
+    // bypass. Everything else is enforced further down by forcing the stage's params
+    // neutral, so a bypassed stage IS a neutral stage: no second code path to keep in sync,
+    // and nothing for the golden-rule mirror to worry about (the kernels never learn that
+    // bypass exists).
+    bool bypBal = false, bypDen = false, bypExp = false, bypLut = false, bypTrim = false;
+    m_BypBalance->getValueAtTime(p_Args.time, bypBal);
+    m_BypDensity->getValueAtTime(p_Args.time, bypDen);
+    m_BypExposure->getValueAtTime(p_Args.time, bypExp);
+    m_BypLut->getValueAtTime(p_Args.time, bypLut);
+    m_BypTrim->getValueAtTime(p_Args.time, bypTrim);
+
+    const bool lutOk = !bypLut && !lutPath.empty() && m_Lut.load(lutPath);
 
     // Couple the pre-LUT encoding to the LUT path so the two can't mismatch:
     //   Film Look LUTs require Cineon log input; Custom look LUTs use Rec.709.
@@ -1102,6 +1160,18 @@ void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArgum
     } else if (role == 2) {     // Output Transform: scene exp/WB already happened upstream
         params[10]=0.f; params[11]=6500.f;                        // rawExp, rawTemp
     }
+
+    // Per-stage bypass, applied on top of the role. Both force to neutral, so the order
+    // between them doesn't matter — but bypass has to come second to be authoritative when
+    // a stage the role owns is also switched off. The slider VALUES are untouched: bypass
+    // is a render-time mute, so flipping it back restores the grade exactly, which is the
+    // whole point (auditioning a stage shouldn't cost you the numbers you dialled in).
+    if (bypBal)  { params[0]=0.f; params[1]=0.f; params[6]=0.f; params[7]=0.f; }  // gain+offset balance
+    if (bypDen)  { params[2]=0.f; }                                              // density
+    if (bypExp)  { params[3]=0.f; params[4]=1.f; params[5]=1.f; }                // lift/gamma/gain
+    if (bypTrim) { params[8]=0.f; params[9]=1.f; params[12]=0.f; }               // exp/contrast/rolloff
+    // bypLut needs no entry here: it already cleared lutOk above, which drops both the LUT
+    // sample and its encode override in one go.
 
     p_Proc.setDstImg(dst.get());
     p_Proc.setSrcImg(src.get());
@@ -1154,6 +1224,23 @@ void OneGradeFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
 #ifdef __APPLE__
     p_Desc.setSupportsMetalRender(true);
 #endif
+}
+
+// One "Bypass" checkbox per pipeline group. Auditioning a stage used to mean zeroing its
+// sliders and putting the numbers back afterwards, which is a bad answer and cost people
+// their values when they mis-remembered (forum feedback, 2026-08-03). Enforced at render by
+// forcing the stage neutral — see setupAndProcess — so a bypassed stage is precisely a
+// neutral stage, with no parallel code path and nothing new for the GPU kernels to mirror.
+static BooleanParamDescriptor* defineBypass(OFX::ImageEffectDescriptor& p_Desc, PageParamDescriptor* page,
+                                            const char* name, const char* hint, GroupParamDescriptor* parent)
+{
+    BooleanParamDescriptor* b = p_Desc.defineBooleanParam(name);
+    b->setLabels("Bypass", "Bypass", "Bypass");
+    b->setHint(hint);
+    b->setDefault(false);
+    b->setParent(*parent);
+    page->addChild(*b);
+    return b;
 }
 
 static DoubleParamDescriptor* defineSlider(OFX::ImageEffectDescriptor& p_Desc, const char* name, const char* label,
@@ -1314,6 +1401,8 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 2. Balance ----  (white balance in linear; watch the vectorscope while adjusting)
     GroupParamDescriptor* gBal = p_Desc.defineGroupParam("gBalance");
     gBal->setLabels("2  Balance", "2  Balance", "2  Balance");
+    defineBypass(p_Desc, page, "bypassBalance",
+                 "Mute this stage at render without losing its values. Gain and Offset balance are held neutral; the sliders grey out but keep their numbers, so switching back restores the grade exactly.", gBal);
     {
         StringParamDescriptor* tip = p_Desc.defineStringParam("balanceTip");
         tip->setLabels("Tip", "Tip", "Tip");
@@ -1333,11 +1422,15 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 3. Density ----  (HSV saturation gain — the green-of-Gain-in-HSV trick)
     GroupParamDescriptor* gDen = p_Desc.defineGroupParam("gDensity");
     gDen->setLabels("3  Density", "3  Density", "3  Density");
+    defineBypass(p_Desc, page, "bypassDensity",
+                 "Mute this stage at render without losing its value. Density is held at 0 (no saturation change); the slider greys out but keeps its number.", gDen);
     page->addChild(*defineSlider(p_Desc, "density", "Density", "Color density: saturation gain in HSV (the green-channel-of-Gain-in-HSV trick). -1 = grayscale, +1 = double saturation.", 0.0, -1.0, 1.0, 0.001, gDen));
 
     // ---- 4. Exposure (Lift / Gamma / Gain) ----
     GroupParamDescriptor* gExp = p_Desc.defineGroupParam("gExposure");
     gExp->setLabels("4  Exposure (Lift / Gamma / Gain)", "4  Exposure", "4  Exposure");
+    defineBypass(p_Desc, page, "bypassExposure",
+                 "Mute this stage at render without losing its values. Lift/Gamma/Gain are held neutral (0/1/1); the sliders grey out but keep their numbers. Note Auto Grade drives Gain, so bypassing this also mutes the auto exposure.", gExp);
     page->addChild(*defineSlider(p_Desc, "lift",  "Lift",  "Raise/lower shadows (offset)", 0.0, -0.5, 0.5, 0.001, gExp));
     page->addChild(*defineSlider(p_Desc, "gamma", "Gamma", "Midtone brightness (power)",    1.0,  0.2, 3.0, 0.001, gExp));
     page->addChild(*defineSlider(p_Desc, "gain",  "Gain",  "Highlights / overall (multiply)", 1.0, 0.0, 3.0, 0.001, gExp));
@@ -1378,6 +1471,8 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     scanLuts();
     GroupParamDescriptor* gLut = p_Desc.defineGroupParam("gLut");
     gLut->setLabels("6  Look / Film LUT", "6  Look / Film LUT", "6  Look / Film LUT");
+    defineBypass(p_Desc, page, "bypassLut",
+                 "Mute the LUT at render without losing the selection. This also hands Output Encode back to you: a selected LUT normally pins the encode to the curve it was authored for, so a bypass that left the encode pinned would still be changing the picture. The 'In effect' line under Output Encode says so while this is on.", gLut);
 
     ChoiceParamDescriptor* lutMode = p_Desc.defineChoiceParam("lutMode");
     lutMode->setLabels("LUT Mode", "LUT Mode", "LUT Mode");
@@ -1424,6 +1519,8 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 7. Trim (after LUT) ----  final display-space trims on top of the look/LUT
     GroupParamDescriptor* gTrim = p_Desc.defineGroupParam("gTrim");
     gTrim->setLabels("7  Trim (after LUT)", "7  Trim (after LUT)", "7  Trim (after LUT)");
+    defineBypass(p_Desc, page, "bypassTrim",
+                 "Mute this stage at render without losing its values. Post-LUT Exposure, Contrast and Highlight Rolloff are held neutral; the sliders grey out but keep their numbers.", gTrim);
     page->addChild(*defineSlider(p_Desc, "postExp", "Exposure", "Post-LUT exposure trim in stops. Bring brightness back after a film-emulation LUT.", 0.0, -3.0, 3.0, 0.01, gTrim));
     page->addChild(*defineSlider(p_Desc, "postCon", "Contrast", "Post-LUT contrast trim about mid (0.5), applied after the LUT.", 1.0, 0.0, 2.0, 0.001, gTrim));
     page->addChild(*defineSlider(p_Desc, "rolloff", "Highlight Rolloff", "Soft-clips bright highlights per channel so lamps/speculars roll off to white instead of clipping to a flat neon patch. Higher = earlier, stronger shoulder. Only active on display-referred output (Rec.709 encodes or any LUT path).", 0.0, 0.0, 1.0, 0.001, gTrim));

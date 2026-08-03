@@ -39,6 +39,21 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   camera decode*. The input transform is one of the most useful things the plugin does and
   the old wording undersold it.
 
+### Added — per-stage Bypass
+
+- **A "Bypass" checkbox on Balance, Density, Exposure, Look/Film LUT and Trim.** Auditioning
+  a stage used to mean zeroing its sliders and putting the numbers back from memory. Now
+  it's one click, the values are untouched, and clicking back restores the grade exactly.
+- Bypass is enforced **at render** by holding the stage's params neutral — the same
+  mechanism Node Role uses. A bypassed stage is therefore *precisely* a neutral stage: no
+  second code path, and nothing new for the three GPU kernels to mirror.
+- **Bypassing the LUT hands Output Encode back to you.** A selected LUT normally pins the
+  encode to the curve it was authored for, so a bypass that left it pinned would still be
+  changing the picture — which would not be a bypass. The "In effect" line says so while
+  it's on.
+- No bypass on the Input Transform: the camera decode is structural, not an effect.
+  "Bypassing" it would emit raw log, which is never what the checkbox would mean.
+
 ### Internal
 
 - Plugin version bumped to **1.3** (`kPluginVersionMajor`/`Minor`). It had been left at
