@@ -18,10 +18,10 @@ Every camera entry is a pair applied in `og::process()` steps 1–2
    above the linear toe junction at code 0.1339).
 2. **Gamut matrix — `to_XYZ(cam, v)`.** A 3×3 matrix from the camera's native primaries
    to CIE XYZ (D65). Then `XYZ_to_DWG()` takes XYZ into the working space. Two matrices
-   rather than one camera→DWG matrix so the RAW white balance can act in XYZ between
+   rather than one camera→DWG matrix so the scene white balance can act in XYZ between
    them (see `docs/BALANCE.md`).
 
-RAW Exposure (a linear multiply in stops) is applied to the scene-linear values right
+Scene Exposure (a linear multiply in stops) is applied to the scene-linear values right
 after the curve decode, *before* the gamut matrix — the same place the Camera RAW tab's
 Exposure acts, which is why it matches that control nearly exactly.
 
@@ -40,7 +40,7 @@ Exposure acts, which is why it matches that control nearly exactly.
 | 8 | Fuji F-Log2 | F-Log2 | Rec.2020 stand-in |
 | 9 | Panasonic V-Log | V-Log | V-Gamut |
 | 10 | Rec.2100 HLG | HLG inverse OETF | Rec.2020 |
-| 11 | **Rec.2100 PQ / ST.2084** — default | PQ inverse EOTF | Rec.2020 |
+| 11 | **Rec.2100 PQ - Smooth Decode** — default | PQ inverse EOTF | Rec.2020 |
 
 Notes:
 
@@ -64,6 +64,18 @@ deliberately "wrong": feeding *log camera footage* through the PQ inverse EOTF i
 colorimetric decode, it's a strongly **compressive** curve that lands log material with
 a near-perfect built-in highlight rolloff and smooth color. Treat index 11 as a creative
 decode ("smooth decode") and index 0–9 as the measurement-faithful ones.
+
+**Named for what it is, since 2026-08-03.** The option used to read
+"Rec.2100 PQ / ST.2084 (HDR)", which put a *look* in the one slot of the list that every
+other entry reserves for a faithful decode. Forum feedback called that out and it was a
+fair hit: the honest objection was never to the arithmetic (a decode curve and a look
+curve are the same class of operation — a CST is a transfer function, a matrix and
+another transfer function, all of which the grading tools also do) but to the **label**,
+which is a claim other people read. It is now **"Rec.2100 PQ - Smooth Decode"**.
+
+It was **renamed, not moved**. Choice params save by index, so reordering the list would
+silently repoint every saved grade — the same trap the 2026-07 camera renumber sprang.
+The list order is frozen; only strings change.
 
 ## 4. The working space: DaVinci Wide Gamut linear
 

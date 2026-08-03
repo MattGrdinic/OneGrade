@@ -1,5 +1,6 @@
 // OneGrade — minimal .cube 3D LUT parser (host side).
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <string>
 #include <vector>

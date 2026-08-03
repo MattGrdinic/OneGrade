@@ -1,5 +1,6 @@
 // OneGrade — CUDA GPU kernel (Linux/Windows NVIDIA). Mirrors src/OneGradePipeline.h.
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <cuda_runtime.h>
 
 __device__ float og_pow(float b, float e){ return powf(fmaxf(b,0.0f), e); }

@@ -7,7 +7,8 @@
 # The LUTs run on the plugin's Custom Look path, i.e. input AND output are
 # display-referred Rec.709 (Scene OETF) values in [0,1]. Tuning lives in the
 # LOOKS dict at the bottom — tweak numbers, re-run, `make`, reinstall, eyeball.
-# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (C) 2026 Matthew Grdinic
+# SPDX-License-Identifier: GPL-3.0-or-later
 import colorsys
 import math
 import os

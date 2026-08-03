@@ -1,6 +1,7 @@
 // OneGrade — shared CPU-side color pipeline (single source of truth for the math).
 // The GPU kernels (Metal/OpenCL/CUDA) mirror this exact math.
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //  Faithful to the reference node tree:  CST -> Balance -> Density -> Exposure -> Output
 //    0. RAW       : exposure (stops) + white balance (Kelvin) on scene-linear, pre-CST
@@ -204,6 +205,28 @@ static inline float encode(int enc, float x)
     return x;                                                             // linear
 }
 
+// Lift/Gamma/Gain, the arithmetic core, on a value ALREADY in the display curve.
+// Extracted from step 6 of process() so there is one definition rather than two: the Clean
+// auto-grade solver in OneGrade.cpp evaluates the same curve to place a frame's percentiles,
+// and a second copy of this would drift the first time step 6 changed.
+//
+//   gain  : multiply, pivots black
+//   lift  : pivots white, reach clamped at white so superwhites aren't amplified
+//   gamma : power, pivots black AND white
+//
+// Monotonic in v, which is what lets the solver work on three percentiles instead of every
+// sample -- a monotonic map commutes with percentiles.
+//
+// Negatives pass through untouched: safe_pow() floors at 0, which would hard-clip
+// out-of-gamut values even at neutral gamma and destroy the scene-referred Scene/DI/Linear
+// feeds. No-op for the display encodes (2.2/2.4/Cineon already clamp negatives upstream).
+static inline float lgg_core(float v, float lift, float gamma, float gain)
+{
+    v = v * gain;
+    v = v + lift * (1.0f - (v < 1.0f ? v : 1.0f));
+    return (v < 0.f) ? v : safe_pow(v, 1.0f/gamma);
+}
+
 // ---------- 3D LUT trilinear sampling + mix ----------
 //  lut: N*N*N*3, red index fastest. Input rgb clamped to [0,1]. mix in [0,1].
 static inline void apply_lut(const float* lut, int N, float mix,
@@ -313,13 +336,7 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     const float dg = (enc == 1) ? 2.2f : (enc == 2) ? 2.4f : 0.0f;   // 0 = Scene OETF
     for (int i=0;i<3;i++) {
         float v = (dg > 0.f) ? r709_g_enc(outc[i], dg) : r709_enc(outc[i]);
-        v = v * gain;
-        v = v + lift * (1.0f - (v < 1.0f ? v : 1.0f));
-        // Negatives pass through untouched: safe_pow() floors at 0, which would hard-clip
-        // out-of-gamut values even at neutral gamma and destroy the scene-referred
-        // Scene/DI/Linear feeds. No-op for the display encodes (2.2/2.4/Cineon already
-        // clamp negatives upstream of here).
-        v = (v < 0.f) ? v : safe_pow(v, 1.0f/gamma);
+        v = lgg_core(v, lift, gamma, gain);
         outc[i] = (dg > 0.f) ? r709_g_dec(v, dg) : r709_dec(v);
     }
 

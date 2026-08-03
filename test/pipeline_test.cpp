@@ -1,11 +1,13 @@
 // OneGrade — CPU unit tests for the color pipeline (OneGradePipeline.h).
 // Builds with any C++17 compiler; no OFX/GPU needed. Returns non-zero on failure.
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "../src/OneGradePipeline.h"
 #include <cstdio>
 #include <cmath>
 #include <string>
 #include <vector>
+#include <array>
 
 static int g_fail = 0;
 static void check(bool ok, const std::string& name) {
@@ -164,7 +166,7 @@ int main() {
         og::process(1, 5, P0, 0.5f, 0.5f, 0.5f, a0, b0, c0);   // enc=5 = linear output
         og::process(1, 5, P1, 0.5f, 0.5f, 0.5f, a1, b1, c1);
         check(close(a1,2.0f*a0,2e-2f)&&close(b1,2.0f*b0,2e-2f)&&close(c1,2.0f*c0,2e-2f),
-              "RAW exposure +1 stop doubles linear output");
+              "Scene Exposure +1 stop doubles linear output");
     }
 
     // 10. RAW temperature: neutral at 6500; warmer raises R / lowers B, cooler the reverse
@@ -177,7 +179,7 @@ int main() {
         og::process(1, 0, Pw, 0.5f, 0.5f, 0.5f, rw, gw, bw);
         og::process(1, 0, Pc, 0.5f, 0.5f, 0.5f, rc, gc, bc);
         check(finite3(r6,g6,b6) && rw>r6 && r6>rc && bw<b6 && b6<bc,
-              "RAW temp: warmer raises R / lowers B, 6500 sits between");
+              "Scene White Balance: warmer raises R / lowers B, 6500 sits between");
     }
 
     // 11. Node Role split: Input Transform (cam -> DaVinci Intermediate) chained into
@@ -220,6 +222,105 @@ int main() {
                 if (r < -1e-4f || g < -1e-4f || b < -1e-4f) sawNegative = true;
             }
         check(ok && sawNegative, "neutral node preserves out-of-gamut negatives (DI hand-off)");
+    }
+
+    // 13. LUT EXPORT — guards the bake used by `Export .cube`.
+    //
+    //     Two claims, and only the ones measurement actually supports:
+    //
+    //     (a) ON-LATTICE the bake is exact. This is the strong test: it is a perfect
+    //         detector for the index-order transpose that is the easy bug here (a .cube
+    //         stores red varying fastest, ((b*N + g)*N + r)*3, and a transposed bake loads
+    //         fine, looks like a plausible grade, and has its red and blue axes swapped).
+    //         Sampling exactly at lattice points has zero interpolation error, so any
+    //         deviation above float noise is a real structural bug.
+    //
+    //     (b) OFF-LATTICE, only along the GREY AXIS, and only loosely. The pipeline hard-
+    //         clips out-of-gamut channels at the output encode, which puts a discontinuity
+    //         through the colour cube; trilinear interpolation cannot follow a step, so a
+    //         tight global tolerance here would be asserting something false. Measured on
+    //         Gen 5 -> 709 2.2 at 33^3: grey axis ~4 LSB, mildly tinted bright colour ~152
+    //         LSB, median over the whole cube 0 LSB. See exportCube() for the full note.
+    {
+        const int N = 33;
+        float P[13]; neutral13(P);
+        P[3] = 0.08f; P[4] = 1.1f; P[5] = 0.85f; P[2] = 0.2f; P[0] = -0.15f;   // a real grade
+
+        bool ok = true;
+        for (int cam : {0, 2, 11}) {
+            const int enc = 1;                                   // Rec.709 Gamma 2.2
+            std::vector<float> lat((size_t)N*N*N*3);
+            const float d = 1.0f / (float)(N - 1);
+            for (int bi = 0; bi < N; ++bi)
+                for (int gi = 0; gi < N; ++gi)
+                    for (int ri = 0; ri < N; ++ri) {
+                        float ro, go, bo;
+                        og::process(cam, enc, P, ri*d, gi*d, bi*d, ro, go, bo);
+                        const size_t idx = (((size_t)bi*N + gi)*N + ri)*3;
+                        lat[idx+0]=ro; lat[idx+1]=go; lat[idx+2]=bo;
+                    }
+
+            // (a) exact on lattice points
+            for (int bi = 0; bi < N; bi += 4)
+                for (int gi = 0; gi < N; gi += 4)
+                    for (int ri = 0; ri < N; ri += 4) {
+                        float er, eg, eb;
+                        og::process(cam, enc, P, ri*d, gi*d, bi*d, er, eg, eb);
+                        float lr = ri*d, lg = gi*d, lb = bi*d;
+                        og::apply_lut(lat.data(), N, 1.0f, lr, lg, lb);
+                        ok &= close(lr, er, 1e-5f) && close(lg, eg, 1e-5f) && close(lb, eb, 1e-5f);
+                    }
+
+            // (b) grey axis, off lattice, through the normal log range
+            auto cl = [](float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); };
+            for (int i = 0; i <= 200; ++i) {
+                const float t = 0.10f + 0.60f * i / 200.f;
+                float er, eg, eb; og::process(cam, enc, P, t, t, t, er, eg, eb);
+                float lr = t, lg = t, lb = t;
+                og::apply_lut(lat.data(), N, 1.0f, lr, lg, lb);
+                ok &= std::fabs(cl(lr)-cl(er)) < 8.f/255.f
+                   && std::fabs(cl(lg)-cl(eg)) < 8.f/255.f
+                   && std::fabs(cl(lb)-cl(eb)) < 8.f/255.f;
+            }
+        }
+        check(ok, "LUT export: bake is exact on-lattice, close on the grey axis");
+    }
+
+    // 14. CLEAN AUTO GRADE premise: grading a measured DISPLAY percentile through lgg_core
+    //     predicts exactly what the pipeline renders for that input.
+    //
+    //     This is the whole basis of the containment solver. It measures the frame once at
+    //     neutral, then places p1/p50/p99 by evaluating lgg_core on three scalars instead of
+    //     re-rendering 200k samples per iteration. That shortcut is only valid because, for a
+    //     display-referred encode, the grade happens in r709_g_enc(x, dg) and the output
+    //     encode IS that same function -- so the encode/decode pair on either side of step 6
+    //     cancels and the grade acts directly on the measured numbers.
+    //
+    //     If step 6 ever stops being expressible that way, the solver silently starts placing
+    //     percentiles somewhere other than where it claims. This catches that.
+    {
+        bool ok = true;
+        for (int enc : {0, 1, 2}) {                    // Scene OETF, gamma 2.2, gamma 2.4
+            for (int cam : {0, 2, 11}) {
+                for (float x = 0.10f; x <= 0.90f; x += 0.08f) {
+                    float P0[13]; neutral13(P0);
+                    float n_r, n_g, n_b;
+                    og::process(cam, enc, P0, x, x, x, n_r, n_g, n_b);   // neutral = "measured"
+
+                    for (auto lgg : { std::array<float,3>{0.05f, 1.15f, 0.80f},
+                                      std::array<float,3>{-0.03f, 0.90f, 1.30f},
+                                      std::array<float,3>{0.12f, 1.00f, 0.55f} }) {
+                        float P1[13]; neutral13(P1);
+                        P1[3] = lgg[0]; P1[4] = lgg[1]; P1[5] = lgg[2];
+                        float a_r, a_g, a_b;
+                        og::process(cam, enc, P1, x, x, x, a_r, a_g, a_b);       // actual render
+                        const float pred = og::lgg_core(n_r, lgg[0], lgg[1], lgg[2]);  // prediction
+                        ok &= close(pred, a_r, 1.5e-3f);
+                    }
+                }
+            }
+        }
+        check(ok, "Clean auto grade: lgg_core on a display percentile predicts the render");
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");

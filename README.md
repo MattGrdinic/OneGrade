@@ -92,10 +92,11 @@ node, and it isn't meant to be.
   per-model tuning on top of the log/gamut transform. OneGrade can't reproduce that: no
   sensor metadata reaches an OFX plugin, so all it has is the camera's published log curve
   and gamut. Expect a family resemblance to the RAW-tab default, not a match.
-- **The default Camera isn't a camera match at all.** Rec.2100 PQ is a deliberate creative
-  choice — a compressive *smooth decode* that flatters log footage with a near-perfect
-  highlight rolloff. It's the happy path the presets are built on. If you want a
-  colorimetric starting point, pick your actual camera from the list.
+- **The default Camera isn't a camera match at all, and says so.** The entry is named
+  **Rec.2100 PQ - Smooth Decode**: a deliberate creative choice, a compressive curve that
+  flatters log footage with a near-perfect highlight rolloff. It's the happy path the
+  presets are built on. Every *other* entry in the list is a faithful decode — if you want
+  a colorimetric starting point, pick your actual camera.
 - **Don't A/B it against "Gen 5 Film to Video" either.** That LUT bakes in Blackmagic's
   contrast and tone curve; it isn't a plain colorimetric conversion. The fair neutral
   reference is a CST node with tone mapping off.
@@ -129,8 +130,8 @@ in one node. The other two roles split it across Resolve's group grading levels 
 group shares one setup:
 
 - **Input Transform (Group Pre-Clip)** — camera decode only, handed off in DaVinci
-  Intermediate. The panel drops to three live controls: Camera, RAW Exposure, RAW
-  Temperature.
+  Intermediate. The panel drops to three live controls: Camera, Scene Exposure, Scene
+  White Balance.
 - **Output Transform (Group Post-Clip)** — takes that hand-off and applies the look, LUT,
   trim and delivery encode.
 
@@ -140,9 +141,9 @@ the look can never be applied twice. See **Workflows** below, and
 [docs/GROUPS.md](docs/GROUPS.md) for the full explanation.
 
 **0 · Preset** — one-click starting points on the happy path. Every preset sets
-**Camera → Rec.2100 PQ** (the smooth decode, also the plugin default) plus Balance,
-Density, Lift/Gamma/Gain, LUT and Trim; every slider stays live to tweak per clip. RAW
-and Output Encode are never touched. The name tells you which LUT path it drives:
+**Camera → Rec.2100 PQ - Smooth Decode** (also the plugin default) plus Balance,
+Density, Lift/Gamma/Gain, LUT and Trim; every slider stays live to tweak per clip. The
+scene stage and Output Encode are never touched. The name tells you which LUT path it drives:
 - **Cinematic Film Emulation (Kodak 2383 D60)** — cooled highlights against warm
   practicals, shadows lifted off video-black, gain pulled so highlights roll into the
   print stock, brightness brought back after. Swap stocks in **Film Look LUT**.
@@ -179,8 +180,8 @@ preset — is documented in [docs/CREATING-LUTS.md](docs/CREATING-LUTS.md).
 
 **1 · Input Transform**
 - **Camera** — how the clip is decoded into the working space. The default,
-  **Rec.2100 PQ**, is not a camera match: it's a deliberately compressive *smooth
-  decode* that flatters log footage (near-perfect highlight rolloff, smooth color, rich
+  **Rec.2100 PQ - Smooth Decode**, is not a camera match: it's a deliberately compressive
+  *smooth decode* that flatters log footage (near-perfect highlight rolloff, smooth color, rich
   texture) — the happy path the presets build on. For a colorimetric transform instead,
   pick the real camera: Blackmagic Gen 5 Film (Pocket 4K/6K, URSA, Pyxis), DaVinci Wide
   Gamut / Intermediate, Sony S-Log3, ARRI LogC3/LogC4, Canon Log3, RED Log3G10, DJI D-Log,
@@ -230,13 +231,33 @@ exclusive (they use different transforms):
   Encode at Mix 0 — what you see at 0 is the curve the blend happens in. (Tying the encode
   to Mix instead would put a contrast cliff between 0.000 and 0.001.)
 
-**7 · Trim (after LUT)**
-- **Exposure / Contrast** — final trims applied *after* the LUT. Film emulations darken
-  the image by design; raise **Exposure** here to bring it back.
+**7 · Trim (after LUT)** — *finishing touches; most grades need nothing here.*
+- **Exposure Trim / Contrast** — small final adjustments applied *after* the LUT. Film
+  emulations darken the image by design; raise **Exposure Trim** to bring it back. This is
+  **not** the exposure control — set exposure with **Gain** in group 4, which works in the
+  grade curve. The slider spans ±1 stop because that is the intended range.
 - **Highlight Rolloff** — per-channel soft clip so lamps and speculars roll off to white
   instead of clipping into a flat "neon" patch. Higher = earlier, stronger shoulder.
   Only engages on display-referred output (Rec.709 encodes or any LUT path) — never on
   Cineon / DI / Linear feeds to downstream nodes.
+
+**Bypass** — Balance, Density, Exposure, Look/Film LUT and Trim each carry a **Bypass**
+checkbox, so a stage can be auditioned in and out in one click. The sliders keep their
+values while muted, so switching back restores the grade exactly. Bypassing the LUT also
+hands **Output Encode** back to you, since a selected LUT otherwise pins it.
+
+**Export LUT** — bakes the entire node (camera transform, balance, density, grade, output
+encode, any LUT, trim) into a single `.cube` at 17/33/65³, honouring Node Role and any
+Bypass. This is how you archive or hand on a project **without** needing OneGrade
+installed to open it correctly.
+
+> **Accuracy.** The bake is exact on lattice points. Between them it is as good as the
+> pipeline is smooth, and ours isn't everywhere: the output encode hard-clips out-of-gamut
+> channels to zero, and no lattice can follow a step. In practice it matches the node
+> through the normal tonal range (~4/255 on the grey axis at 33³, median error 0 across the
+> whole cube) and **can differ on blown, saturated highlights**, where mildly tinted bright
+> colour reached ~150/255 in testing. 65³ roughly halves that — it's the default here for
+> that reason — but can't remove it. Treat it as an excellent stand-in, not a bit-exact one.
 
 ## Workflows
 
@@ -441,5 +462,25 @@ wrong, delete it (`git push origin :refs/tags/vX.Y.Z`) and re-tag.
 
 ## License
 
-Plugin code: BSD-3-Clause. Vendored OpenFX SDK under `third_party/openfx/` retains its own
-license.
+OneGrade is **free software** under the **GNU General Public License v3.0 or later** —
+see [LICENSE](LICENSE). Copyright © 2026 Matthew Grdinic.
+
+**What that means in practice:**
+
+- **Use it for anything, including paid work.** Grade client jobs with it, deploy it across
+  a facility, ship the render. The GPL puts no restriction on the *output* of the software —
+  your grades and your deliverables are yours, with no obligation of any kind.
+- **Fork it, patch it, contribute back.** Pull requests welcome.
+- **If you redistribute it — modified or not — you must ship the complete source under the
+  GPL too.** That's the whole point: nobody can take OneGrade, reskin it, and sell it as a
+  closed product, because their customers would be entitled to the source and free to pass
+  it on.
+
+**A note on the history:** versions up to and including **v1.2.0** were published under
+BSD-3-Clause. That grant is perpetual and cannot be withdrawn, so anyone who obtained the
+code under those terms keeps them for those versions. The GPL applies from **v1.3.0**
+onward.
+
+**Third-party code:** the vendored OpenFX SDK under `third_party/openfx/` is BSD-3-Clause
+and retains its own license (see `third_party/openfx/LICENSE.md`); it is compatible with
+the GPL and is not relicensed by this project.
