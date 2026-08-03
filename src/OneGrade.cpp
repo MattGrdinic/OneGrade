@@ -388,11 +388,6 @@ public:
     // Display-space percentiles from the last analyse, at NEUTRAL params. Cached because the
     // Clean auto-grade solves against them directly: the grade curve is monotonic, so it maps
     // percentiles exactly, and three numbers stand in for the whole frame (see solveClean()).
-    // Raw source samples (r,g,b triples) from the last analyse. Kept so the Base solve can
-    // re-run the WHOLE pipeline over them at candidate settings without another fetchImage —
-    // measure, adjust, measure again, which is the only way to be right about stages that
-    // interact (Density shifts the very percentiles the grade is trying to place).
-    std::vector<float> m_Samples;
     double m_LastD01 = 0.0;   // p0.1 — the BLACK POINT the solve places (not p1, see below)
     double m_LastD1  = 0.0;
     double m_LastD50 = 0.0;
@@ -464,7 +459,6 @@ private:
     OFX::DoubleParam* m_CleanMaxGain;  // ceiling on Gain: 1.0 = never brighten
     OFX::DoubleParam* m_CleanShoulder; // rolloff per unit of highlight overshoot
     OFX::DoubleParam* m_CleanMaxExp;   // ceiling on how far Base may brighten, in stops
-    OFX::DoubleParam* m_CleanDensity;  // baseline saturation, so Base isn't hazy
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 
@@ -532,7 +526,6 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_CleanMaxGain  = fetchDoubleParam("cleanMaxGain");
     m_CleanShoulder = fetchDoubleParam("cleanShoulder");
     m_CleanMaxExp   = fetchDoubleParam("cleanMaxExp");
-    m_CleanDensity  = fetchDoubleParam("cleanDensity");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
@@ -761,7 +754,6 @@ void OneGrade::probeAnalyze(double p_Time)
         long long hot = 0;
         std::vector<float> srcTop;   // per-sample max input channel, for ceiling detection
         srcTop.reserve(220000);
-        m_Samples.clear(); m_Samples.reserve(660000);
         double satSum = 0.0; long long satN = 0;
         bool anyNonZero = false;
 
@@ -772,7 +764,6 @@ void OneGrade::probeAnalyze(double p_Time)
                 const float* p = row + (size_t)x * 4;
                 if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) anyNonZero = true;
                 srcTop.push_back(std::max(p[0], std::max(p[1], p[2])));
-                m_Samples.push_back(p[0]); m_Samples.push_back(p[1]); m_Samples.push_back(p[2]);
 
                 // Scene luminance: decode to camera-linear, then XYZ Y. Neutral scene stage, so no
                 // exposure gain and white_balance() at 6500 is identity — skipped, not
@@ -1021,31 +1012,19 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     probeAnalyze(p_Time);
     if (!m_HaveKey) return;             // probeAnalyze has already said why
 
-    // No LUT, no film tint, no density: the PQ smooth decode is meant to do the work, and
-    // everything this writes is a range correction rather than a look.
+    // No LUT, no film tint, no density: the smooth decode is meant to do the work, and
+    // everything this writes is a range correction rather than a look. Density was tried as a
+    // baseline (0.284, fitted on one shot) and taken back out at the user's call -- it is a
+    // look decision, and Base exists to hand you a neutral picture to grade FROM.
     m_Camera->setValue(11);             // Rec.2100 PQ - Smooth Decode
     m_LutMode->setValue(0);
     m_LutMix->setValue(1.0);
     m_Temp->setValue(0.0);   m_Tint->setValue(0.0);
     m_OffTemp->setValue(0.0); m_OffTint->setValue(0.0);
+    m_Density->setValue(0.0);
+    m_PostCon->setValue(1.0);
 
-    // DENSITY: a baseline, not zero. The PQ smooth decode lands log footage flat, and a
-    // range correction alone leaves it reading hazy -- the office frame was the tell. Density
-    // is saturation gain in DI-log, so it enriches without the linear-space blow-out.
-    //
-    // ONE-POINT FIT, deliberately a constant. The user hand-dialled 0.284 on the office shot
-    // (measured sat 0.191). A sat-driven law is the obvious next step and the measurement is
-    // already there -- aiming every shot at a target saturation would give
-    // density = T/sat - 1, which from this point implies T = 0.245 and would ask the beach
-    // (sat 0.119) for density 1.06. That is almost certainly far too much for sand, so the
-    // slope is NOT evidenced and a constant is the honest fit until a second hand-dialled
-    // value says otherwise. Same discipline as Creative's rolloff line through the origin.
-    double density = 0.284;
-    m_CleanDensity->getValue(density);
-    m_Density->setValue(density);
-    m_PostCon->setValue(1.0);   // postExp is solved below, not zeroed
-
-    double tHigh = 0.90, tLow = 0.02, tMid = 0.42, midStr = 0.5, maxGain = 1.0, maxExp = 0.85;
+    double tHigh = 0.95, tLow = 0.02, tMid = 0.42, midStr = 0.5, maxGain = 1.0, maxExp = 0.85;
     m_CleanHigh->getValue(tHigh);
     m_CleanLow->getValue(tLow);
     m_CleanMid->getValue(tMid);
@@ -1053,208 +1032,77 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     m_CleanMaxGain->getValue(maxGain);
     m_CleanMaxExp->getValue(maxExp);
 
-    // Rolloff is applied AFTER the grade, in the trim step, so it squashes whatever the
-    // solve placed. Ignoring it made the solve quietly undershoot: on an interview frame the
-    // top was aimed at 0.90 and landed near 0.83, because a 6% pin drove Rolloff to ~0.55 and
-    // the softclip ate the difference. Predict through it so the target means something.
-    // ROLLOFF: the only shoulder Base has, and the reason it can look digital next to
-    // Creative. Lift/Gamma/Gain is a three-parameter family that cannot make an S-curve --
-    // gamma is one power law and cannot shape a toe and a shoulder independently -- so
-    // without a print LUT the softclip is what stands in for the film response.
-    //
-    // Two drivers, whichever asks for more:
-    //   pin       -- source-clipped patches, flat and detail-free, need softening. Fitted
-    //                for Creative (0.090 per %) where the print LUT already shouldered
-    //                everything else, so it is a FLOOR here, not the whole story.
-    //   overshoot -- how far the channels run past display white before the grade. This is
-    //                what a film stock's shoulder is actually for, and it is what Creative's
-    //                fit could not see because the LUT was doing the job.
-    //
-    // Evidenced by a hand-dialled value: the beach shot wanted 0.271 where pin gives 0.022
-    // (pin 0.25%, ch99 1.569). `hot` is ruled out again and for the same reason as in
-    // Creative -- it runs backwards, making the 35.6%-hot beach need more than the
-    // 17.8%-hot office, which already sits comfortably at 0.556.
+    // Rolloff: the only shoulder Base has, since Lift/Gamma/Gain cannot make an S-curve on
+    // its own. Two drivers, whichever asks for more --
+    //   pin       0.090 x pin%              floor; softens source-clipped, detail-free patches
+    //   overshoot k x max(0, ch99 - 1.0)    how far the channels run past display white
+    // `hot` is ruled out twice over: it runs backwards, wanting more shoulder on the 35.6%-hot
+    // beach than the 17.8%-hot office, which is already comfortable.
     double shoulder = 0.476;
     m_CleanShoulder->getValue(shoulder);
-    const double rollPin  = 0.090 * m_LastPin;
-    const double rollOver = shoulder * std::max(0.0, m_LastD99 - 1.0);
-    const double rolloff  = std::min(0.80, std::max(0.00, std::max(rollPin, rollOver)));
-    auto withRolloff = [&](double v) {
+    const double rolloff = std::min(0.80, std::max(0.00,
+        std::max(0.090 * m_LastPin, shoulder * std::max(0.0, m_LastD99 - 1.0))));
+
+    // The whole chain in closed form. With no LUT and Contrast at 1.0, trim is just a multiply
+    // by 2^postExp, so the rendered value is exactly:
+    //     softclip( lgg_core(d, lift, gamma, gain) * 2^postExp , rolloff )
+    // Every stage Base touches is in there, which is why no iteration is needed: test 14
+    // proves lgg_core predicts the render, and the two stages after it are this simple.
+    const double d01 = m_LastD01, d50 = m_LastD50, d99 = m_LastD99;
+    double gain = 1.0, lift = 0.0, postExp = 0.0;
+    const double gamma = 1.0;           // the midtone rides on exposure, not gamma
+    auto chain = [&](double d, double lf, double gn, double pe) {
+        const double v = og_grade_display(d, lf, gamma, gn) * std::exp2(pe);
         return rolloff > 0.0 ? (double)og::softclip((float)v, (float)rolloff) : v;
     };
 
-    // THE BLACK POINT IS p0.1, NOT p1. Placing p1 at the target leaves a full 1% of the
-    // frame BELOW it, and on a shot with any real shadow area that 1% is a visible crushed
-    // region sitting on 0 — which is exactly what the interview frame showed. p0.1 puts the
-    // actual bottom of the picture on the target instead of the bottom of the bulk, so the
-    // shadows sit where they were aimed. The top keeps p99: it is the robust choice against a
-    // stray specular, and highlight recovery was already behaving.
-    const double d01 = m_LastD01, d50 = m_LastD50, d99 = m_LastD99;
-    double gain = 1.0, lift = 0.0, gamma = 1.0;
+    // Mid Strength blends the shot's OWN midtone toward the target rather than damping the
+    // correction: damping only changes how fast you arrive at the same place. 0 keeps the shot
+    // as exposed, 1 forces the target.
+    double tMidEff = tMid;
 
-    // PASS 1 — closed-form, on the percentiles measured at neutral. Cheap and gets close, but
-    // it is a MODEL: it assumes the only thing between the measurement and the result is
-    // Lift/Gamma/Gain. That stopped being true when Base started setting Density, which runs
-    // at step 4, BEFORE the grade at step 6, and moves the very percentiles this is placing.
+    // Three coordinate passes. Each control owns the end it pivots away from -- gain the top
+    // (pivots black), lift the bottom (pivots white), exposure the middle -- so they are
+    // nearly orthogonal and settle immediately.
     for (int pass = 0; pass < 3; ++pass) {
-        gain = og_solve(0.05, 3.0, tHigh, [&](double g) { return withRolloff(og_grade_display(d99, lift, gamma, g)); });
+        gain = og_solve(0.05, 3.0, tHigh, [&](double g) { return chain(d99, lift, g, postExp); });
         if (gain > maxGain) gain = maxGain;
-        lift = og_solve(-0.5, 0.5, tLow,  [&](double l) { return og_grade_display(d01, l, gamma, gain); });
-    }
 
-    // THE MIDTONE MOVES WITH POST EXPOSURE, NOT GAMMA -- the structural lesson from Creative.
-    //
-    // Creative looks right on a bright shot because of the ORDER it works in: Gain pulled
-    // hard (beach, key -1.77 -> 0.464), the print LUT shoulders the top, then postExp +0.55
-    // brings the midtones back. Gain down, shoulder, exposure back up: that is an S-curve
-    // built out of three separate stages, and it is why the subject stays bright while the
-    // highlights never run past 1023.
-    //
-    // Base has every piece and was throwing the last one away. What makes postExp the right
-    // control is WHERE it sits: after the encode and BEFORE softclip. So it lifts the mids
-    // while the shoulder catches whatever that pushes into the top. Gamma cannot do this --
-    // it pivots black AND white, so it can never trade highlight room for midtone
-    // brightness, which is exactly the trade the user described Creative making.
-    //
-    // Gamma is therefore left at 1.0 and postExp does the work. The loop below balances the
-    // three against each other on the real rendered picture.
-    gamma = 1.0;
-    double postExp = 0.0;
+        const double natural = chain(d50, lift, gain, 0.0);
+        if (natural > 1e-4 && tMid > 1e-4) tMidEff = natural * std::pow(tMid / natural, midStr);
 
-    // PASS 2 — apply, measure, correct, repeat. Runs the REAL pipeline over the cached source
-    // samples at the candidate settings, so what it reads is what the node renders: density,
-    // rolloff, the encode, all of it. No model to be wrong.
-    //
-    // This is what makes the number in the readout trustworthy rather than predicted, and it
-    // is why the loop exists at all: a one-shot solve can only be as right as its model of
-    // everything downstream, and the whole history of this feature is discovering another
-    // stage the model did not know about (the encode, then rolloff, then luma-vs-channel,
-    // then density). Measuring the finished picture ends that class of bug.
-    int iters = 0;
-    double a01 = 0, a50 = 0, a99 = 0;
-    // Same camera Base just pinned, and the same display-referred encode probeAnalyze
-    // measured in — a measurement taken in a different space than the render describes
-    // something other than what you see, which this feature has already been bitten by.
-    int encSel = 1;
-    m_Encode->getValueAtTime(p_Time, encSel);
-    const int camera  = 11;                                  // set above: PQ smooth decode
-    const int dispEnc = (encSel <= 2) ? encSel : 1;          // Base never sets a LUT
-    if (m_Samples.size() >= 300) {
-        std::vector<float> out;
-        out.reserve(m_Samples.size());
-        auto measure = [&](double gn, double lf, double gm) {
-            float P[kParamCount] = {0};
-            P[2] = (float)density; P[3] = (float)lf; P[4] = (float)gm; P[5] = (float)gn;
-            P[8] = (float)postExp;   // trim exposure: after the encode, before the shoulder
-            P[9] = 1.f; P[11] = 6500.f; P[12] = (float)rolloff;
-            out.clear();
-            for (size_t k = 0; k + 2 < m_Samples.size(); k += 3) {
-                float r, g, b;
-                og_full_chain(camera, dispEnc, P, nullptr, 0, 0.f,
-                              m_Samples[k], m_Samples[k+1], m_Samples[k+2], r, g, b);
-                out.push_back(r); out.push_back(g); out.push_back(b);
-            }
-            auto q = [&](double frac) {
-                size_t k = (size_t)(frac * (out.size() - 1));
-                std::nth_element(out.begin(), out.begin() + k, out.end());
-                return (double)out[k];
-            };
-            a01 = q(0.001); a50 = q(0.50); a99 = q(0.99);
-        };
+        // Brightening is capped, darkening is not: pulling a blown frame down is always safe,
+        // pushing a dark one up destroys a deliberately low-key shot. A car interior at
+        // key +2.90 asked for +1.74 stops without this; the same shot graded by hand used
+        // +0.55. Same asymmetry as the Gain ceiling.
+        postExp = og_solve(-3.0, 3.0, tMidEff, [&](double pe) { return chain(d50, lift, gain, pe); });
+        postExp = std::min(maxExp, std::max(-3.0, postExp));
 
-        // Apply, measure, edit, repeat — capped at 6 passes. It normally settles in two or
-        // three, and past that the remaining error is structural rather than something more
-        // passes fix, so a low cap costs nothing and keeps the button responsive. The BEST result is kept rather than the last,
-        // so a late step that overshoots can never make the outcome worse than an earlier
-        // one — the loop is allowed to fail to improve, never to regress.
-        double bestErr = 1e9, bg = gain, bl = lift, bgm = gamma, bpe = postExp;
-        double lastErr = 1e9;
-        int stalled = 0;
-        double tMidEff = tMid;
-        for (iters = 1; iters <= 6; ++iters) {
-            measure(gain, lift, gamma);
-
-            // MID STRENGTH HAS TO MOVE THE TARGET, NOT THE STEP. Damping the correction does
-            // nothing in a loop that iterates until the error is small -- it only changes how
-            // many passes it takes to arrive at exactly the same place. That was the bug: every
-            // shot was being driven to Target Mid no matter what Mid Strength said, so the
-            // office's naturally bright midtone was pulled down to 0.42 like everything else,
-            // and swapping gamma for post-exposure changed the vehicle while the destination
-            // stayed put ("about the same result").
-            //
-            // Now the shot's OWN midtone, measured on the first pass with post-exposure still
-            // at zero, is blended toward the target in stops. Mid Strength 0 keeps the shot
-            // exactly as exposed, 1 forces it to the target, 0.5 splits the difference -- which
-            // is what the control always claimed to do.
-            if (iters == 1 && a50 > 1e-4 && tMid > 1e-4)
-                tMidEff = a50 * std::pow(tMid / a50, midStr);
-
-            const double eHigh = tHigh - a99, eLow = tLow - a01, eMid = tMidEff - a50;
-            const double err = std::fabs(eHigh) + std::fabs(eLow) + 0.5 * std::fabs(eMid);
-            if (err < bestErr) { bestErr = err; bg = gain; bl = lift; bgm = gamma; bpe = postExp; }
-
-            if (std::fabs(eHigh) < 0.003 && std::fabs(eLow) < 0.003 && std::fabs(eMid) < 0.008) break;
-            // Stop when it stops paying: two passes without a real improvement means the
-            // remaining error is structural (a clamped control, or targets that can't all be
-            // met at once), not something more iterations will fix.
-            if (err > lastErr - 1e-4) { if (++stalled >= 2) break; } else stalled = 0;
-            lastErr = err;
-
-            // Each correction acts on the control that owns that end. Damping starts high and
-            // eases off: the three still interact a little, and rolloff is compressive near
-            // the top, so an undamped step can oscillate instead of settling.
-            const double damp = (iters <= 3) ? 0.7 : 0.45;
-            if (a99 > 1e-4 && gain < maxGain - 1e-6) {
-                double f = std::min(1.25, std::max(0.80, tHigh / a99));
-                gain = std::min(maxGain, std::max(0.05, gain * (1.0 + damp * (f - 1.0))));
-            }
-            lift = std::min(0.50, std::max(-0.50, lift + damp * eLow));
-            // Midtone in stops: postExp is a multiply in display space, so the correction is
-            // log2 of the ratio. midStr backs it off, for the same reason it backed gamma off
-            // -- a deliberately dark shot should stay dark, and driving every median to the
-            // same number is the mistake this feature has already had to unlearn once.
-            if (a50 > 1e-4 && tMidEff > 1e-4) {
-                const double want = std::log2(tMidEff / a50);
-                // BRIGHTENING IS CAPPED; DARKENING IS NOT. Pulling a blown frame down is
-                // always safe. Pushing a dark one up is how a deliberately low-key shot gets
-                // destroyed, and the loop cannot notice that on its own -- it only knows
-                // whether it is at target, so it will hit a wrong target precisely.
-                //
-                // The car interior is the case: key +2.90, natural median 0.183, so the
-                // blended target asks for +1.74 stops and the picture goes milky. The user's
-                // own grade on that shot used +0.55. Same clamp, same reason, as the Gain
-                // ceiling -- and the third place this feature has needed one.
-                postExp = std::min(maxExp, std::max(-2.0, postExp + damp * want));
-            }
-        }
-        gain = bg; lift = bl; gamma = bgm; postExp = bpe;
-        measure(gain, lift, gamma);   // re-measure the kept result, so the readout is true
+        lift = og_solve(-0.5, 0.5, tLow, [&](double l) { return chain(d01, l, gain, postExp); });
     }
 
     gain  = std::min(3.00, std::max(0.05, gain));
     lift  = std::min(0.50, std::max(-0.50, lift));
-    gamma = std::min(3.00, std::max(0.20, gamma));
 
     m_Gain->setValue(gain);
     m_Lift->setValue(lift);
-    m_Gamma->setValue(gamma);
+    m_Gamma->setValue(1.0);
     m_Rolloff->setValue(rolloff);
     m_PostExp->setValue(postExp);
 
-    // Bias is anchored to this gain, so a drag afterwards works the same as it does for the
-    // film button. m_AutoApplied stays FALSE on purpose: Bias re-derives Lift/Gamma from the
-    // FILM recipe's constants, which would undo the containment solve the moment it moved.
+    // Bias stays anchored to this gain. m_AutoApplied stays FALSE on purpose: applyBias()
+    // re-derives Lift and Gamma from the FILM recipe's constants, which would undo the
+    // containment the moment the slider moved.
     m_LastGain = gain;
 
-    // Report what the solve ACHIEVED, not just what it set. A target can be unreachable -
-    // a very flat log frame pins Lift at its limit and still can't get the floor down - and
-    // silently pinning a slider while reporting success is the shape of bug this codebase
-    // keeps finding. The achieved triple makes it visible.
-    // Reports the MEASURED result and how many passes it took, not a prediction. If a target
-    // is unreachable the numbers say so instead of quietly pinning a slider.
+    // Reports what the solve ACHIEVED, not what it aimed at, so an unreachable target is
+    // visible rather than a quietly pinned slider.
     char msg[160];
-    snprintf(msg, sizeof msg, "Base G %.2f E%+.2f L %+.2f R %.2f D %.2f -> %.2f/%.2f/%.2f (%dx)",
-             gain, postExp, lift, rolloff, density, a01, a50, a99, iters);
+    snprintf(msg, sizeof msg, "Base G %.2f E%+.2f L %+.2f R %.2f -> %.2f/%.2f/%.2f",
+             gain, postExp, lift, rolloff,
+             chain(d01, lift, gain, postExp),
+             chain(d50, lift, gain, postExp),
+             chain(d99, lift, gain, postExp));
     m_ProbeApplied->setValue(msg);
     setEnabledness();
 }
@@ -1434,7 +1282,6 @@ void OneGrade::setEnabledness()
     m_CleanMaxGain->setIsSecret(!debug);
     m_CleanShoulder->setIsSecret(!debug);
     m_CleanMaxExp->setIsSecret(!debug);
-    m_CleanDensity->setIsSecret(!debug);
 
     const bool lutOn = lutSelected();
     m_Encode->setEnabled(look && !lutOn);
@@ -2042,7 +1889,6 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         tune("cleanMaxGain","Max Gain","Ceiling on the Gain the solve may use. 1.0 means it can only ever darken, which is deliberate: a shot whose highlights sit below the target is not clipping, it is just dark, and brightening it destroys the intent. Raise above 1.0 only if you want genuinely underexposed footage pushed up.", 1.00, 0.50, 2.00);
         tune("cleanMaxExp","Max Exposure","The most Base may BRIGHTEN a shot, in stops. Darkening is never limited - pulling a blown frame down is always safe - but pushing a dark one up destroys a deliberately low-key image, and the solver cannot tell the difference: it only knows whether it reached the target. A dark car interior asked for +1.74 stops without this; the same shot graded by hand used +0.55.", 0.85, 0.00, 2.00);
         tune("cleanShoulder","Shoulder","How much Highlight Rolloff to apply per unit of highlight overshoot - how far the channels run past display white before grading. This is the shoulder that stands in for a film stock's, since Lift/Gamma/Gain cannot make an S-curve on its own. Source clipping (pin) sets a floor underneath it. 0 disables the overshoot term and leaves rolloff on source clipping alone, which is what Creative uses.", 0.476, 0.00, 1.50);
-        tune("cleanDensity","Density","Baseline colour density Base Grade applies. The smooth decode lands log footage flat, so a pure range correction reads hazy; this puts the richness back without a LUT. Currently a constant fitted to a single hand-dialled shot - if it oversaturates an already-colourful frame, that is the sign it should be driven by the measured 'sat' instead.", 0.284, 0.00, 1.00);
         tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.50, 0.00, 1.00);
 
         apply->setLabels("Creative Grade", "Creative Grade", "Creative Grade");
