@@ -525,6 +525,24 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
      alone rather than guess.** Not every control the user touches is a correction — some
      are taste, and taste has no measurement to fit.
 
+5. **Bias slider (`autoBias`, -1..+1, default 0)** — user's request after using the button
+   on real shots. Negative tames the top (rolloff up, lift down), positive opens the bottom
+   (lift up, rolloff down), 0 = the fitted result. `rolloff = clamp(0.090*pin - bias*0.35)`,
+   `lift = clamp(0.11 + bias*0.06)`. It moves **Rolloff and Lift only** — those are the two
+   the user reached for in exactly this situation ("add a touch of highlight rolloff until
+   we bring the highlights below 1023", "lift darker images a bit"). **Gain stays on its
+   measurement**: it's the one parameter with a hard physical anchor, and letting a taste
+   control drag it would undo the part that works. It's an *input to the button*, read when
+   pressed — not a live control.
+
+**KNOWN LIMITATION — a shot whose exposure changes mid-take.** The user's car clip cranes
+from a bright exterior into a dark interior. Auto Grade on the exterior frame produces an
+excellent exterior and too dark an interior; clicking again inside produces an excellent
+interior. This is single-frame analysis meeting a multi-stop change, and the right answer
+is to split the clip, which the user reached independently. **Frame-based is a feature
+here, not a defect** — the user picks which moment it optimises for by parking the
+playhead. Say that rather than trying to engineer around it.
+
 **Fit to the USER's grades, not to a convention.** Every textbook target tried before this
 (median -> 18% grey) contradicted what the user actually does. Four shots of ground truth
 beat the convention immediately. Re-fit the constants if the style shifts; they're two

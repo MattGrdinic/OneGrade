@@ -372,6 +372,7 @@ private:
     OFX::StringParam* m_ProbeDisplay;
     OFX::StringParam* m_ProbeShape;
     OFX::StringParam* m_ProbeSubject;
+    OFX::DoubleParam* m_AutoBias;
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 };
@@ -411,6 +412,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeDisplay = fetchStringParam("probeDisplay");
     m_ProbeShape   = fetchStringParam("probeShape");
     m_ProbeSubject = fetchStringParam("probeSubject");
+    m_AutoBias     = fetchDoubleParam("autoBias");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
 
@@ -704,12 +706,30 @@ void OneGrade::applyAutoGrade(double p_Time)
     // Evidenced by ONE non-zero point, so it is a line through the origin; three controls
     // sit correctly at zero. Cap short of 1.0 - beyond ~0.8 the shoulder starts eating
     // diffuse white, and no measured shot came near it.
-    const double rolloff = std::min(0.80, 0.090 * m_LastPin);
+    // Bias: one slider trading highlight restraint against shadow openness, because the
+    // measurement can only get the shot into the right neighbourhood — which end of that
+    // neighbourhood you want is taste, and taste needs a knob rather than a constant.
+    // Negative tames the top (more rolloff, shadows sit down); positive opens the bottom
+    // (lift up, rolloff backed off). Zero is the fitted result.
+    //
+    // It moves Rolloff and Lift specifically because those are the two the user reached for
+    // in exactly this situation: "add a touch of highlight rolloff until we bring the
+    // highlights below 1023", and "lift darker images a bit". Gain deliberately stays on
+    // its measurement — it's the one parameter with a hard physical anchor (distance from
+    // mid-gray), and letting a taste control drag it would undo the part that works.
+    double bias = 0.0; m_AutoBias->getValue(bias);
+    const double rolloff = std::min(0.80, std::max(0.0, 0.090 * m_LastPin - bias * 0.35));
+    const double lift    = std::min(0.50, std::max(-0.50, 0.11 + bias * 0.06));
     m_Rolloff->setValue(rolloff);
+    m_Lift->setValue(lift);
 
     char msg[96];
-    snprintf(msg, sizeof msg, "Gain %.3f (key %+.2f)  Roll %.3f (pin %.1f%%)",
-             gain, m_LastKey, rolloff, m_LastPin);
+    if (bias != 0.0)
+        snprintf(msg, sizeof msg, "Gain %.3f  Roll %.3f  Lift %.3f  bias %+.2f",
+                 gain, rolloff, lift, bias);
+    else
+        snprintf(msg, sizeof msg, "Gain %.3f (key %+.2f)  Roll %.3f (pin %.1f%%)",
+                 gain, m_LastKey, rolloff, m_LastPin);
     m_ProbeApplied->setValue(msg);
     setEnabledness();                  // the preset switches LUT Mode
 }
@@ -1335,6 +1355,10 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         apply->setHint("Experimental. Analyses the frame, applies the Cinematic Film Emulation look, and sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
         apply->setParent(*gAuto);
         page->addChild(*apply);
+
+        page->addChild(*defineSlider(p_Desc, "autoBias", "Bias",
+            "Which way Auto Grade leans when you press it. 0 uses the measured result as-is. Negative tames the highlights - more Highlight Rolloff, shadows sitting lower - for a shot with blown windows or hot speculars. Positive opens the image up - more Lift, less rolloff - for something dark you want to breathe. Gain is never touched by this: it is set from the measured exposure and that part is not a matter of taste. Set this BEFORE pressing Auto Grade; it is an input to the button, not a live control.",
+            0.0, -1.0, 1.0, 0.01, gAuto));
 
         probeLine("probePeak", "Peak",
                   "p99.9 in display, and how far it runs past p99. A compact blown specular - a window, a lamp - sits far above the bulk of the highlights and gives a high multiplier; a broad bright field like sunlit sand sits just above it. This is the shape of the top end rather than its size, which is what decides whether a shot wants Highlight Rolloff.");
