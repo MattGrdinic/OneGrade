@@ -18,7 +18,9 @@ when touching the matching code): `GAMMA.md` (transfer functions, grade curve, e
 balance) · `DENSITY.md` (HSV-in-DI-log saturation) · `LUTS.md` (discovery, parsing,
 sampling, built-ins) · `FILM-EMULATION.md` (Cineon → print-stock path + preset recipe) ·
 `CREATING-LUTS.md` (authoring new built-in looks) · `GROUPS.md` (Node Role, the
-pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed).
+pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed) ·
+`AUTO-GRADE.md` (frame measurement, the Gain/Rolloff fits and the footage behind them,
+what is deliberately not set, and the traps found on the way).
 
 ## The golden rule
 `src/OneGradePipeline.h` (namespace `pg`, CPU) is the **single source of truth** for all
@@ -525,8 +527,16 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
      alone rather than guess.** Not every control the user touches is a correction — some
      are taste, and taste has no measurement to fit.
 
-5. **Bias slider (`autoBias`, -1..+1, default 0) — LIVE, and the group sits FIRST in the
-   panel** (both at the user's request, 2026-08-02: "the bias adjustment is great, the only
+5. **Bias slider (`autoBias`, -1..+1, default 0) — LIVE, moves FOUR params, group sits FIRST
+   in the panel.** Driving Lift + Rolloff only wasn't enough (user: "all that seems to happen
+   now is we change lift") — Rolloff clamps at 0 for positive bias, so opening a shot up did
+   nothing but raise the floor. Now Lift/Gamma/Gain/Rolloff move together. **Gain's response
+   is measurement-modulated**: the positive direction scales by `max(0, 1 - hot/40)` so
+   brightening fades out on a frame that's already a third above white; the negative
+   direction is never scaled, since pulling gain down is always safe. `m_LastGain` holds the
+   measured value so a Bias drag stays anchored to it instead of drifting. **`showAnalysis`**
+   checkbox (default off) secrets the readout rows via `setIsSecret`, driven from
+   `setEnabledness()` so it survives a project load.** (both at the user's request, 2026-08-02: "the bias adjustment is great, the only
    thing is to make it real time"). `applyBias()` is split out of `applyAutoGrade()` so a
    drag re-derives Rolloff and Lift from the **cached** measurement — pure arithmetic on two
    stored numbers, no re-analysis, so it keeps up with the drag. Gated on `m_AutoApplied`:

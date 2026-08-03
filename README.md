@@ -108,6 +108,23 @@ match a reference transform exactly, use a CST node for that part.
 
 ## The controls
 
+**Auto Grade (experimental)** — one click that reads the frame and sets a starting point.
+It measures the shot's exposure and its highlight clipping, applies the Cinematic Film
+Emulation look, and writes **Gain** and **Highlight Rolloff** from those measurements.
+
+- **Analyze Frame** — measures and reports, changes nothing.
+- **Auto Grade** — measures, then writes the look and the two derived values.
+- **Bias** — leans the result across the whole tonal range, live: negative protects the
+  highlights (shoulder up, floor down, mids darker, Gain pulled), positive opens the image
+  up (floor and mids up, shoulder off). Zero is the measured result.
+- **Show analysis** — reveals the numbers behind it all. Off by default.
+
+Everything it writes is an ordinary slider value you can drag afterwards, so a starting
+point you don't like costs one undo. It deliberately leaves **white balance and Density
+alone**: exposure and clipping are measurable, warmth is taste, and a button that guesses at
+taste is worse than one that doesn't touch it. Full method, the fits, and what they were
+fitted to: [docs/AUTO-GRADE.md](docs/AUTO-GRADE.md).
+
 **0 · Node Role** — which part of the pipeline this node does. Leave it on **Full Grade
 (single node)** unless you group your clips; that's the default and it's the whole plugin
 in one node. The other two roles split it across Resolve's group grading levels so a whole

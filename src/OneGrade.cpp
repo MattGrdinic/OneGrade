@@ -332,7 +332,8 @@ public:
     void applyBias();                   // re-derive Rolloff/Lift from the cached measurement
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
     double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
-    double m_LastGain = 0.80;           // Gain the last Auto Grade wrote (for the readout)
+    double m_LastGain = 0.80;           // Gain the measurement asked for (bias moves off this)
+    double m_LastHot = 0.0;             // % of frame above display white — headroom for brightening
     bool   m_HaveKey = false;
     bool   m_AutoApplied = false;       // has Auto Grade run? gates the live Bias drag
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
@@ -376,6 +377,7 @@ private:
     OFX::StringParam* m_ProbeShape;
     OFX::StringParam* m_ProbeSubject;
     OFX::DoubleParam* m_AutoBias;
+    OFX::BooleanParam* m_ShowAnalysis;
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 };
@@ -416,6 +418,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeShape   = fetchStringParam("probeShape");
     m_ProbeSubject = fetchStringParam("probeSubject");
     m_AutoBias     = fetchDoubleParam("autoBias");
+    m_ShowAnalysis = fetchBooleanParam("showAnalysis");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
 
@@ -627,6 +630,7 @@ void OneGrade::probeAnalyze(double p_Time)
         m_ProbePeak->setValue(m2);
 
         m_LastPin = 100.0 * (double)pinned / (double)n;
+        m_LastHot = 100.0 * (double)hot / (double)n;
         snprintf(m2, sizeof m2, "hot %.1f%%  pin %.2f%%@%.3f  sat %.3f",
                  100.0 * (double)hot / (double)n, 100.0 * (double)pinned / (double)n,
                  srcMax, satN ? satSum / (double)satN : 0.0);
@@ -693,7 +697,6 @@ void OneGrade::applyAutoGrade(double p_Time)
     // Fitted from the user's grades. Floor exists because the fit is only evidenced out to
     // about -2 EV; beyond that it extrapolates, and an unclamped line reaches 0 near -4 EV.
     const double gain = std::min(0.80, std::max(0.30, 0.80 + 0.19 * m_LastKey));
-    m_Gain->setValue(gain);
 
     // Highlight Rolloff from SOURCE CLIPPING, which is the only measurement that separated
     // the user's rolloff choices:
@@ -709,7 +712,7 @@ void OneGrade::applyAutoGrade(double p_Time)
     // Evidenced by ONE non-zero point, so it is a line through the origin; three controls
     // sit correctly at zero. Cap short of 1.0 - beyond ~0.8 the shoulder starts eating
     // diffuse white, and no measured shot came near it.
-    m_LastGain = gain;
+    m_LastGain = gain;   // applyBias() writes it, so a Bias drag stays anchored to this
     m_AutoApplied = true;
     applyBias();                       // sets Rolloff + Lift, and writes the Applied line
     setEnabledness();                  // the preset switches LUT Mode
@@ -737,18 +740,37 @@ void OneGrade::applyBias()
 {
     if (!m_AutoApplied) return;
     double bias = 0.0; m_AutoBias->getValue(bias);
-    const double rolloff = std::min(0.80, std::max(0.0, 0.090 * m_LastPin - bias * 0.35));
+
+    // One slider, the whole tonal range. Bias moves all four together so the result stays a
+    // coherent picture rather than a lifted floor on an unchanged image — the first version
+    // drove Lift and Rolloff only, and since Rolloff clamps at 0 for positive bias, opening
+    // a shot up visibly did nothing but raise the floor.
+    //   negative -> protect: shoulder the top, deepen the floor, darken mids, pull gain
+    //   positive -> open:    drop the shoulder, raise the floor, brighten mids and gain
+    //
+    // Gain's response is the one that's measurement-modulated. Brightening a frame that
+    // already has a third of itself above display white just pushes more of it past clipping,
+    // so the positive direction is scaled by remaining headroom and fades to nothing by ~40%
+    // hot. The negative direction is never scaled: pulling gain down is always safe.
+    const double headroom = std::max(0.0, 1.0 - m_LastHot / 40.0);
+    const double gainDelta = (bias >= 0.0) ? bias * 0.08 * headroom : bias * 0.08;
+
+    const double rolloff = std::min(0.80, std::max(0.00, 0.090 * m_LastPin - bias * 0.35));
     const double lift    = std::min(0.50, std::max(-0.50, 0.11 + bias * 0.06));
+    const double gamma   = std::min(3.00, std::max(0.20, 1.00 + bias * 0.12));
+    const double gain    = std::min(1.20, std::max(0.20, m_LastGain + gainDelta));
     m_Rolloff->setValue(rolloff);
     m_Lift->setValue(lift);
+    m_Gamma->setValue(gamma);
+    m_Gain->setValue(gain);
 
-    char msg[96];
+    char msg[128];
     if (bias != 0.0)
-        snprintf(msg, sizeof msg, "Gain %.3f  Roll %.3f  Lift %.3f  bias %+.2f",
-                 m_LastGain, rolloff, lift, bias);
+        snprintf(msg, sizeof msg, "G %.3f Gam %.3f L %.3f R %.3f  bias %+.2f",
+                 gain, gamma, lift, rolloff, bias);
     else
         snprintf(msg, sizeof msg, "Gain %.3f (key %+.2f)  Roll %.3f (pin %.1f%%)",
-                 m_LastGain, m_LastKey, rolloff, m_LastPin);
+                 gain, m_LastKey, rolloff, m_LastPin);
     m_ProbeApplied->setValue(msg);
 }
 
@@ -792,6 +814,18 @@ void OneGrade::setEnabledness()
     // wasn't using, so picking a LUT read as the node silently blowing the contrast out
     // (github issue). Grey it AND spell out what is actually being rendered — a greyed
     // control still showing the old value is only half the truth.
+    // Analysis readout: hidden by default so the panel stays a grading panel, one checkbox
+    // away when a shot behaves oddly and the numbers matter. Driven from setEnabledness()
+    // rather than only from changedParam so the state survives a project load.
+    bool showAnalysis = false;
+    m_ShowAnalysis->getValue(showAnalysis);
+    m_ProbeScene->setIsSecret(!showAnalysis);
+    m_ProbeDisplay->setIsSecret(!showAnalysis);
+    m_ProbePeak->setIsSecret(!showAnalysis);
+    m_ProbeShape->setIsSecret(!showAnalysis);
+    m_ProbeSubject->setIsSecret(!showAnalysis);
+    m_ProbeStatus->setIsSecret(!showAnalysis);
+
     const bool lutOn = lutSelected();
     m_Encode->setEnabled(look && !lutOn);
     if (!look)
@@ -948,6 +982,7 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     else if (p_ParamName == "autoBias" && p_Args.reason == OFX::eChangeUserEdit) {
         applyBias();
     }
+    else if (p_ParamName == "showAnalysis") setEnabledness();
     // Only on a real user edit — project load / plugin edits must not re-stamp the preset
     // over values the user has since tweaked.
     else if (p_ParamName == "preset" && p_Args.reason == OFX::eChangeUserEdit) {
@@ -1141,6 +1176,13 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     gAuto->setLabels("Auto Grade (experimental)", "Auto Grade", "Auto Grade");
     gAuto->setOpen(true);
     {
+        BooleanParamDescriptor* show = p_Desc.defineBooleanParam("showAnalysis");
+        show->setLabels("Show analysis", "Show analysis", "Show analysis");
+        show->setHint("Reveal the frame measurements Auto Grade works from - exposure key, dynamic range, display percentiles, highlight shape, source clipping and the skin read. Off by default so the panel stays a grading panel; turn it on when a shot behaves oddly and you want to see why. Purely informational, it changes nothing.");
+        show->setDefault(false);
+        show->setParent(*gAuto);
+        page->addChild(*show);
+
         PushButtonParamDescriptor* btn = p_Desc.definePushButtonParam("probeAnalyze");
         btn->setLabels("Analyze Frame", "Analyze Frame", "Analyze Frame");
         btn->setHint("Experimental. Reads the current frame at the node's input and reports what it found below. Does not change the picture or any slider — this exists to prove the plugin can sample the image before any auto-grade feature is built on top of it.");
@@ -1172,7 +1214,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         page->addChild(*apply);
 
         page->addChild(*defineSlider(p_Desc, "autoBias", "Bias",
-            "Which way Auto Grade leans when you press it. 0 uses the measured result as-is. Negative tames the highlights - more Highlight Rolloff, shadows sitting lower - for a shot with blown windows or hot speculars. Positive opens the image up - more Lift, less rolloff - for something dark you want to breathe. Gain is never touched by this: it is set from the measured exposure and that part is not a matter of taste. Updates live once Auto Grade has been pressed - drag it and the image follows. It does nothing on a node that has not been auto-graded, and goes inert after a project reload until you press Auto Grade again.",
+            "Which way Auto Grade leans when you press it. 0 uses the measured result as-is. Negative protects the picture - shoulders the highlights, deepens the floor, darkens the mids and pulls Gain down - for a shot with blown windows or hot speculars. Positive opens it up - drops the shoulder, raises the floor, brightens the mids and Gain. It moves Lift, Gamma, Gain and Highlight Rolloff together so the whole tonal range stays coherent. The brightening half is limited by how much of the frame is already above white, so it will not push a blown shot further into clipping. Updates live once Auto Grade has been pressed - drag it and the image follows. It does nothing on a node that has not been auto-graded, and goes inert after a project reload until you press Auto Grade again.",
             0.0, -1.0, 1.0, 0.01, gAuto));
 
         probeLine("probePeak", "Peak",
