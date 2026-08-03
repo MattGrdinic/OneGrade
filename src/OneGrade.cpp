@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "OneGrade.h"
+#include "ofxColour.h"   // OFX 1.5 colour management properties (read-only probe)
 #include "OneGradePipeline.h"
 #include "CubeLUT.h"
 
@@ -16,6 +17,7 @@
 #include <map>
 #include <filesystem>
 #include <fstream>
+#include <cmath>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX            // keep windows.h from defining min/max macros (breaks std::min/max in OFX headers)
@@ -389,6 +391,7 @@ public:
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
     void probeAnalyze(double p_Time);   // measure the frame and report (writes m_LastKey)
     void probeTemporal(double p_Time);  // can we read frames outside the current clip?
+    void probeSetup(double p_Time);     // is the input actually camera log? + what the host says
     // Coarse signature of one frame: mean of a sparse grid, per channel, plus dimensions.
     // Deliberately cheap and deliberately NOT the full analysis — the temporal probe only
     // has to answer "is this a different image from the one at the render time", and a mean
@@ -462,6 +465,12 @@ private:
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 
+    // Setup check — see probeSetup().
+    OFX::PushButtonParam* m_SetupBtn;
+    OFX::StringParam*     m_SetupStatus;
+    OFX::StringParam*     m_SetupStats;
+    OFX::StringParam*     m_SetupHost;
+
     // LUT export — see exportCube().
     OFX::StringParam*     m_LutExportPath;
     OFX::ChoiceParam*     m_LutExportSize;
@@ -523,6 +532,10 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeBtn     = fetchPushButtonParam("probeAnalyze");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
+    m_SetupBtn    = fetchPushButtonParam("setupCheck");
+    m_SetupStatus = fetchStringParam("setupStatus");
+    m_SetupStats  = fetchStringParam("setupStats");
+    m_SetupHost   = fetchStringParam("setupHost");
     m_LutExportPath   = fetchStringParam("lutExportPath");
     m_LutExportSize   = fetchChoiceParam("lutExportSize");
     m_LutExportBtn    = fetchPushButtonParam("lutExportBtn");
@@ -593,6 +606,103 @@ bool OneGrade::lutSelected()
 // Everything stays wrapped: fetchImage outside render may throw, return null, or hand back
 // zeros, and all three are answers as long as we survive them. `anyNonZero` is tracked
 // separately because an empty buffer and a black shot both read as p1 = p50 = p99 = 0.
+// SETUP CHECK — "is this node being fed what it expects?" (user's idea, 2026-08-03).
+//
+// The obvious version of this request is "read the Timeline Color Space and warn if it's
+// wrong". That one is genuinely impossible, and it's worth writing down why so nobody tries
+// again: Timeline Color Space is a MONITORING setting applied downstream of the node graph.
+// It changes how Resolve interprets our OUTPUT for the viewer. Nothing about it is visible
+// from inside the effect, and no OFX property carries it.
+//
+// But the thing that actually breaks users is visible, because it changes our INPUT. Every
+// real failure — a color-managed timeline, a CST node in front of us, an input LUT on the
+// clip — hands this node something that is no longer camera log. That IS measurable, from
+// the pixels, with no API support at all:
+//
+//   Camera log has a narrow, lifted code-value footprint. Blacks sit well off zero and the
+//   top rolls off far below 1.0 — Blackmagic log peaks around 0.75 on real footage (measured
+//   during the Auto Grade work). Display-referred material does the opposite: it uses the
+//   full range, crushing to 0 and clipping at 1.
+//
+// The check is deliberately CONSERVATIVE and always prints its numbers. A blown practical
+// can push a genuinely log frame to 1.0, and a flat display-referred shot can look lifted,
+// so anything ambiguous is reported as inconclusive rather than guessed at. Crying wolf on
+// a correct setup would be worse than staying quiet — the same reasoning that stopped Auto
+// Grade from guessing at white balance.
+//
+// It also reports what the host says via the OFX 1.5 colour management API (ofxColour.h,
+// vendored). These properties are read WITHOUT declaring a colour management style: hosts
+// that populate them anyway cost us nothing, and declaring support is what could invite
+// Resolve to start converting our input — the one thing that would break the CST. If these
+// come back "(absent)", the next experiment is to declare Basic and retest; that is a
+// separate, deliberate step, not something to switch on speculatively.
+void OneGrade::probeSetup(double p_Time)
+{
+    m_SetupHost->setValue("");
+    m_SetupStats->setValue("");
+
+    // --- what the host volunteers, if anything ---
+    {
+        std::string style = getPropertySet().propGetString(kOfxImageEffectPropColourManagementStyle, 0, false);
+        std::string cs    = m_SrcClip ? m_SrcClip->getPropertySet().propGetString(kOfxImageClipPropColourspace, 0, false)
+                                      : std::string();
+        if (style.empty()) style = "(absent)";
+        if (cs.empty())    cs    = "(absent)";
+        char m[160];
+        snprintf(m, sizeof m, "CM style %s / clip %s", style.c_str(), cs.c_str());
+        m_SetupHost->setValue(m);
+    }
+
+    // --- what the pixels say ---
+    if (!m_SrcClip || !m_SrcClip->isConnected()) { m_SetupStatus->setValue("No source clip connected"); return; }
+
+    try {
+        std::unique_ptr<OFX::Image> src(m_SrcClip->fetchImage(p_Time));
+        if (!src.get()) { m_SetupStatus->setValue("Could not read the frame"); return; }
+        const OfxRectI b = src->getBounds();
+        const int w = b.x2 - b.x1, h = b.y2 - b.y1;
+        if (w <= 0 || h <= 0 || src->getPixelDepth() != OFX::eBitDepthFloat ||
+            src->getPixelComponents() != OFX::ePixelComponentRGBA) {
+            m_SetupStatus->setValue("Frame not float RGBA - cannot check"); return;
+        }
+
+        std::vector<float> v;
+        v.reserve(200000);
+        const int step = std::max(1, (int)std::sqrt((double)w * h / 60000.0));
+        for (int y = b.y1; y < b.y2; y += step)
+            for (int x = b.x1; x < b.x2; x += step) {
+                const float* p = (const float*)src->getPixelAddress(x, y);
+                if (!p) continue;
+                v.push_back(p[0]); v.push_back(p[1]); v.push_back(p[2]);
+            }
+        if (v.size() < 300) { m_SetupStatus->setValue("Too few samples to judge"); return; }
+
+        auto pct = [&](double q) {
+            size_t k = (size_t)(q * (v.size() - 1));
+            std::nth_element(v.begin(), v.begin() + k, v.end());
+            return (double)v[k];
+        };
+        const double p1 = pct(0.01), p50 = pct(0.50), p99 = pct(0.99);
+
+        char m[160];
+        snprintf(m, sizeof m, "p1 %.3f  p50 %.3f  p99 %.3f", p1, p50, p99);
+        m_SetupStats->setValue(m);
+
+        // Two confident verdicts and an honest shrug. Thresholds are deliberately far apart
+        // so ordinary footage lands in neither trap.
+        const bool looksDisplay = (p1 < 0.015 && p99 > 0.990);   // both ends pinned = full-range
+        const bool looksLog     = (p1 > 0.030 && p99 < 0.950);   // lifted floor, rolled-off top
+        if (looksDisplay)
+            m_SetupStatus->setValue("WARNING: input looks display-referred, not log");
+        else if (looksLog)
+            m_SetupStatus->setValue("OK - input looks like camera log");
+        else
+            m_SetupStatus->setValue("Inconclusive - see the numbers below");
+    }
+    catch (const std::exception& e) { m_SetupStatus->setValue(std::string("threw: ") + e.what()); }
+    catch (...)                     { m_SetupStatus->setValue("threw (unknown)"); }
+}
+
 // Coarse per-frame signature: dimensions + a channel mean over a sparse grid. See the
 // declaration for why a mean is enough here (this answers "different image?", not "how is
 // it exposed?"). Returns false if the frame could not be read at all.
@@ -1236,6 +1346,9 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     }
     // Experimental Auto Grade probe. Guarded on eChangeUserEdit like the preset: a project
     // load must never trigger a frame fetch.
+    else if (p_ParamName == "setupCheck" && p_Args.reason == OFX::eChangeUserEdit) {
+        probeSetup(p_Args.time);
+    }
     else if (p_ParamName == "lutExportBtn" && p_Args.reason == OFX::eChangeUserEdit) {
         exportCube(p_Args.time);
     }
@@ -2003,6 +2116,32 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
              "The default Camera entry, 'Rec.2100 PQ - Smooth Decode', is a deliberately compressive curve that flatters log footage - the look the presets build on, not a colorimetric match. Every other entry in the list IS a faithful camera decode; pick yours for an accurate transform instead.");
     helpLine("help7", "Output Encode", "Delivery curve - NOT the Timeline setting",
              "Your DELIVERY curve, baked into the render. Independent of Timeline Color Space - do NOT change it to match. Rec.709 (Gamma 2.2) is the default (web/YouTube); Gamma 2.4 for broadcast; Rec.709 (Scene) for a scene-referred hand-off.");
+    // Live check of the one setup mistake that IS detectable. Sits with the static setup
+    // advice because that is where a user goes when the picture looks wrong. See
+    // probeSetup(): it reads the input pixels, not the timeline — Timeline Color Space is a
+    // monitoring setting downstream of this node and cannot be read from an OFX plugin.
+    {
+        PushButtonParamDescriptor* sb = p_Desc.definePushButtonParam("setupCheck");
+        sb->setLabels("Check Input", "Check Input", "Check Input");
+        sb->setHint("Look at the frame and say whether this node is being fed camera log, which is what it expects. Catches the mistakes that silently ruin a grade: a color-managed timeline, a Color Space Transform node in front of this one, or an input LUT on the clip - all of which hand OneGrade something already transformed. It cannot read your Timeline Color Space (that is a monitoring setting applied after this node, invisible from inside a plugin) and it does not need to: every one of those mistakes changes the input, and the input is measurable. Deliberately cautious - it only calls a verdict when the frame is clearly one thing or the other, and always shows the numbers it judged on. Changes nothing about the picture.");
+        sb->setParent(*gHelp);
+        page->addChild(*sb);
+
+        auto srow = [&](const char* name, const char* label, const char* hint) {
+            StringParamDescriptor* s = p_Desc.defineStringParam(name);
+            s->setLabels(label, label, label);
+            s->setStringType(eStringTypeLabel);
+            s->setDefault("");
+            s->setHint(hint);
+            s->setEnabled(false);
+            s->setParent(*gHelp);
+            page->addChild(*s);
+        };
+        srow("setupStatus", "Input", "The verdict. 'OK' means the frame has the lifted floor and rolled-off top that camera log has. 'WARNING' means it uses the full 0-1 range the way display-referred material does, which usually means something transformed it before this node. 'Inconclusive' means it sits between the two and you should read the numbers yourself.");
+        srow("setupStats",  "Levels", "1st, 50th and 99th percentile of the incoming code values. Camera log sits well inside 0-1 - Blackmagic log peaks around 0.75 on real footage. A p1 near 0.00 together with a p99 near 1.00 is the signature of an already-transformed image.");
+        srow("setupHost",   "Host", "What Resolve reports through the OFX 1.5 colour management API. '(absent)' means the host does not provide it, which is expected and harmless - the pixel check above is the one that matters. Read-only: OneGrade does not declare a colour management style, because doing so is what would let the host start converting the input and override the plugin's own camera transform.");
+    }
+
     helpLine("help8", "Monitor", "Calibrate; check on a second screen",
              "Calibrate your monitor and have Resolve show your delivery space; check the grade on a second screen before committing.");
 

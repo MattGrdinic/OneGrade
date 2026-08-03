@@ -91,6 +91,29 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   near-exact and is noted as future work — it changes the look, so it isn't being smuggled
   in behind an export button.
 
+### Added — Check Input (setup sanity check)
+
+- **A "Check Input" button in Setup / Help** reads the frame and says whether this node is
+  being fed camera log, which is what it expects.
+- **What it can't do, and why:** it cannot read your Timeline Color Space. That is a
+  *monitoring* setting applied downstream of the node graph — it changes how Resolve
+  interprets our output for the viewer, and nothing about it is visible from inside an OFX
+  plugin. No property carries it.
+- **What it does instead, which is the useful half:** every setup mistake that actually
+  ruins a grade — a color-managed timeline, a CST node in front of this one, an input LUT on
+  the clip — changes the **input**, and the input is measurable. Camera log has a narrow,
+  lifted footprint (Blackmagic log peaks around 0.75 on real footage); display-referred
+  material uses the full range, crushing to 0 and clipping at 1.
+- Deliberately **conservative**: it calls a verdict only when the frame is clearly one thing
+  or the other, reports "inconclusive" otherwise, and always prints the percentiles it
+  judged on. A false alarm on a correct setup would be worse than staying quiet — the same
+  reasoning that stopped Auto Grade guessing at white balance.
+- It also reports whatever Resolve volunteers through the **OFX 1.5 colour management API**
+  (`ofxColour.h`). These are read **without declaring a colour management style**, on
+  purpose: declaring support is exactly what could invite the host to start converting our
+  input and override the plugin's own camera transform. If it reports "(absent)", the next
+  experiment is a deliberate one, not a speculative switch.
+
 ### Experimental — Match Clip probe
 
 - **A probe, not a feature yet.** Marc Wielage suggested matching a shot to the one before
