@@ -388,6 +388,7 @@ public:
     // Display-space percentiles from the last analyse, at NEUTRAL params. Cached because the
     // Clean auto-grade solves against them directly: the grade curve is monotonic, so it maps
     // percentiles exactly, and three numbers stand in for the whole frame (see solveClean()).
+    double m_LastD01 = 0.0;   // p0.1 — the BLACK POINT the solve places (not p1, see below)
     double m_LastD1  = 0.0;
     double m_LastD50 = 0.0;
     double m_LastD99 = 0.0;
@@ -805,6 +806,7 @@ void OneGrade::probeAnalyze(double p_Time)
         // previous call, so three ranks cost three linear passes — still far cheaper than
         // a full sort, and exact where a histogram would only be as good as its bin width.
         const double d1 = pct(dispL, 0.01), d50 = pct(dispL, 0.50), d99 = pct(dispL, 0.99);
+        const double d01 = pct(dispL, 0.001);   // black point for the Base solve, see applyAutoGradeClean
         const double d999 = pct(dispL, 0.999);
         const double y1 = pct(sceneY, 0.01), y50 = pct(sceneY, 0.50), y99 = pct(sceneY, 0.99);
 
@@ -845,7 +847,7 @@ void OneGrade::probeAnalyze(double p_Time)
         snprintf(m2, sizeof m2, "p99.9 %.3f  peak x%.2f", d999, peak);
         m_ProbePeak->setValue(m2);
 
-        m_LastD1 = d1; m_LastD50 = d50; m_LastD99 = d99;   // for solveClean()
+        m_LastD01 = d01; m_LastD1 = d1; m_LastD50 = d50; m_LastD99 = d99;   // for the Base solve
         m_LastPin = 100.0 * (double)pinned / (double)n;
         m_LastHot = 100.0 * (double)hot / (double)n;
         snprintf(m2, sizeof m2, "hot %.1f%%  pin %.2f%%@%.3f  sat %.3f",
@@ -1006,13 +1008,28 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     m_CleanMidStr->getValue(midStr);
     m_CleanMaxGain->getValue(maxGain);
 
-    const double d1 = m_LastD1, d50 = m_LastD50, d99 = m_LastD99;
+    // Rolloff is applied AFTER the grade, in the trim step, so it squashes whatever the
+    // solve placed. Ignoring it made the solve quietly undershoot: on an interview frame the
+    // top was aimed at 0.90 and landed near 0.83, because a 6% pin drove Rolloff to ~0.55 and
+    // the softclip ate the difference. Predict through it so the target means something.
+    const double rolloff = std::min(0.80, std::max(0.00, 0.090 * m_LastPin));
+    auto withRolloff = [&](double v) {
+        return rolloff > 0.0 ? (double)og::softclip((float)v, (float)rolloff) : v;
+    };
+
+    // THE BLACK POINT IS p0.1, NOT p1. Placing p1 at the target leaves a full 1% of the
+    // frame BELOW it, and on a shot with any real shadow area that 1% is a visible crushed
+    // region sitting on 0 — which is exactly what the interview frame showed. p0.1 puts the
+    // actual bottom of the picture on the target instead of the bottom of the bulk, so the
+    // shadows sit where they were aimed. The top keeps p99: it is the robust choice against a
+    // stray specular, and highlight recovery was already behaving.
+    const double d01 = m_LastD01, d50 = m_LastD50, d99 = m_LastD99;
     double gain = 1.0, lift = 0.0, gamma = 1.0;
 
     // Three rounds is plenty: the controls pivot on different ends, so each pass barely
     // disturbs the previous one. Ranges are the params' own limits.
     for (int pass = 0; pass < 3; ++pass) {
-        gain = og_solve(0.05, 3.0, tHigh, [&](double g) { return og_grade_display(d99, lift, gamma, g); });
+        gain = og_solve(0.05, 3.0, tHigh, [&](double g) { return withRolloff(og_grade_display(d99, lift, gamma, g)); });
         // NEVER BRIGHTEN, by default. Containment is about not clipping, and a shot whose
         // top sits below the target isn't clipping - it's just dark, which is usually the
         // point. Without this the solver drags a moody interior's p99 from 0.55 up to 0.90
@@ -1020,17 +1037,13 @@ void OneGrade::applyAutoGradeClean(double p_Time)
         // Grade needed: the user's own grade on that shot pulled Gain DOWN to 0.714. Their
         // grading behaviour, not a convention, is the evidence.
         if (gain > maxGain) gain = maxGain;
-        lift = og_solve(-0.5, 0.5, tLow,  [&](double l) { return og_grade_display(d1, l, gamma, gain); });
+        lift = og_solve(-0.5, 0.5, tLow,  [&](double l) { return og_grade_display(d01, l, gamma, gain); });
         // Gamma runs "backwards" (a larger gamma raises the midtone, and og_solve assumes the
         // probe increases with its argument) — which it does here, since v^(1/gamma) grows
         // with gamma for v < 1. Solve, then back off toward neutral.
         const double gSolved = og_solve(0.2, 3.0, tMid, [&](double gm) { return og_grade_display(d50, lift, gm, gain); });
         gamma = 1.0 + midStr * (gSolved - 1.0);
     }
-
-    // Rolloff keeps the one fit that IS evidenced across shots: source clipping, not
-    // brightness. See applyAutoGrade() for the table that ruled out `hot` and p99.9/p99.
-    const double rolloff = std::min(0.80, std::max(0.00, 0.090 * m_LastPin));
 
     gain  = std::min(3.00, std::max(0.05, gain));
     lift  = std::min(0.50, std::max(-0.50, lift));
@@ -1051,11 +1064,11 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     // silently pinning a slider while reporting success is the shape of bug this codebase
     // keeps finding. The achieved triple makes it visible.
     char msg[160];
-    snprintf(msg, sizeof msg, "Clean G %.2f Gam %.2f L %+.2f R %.2f -> %.2f/%.2f/%.2f",
+    snprintf(msg, sizeof msg, "Base G %.2f Gam %.2f L %+.2f R %.2f -> %.2f/%.2f/%.2f",
              gain, gamma, lift, rolloff,
-             og_grade_display(d1, lift, gamma, gain),
-             og_grade_display(d50, lift, gamma, gain),
-             og_grade_display(d99, lift, gamma, gain));
+             withRolloff(og_grade_display(d01, lift, gamma, gain)),
+             withRolloff(og_grade_display(d50, lift, gamma, gain)),
+             withRolloff(og_grade_display(d99, lift, gamma, gain)));
     m_ProbeApplied->setValue(msg);
     setEnabledness();
 }
@@ -1834,8 +1847,8 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             d->setIncrement(0.01); d->setParent(*gAuto);
             page->addChild(*d);
         };
-        tune("cleanHigh", "Target High", "Where the 99th percentile should land after grading. Below 1.0 on purpose, so bright detail has somewhere to go instead of sitting on the clip point.", 0.90, 0.50, 1.00);
-        tune("cleanLow",  "Target Low",  "Where the 1st percentile should land. Just off zero, so shadows are not crushed against black.", 0.02, 0.00, 0.30);
+        tune("cleanHigh", "Target High", "Where the 99th percentile should land after grading, measured AFTER Highlight Rolloff. 0.95 fills the range without sitting on the clip point.", 0.95, 0.50, 1.00);
+        tune("cleanLow",  "Target Low",  "Where the 0.1st percentile - effectively the darkest part of the picture - should land. Just off zero, so shadows sit above black rather than crushing into it. This is deliberately a much deeper percentile than the highlight end uses: placing p1 here left 1% of the frame below the target and that 1% was visibly crushed.", 0.02, 0.00, 0.30);
         tune("cleanMid",  "Target Mid",  "Where the median should land if the midtone solve were applied in full. Only a fraction of it is - see Mid Strength.", 0.42, 0.10, 0.90);
         tune("cleanMaxGain","Max Gain","Ceiling on the Gain the solve may use. 1.0 means it can only ever darken, which is deliberate: a shot whose highlights sit below the target is not clipping, it is just dark, and brightening it destroys the intent. Raise above 1.0 only if you want genuinely underexposed footage pushed up.", 1.00, 0.50, 2.00);
         tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.50, 0.00, 1.00);

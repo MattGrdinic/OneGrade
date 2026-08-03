@@ -103,6 +103,16 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   anything clipped" is not — it is objective, and true on anyone's footage. So Base places
   p99 with Gain, p1 with Lift and p50 with Gamma, each control owning the end it pivots away
   from, via three 1-D solves on the measured percentiles.
+- **The black point is p0.1, not p1.** Placing the 1st percentile on the target leaves a
+  full 1% of the frame *below* it, and on any shot with real shadow area that 1% is a
+  visibly crushed region sitting on 0 — which is what an interview frame showed on the first
+  build. Using p0.1 puts the actual bottom of the picture on the target instead of the bottom
+  of the bulk. On measured shots this flips Lift from negative to positive: it stops pushing
+  shadows down, while a genuinely milky flat-log frame still gets its floor corrected.
+- **The solve now predicts through Highlight Rolloff.** Rolloff is applied after the grade,
+  so it squashed whatever the solve had placed: an interview frame aimed at 0.90 landed near
+  0.83 because a 6% pin drove Rolloff to ~0.55. The target means something now.
+- Target High raised to **0.95**, so the picture fills the range rather than stopping short.
 - **It never brightens.** Gain is capped at 1.0 by default. A shot whose highlights sit
   below the target isn't clipping — it's dark, which is usually deliberate. Without the cap
   the solver dragged a moody interior's p99 from 0.55 up to 0.90 and blew it out; the user's
