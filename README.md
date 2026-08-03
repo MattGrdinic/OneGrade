@@ -108,6 +108,21 @@ match a reference transform exactly, use a CST node for that part.
 
 ## The controls
 
+**Auto Grade (experimental)** — one click that reads the frame and sets a starting point.
+It measures the shot's exposure and its highlight clipping, applies the Cinematic Film
+Emulation look, and writes **Gain** and **Highlight Rolloff** from those measurements.
+
+- **Auto Grade** — measures the frame, then writes the look and the derived values.
+- **Bias** — leans the result across the whole tonal range, live: negative protects the
+  highlights (shoulder up, floor down, mids darker, Gain pulled), positive opens the image
+  up (floor and mids up, shoulder off). Zero is the measured result.
+
+Everything it writes is an ordinary slider value you can drag afterwards, so a starting
+point you don't like costs one undo. It deliberately leaves **white balance and Density
+alone**: exposure and clipping are measurable, warmth is taste, and a button that guesses at
+taste is worse than one that doesn't touch it. Full method, the fits, and what they were
+fitted to: [docs/AUTO-GRADE.md](docs/AUTO-GRADE.md).
+
 **0 · Node Role** — which part of the pipeline this node does. Leave it on **Full Grade
 (single node)** unless you group your clips; that's the default and it's the whole plugin
 in one node. The other two roles split it across Resolve's group grading levels so a whole
@@ -394,8 +409,9 @@ push, and attaches release artifacts on tags.
 Releases are **git-tag driven** — pushing a `v*` tag is the only trigger. There is no
 manual upload step.
 
-**When to run it:** after your changes are merged to `main` and CI is green there. A
-release should represent a known-good `main`.
+**When to run it:** after your changes are merged to `main`. CI runs on the *PR* into
+`main`, not on the merge commit, so "known-good `main`" means that PR's checks were green
+before you merged it.
 
 **How to run it:**
 
@@ -409,7 +425,7 @@ git push origin v1.1.0                 # this push is what triggers the release
 **What it does** (`.github/workflows/ci.yml`, the `release` job — it's skipped on normal
 pushes and only runs for `refs/tags/v*`):
 
-1. Builds and **tests** on macOS **and** Windows (the same `build` matrix as every push).
+1. Builds and **tests** on macOS **and** Windows (the same `build` matrix every PR runs).
 2. Packages a zip per OS — each contains `OneGrade.ofx.bundle` **plus its installer**
    (`install-macos.command` / `install-windows.bat`).
 3. Publishes a **GitHub Release** named for the tag, attaches both zips, and
