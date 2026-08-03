@@ -91,52 +91,67 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   near-exact and is noted as future work — it changes the look, so it isn't being smuggled
   in behind an export button.
 
-### Added — Base Grade, and a sane picture on drop
+### Added — Base Grade (and Auto Grade becomes two buttons)
 
-- **Two buttons now, named for what they do: "Base Grade" and "Creative Grade".** Base
-  measures the frame and places its range so nothing is crushed at 0 or clipped at 1023 —
-  a neutral, gradable starting point with **no LUT and no film tint**, letting the smooth
-  decode do the work. Creative is the previous Auto Grade: same measurement, film emulation
-  look on top.
-- **Base solves rather than fits, and that's the point.** Creative Grade had to be fitted to
-  four hand-graded shots because "what gain did they choose" is a taste question. "Is
-  anything clipped" is not — it is objective, and true on anyone's footage. So Base places
-  p99 with Gain, p1 with Lift and p50 with Gamma, each control owning the end it pivots away
-  from, via three 1-D solves on the measured percentiles.
-- **The black point is p0.1, not p1.** Placing the 1st percentile on the target leaves a
-  full 1% of the frame *below* it, and on any shot with real shadow area that 1% is a
-  visibly crushed region sitting on 0 — which is what an interview frame showed on the first
-  build. Using p0.1 puts the actual bottom of the picture on the target instead of the bottom
-  of the bulk. On measured shots this flips Lift from negative to positive: it stops pushing
-  shadows down, while a genuinely milky flat-log frame still gets its floor corrected.
-- **The solve now predicts through Highlight Rolloff.** Rolloff is applied after the grade,
-  so it squashed whatever the solve had placed: an interview frame aimed at 0.90 landed near
-  0.83 because a 6% pin drove Rolloff to ~0.55. The target means something now.
-- Target High raised to **0.95**, so the picture fills the range rather than stopping short.
-- **It never brightens, and it only brightens so far.** Gain is capped at 1.0 and post
-  exposure at +0.85 stops. Both are the same guard: a shot below target isn't clipping, it's
-  dark, and usually on purpose. Without the exposure cap a car interior at `key +2.90` asked
-  for **+1.74 stops** and went milky — the same shot graded by hand used **+0.55**. Gain is capped at 1.0 by default. A shot whose highlights sit
-  below the target isn't clipping — it's dark, which is usually deliberate. Without the cap
-  the solver dragged a moody interior's p99 from 0.55 up to 0.90 and blew it out; the user's
-  own grade on that shot pulled Gain *down* to 0.714. Same clamp, same reason, as Creative.
-- **The midtone is only half-applied** (`Mid Strength`, default 0.5). Driving every shot's
-  median to a fixed target is exactly the mistake Creative had to unlearn — it flattens
-  deliberately dark shots into mid-gray. Containment at the ends is safe to enforce because
-  clipping is a defect; the midtone is intent.
+- **Two one-click buttons, named for what they do.** **Base Grade** measures the frame and
+  places its range so nothing is crushed at 0 or clipped at 1023 — a neutral, gradable
+  starting point with **no LUT, no film tint, no density**, letting the smooth decode do the
+  work. **Creative Grade** is the previous Auto Grade, unchanged: same measurement, film
+  emulation look on top.
+- **Base solves rather than fits, and that is the point.** Creative had to be fitted to four
+  hand-graded shots, because "what Gain would a colorist choose" is a taste question. "Is
+  anything clipped" is not — it is objective and true on anyone's footage. So Base places
+  the top with **Gain**, the bottom with **Lift** and the middle with **post exposure**, each
+  control owning the end it pivots away from, in three coordinate passes.
+- **It measures per channel, not luma.** A waveform shows R, G and B independently and that
+  is what clips. Containing *luma* at 0.95 put blue past 1023 on a real interview frame while
+  the luma reading insisted the target had been hit exactly.
+- **The black point is p0.1, not p1.** Placing the 1st percentile on target leaves a full 1%
+  of the frame below it, and on any shot with shadow area that 1% is a visibly crushed region
+  on 0. Using p0.1 flips Lift from negative to positive on real shots — it stops pushing
+  shadows down — while a genuinely milky flat-log frame still gets its floor corrected.
+- **The midtone rides on post exposure, not gamma.** This is the structural lesson from
+  Creative, which looks right on bright shots because of the *order* it works in: Gain pulled
+  hard, the print LUT shoulders the top, then postExp brings the mids back. Gain down,
+  shoulder, exposure back up — an S-curve assembled from three stages. postExp sits after the
+  encode and before the highlight softclip, so it lifts mids while the shoulder catches what
+  that pushes up. Gamma pivots black *and* white and structurally cannot make that trade.
+- **Base gets a shoulder.** Lift/Gamma/Gain can't make an S-curve, so Highlight Rolloff is
+  the only film-like response available and it was switched off on most footage — the formula
+  was inherited from Creative, where the print LUT was already doing the shouldering. Rolloff
+  is now `max(pin × 0.090, overshoot × 0.216)`, where overshoot is how far the channels run
+  past display white. Fitted to a hand-dialled value; `hot` was ruled out for the second time
+  because it runs backwards.
+- **Two asymmetric caps, and they are the important half.** Gain never exceeds its ceiling and
+  post exposure never brightens by more than 0.85 stops; darkening is unlimited, because
+  pulling a blown frame down is always safe while pushing a dark one up destroys a
+  deliberately low-key shot. A car interior at `key +2.90` asked for **+1.74 stops** without
+  the cap; the same shot graded by hand used **+0.55**.
+- **Mid Strength moves the target, not the step.** It blends the shot's *own* midtone toward
+  the target, so 0 keeps the shot as exposed and 1 forces the target. Damping the correction
+  instead — as it did at first — is a no-op in a solver that converges: it only changes how
+  fast you arrive at the identical place, which is why every shot was being flattened toward
+  the same median regardless of the setting.
+- Defaults are the values validated on footage, not the originals: Target High 0.94, Target
+  Low 0.05, Target Mid 0.70, Max Gain 2.0, Max Exposure 0.85, Shoulder 0.216, Mid Strength
+  0.838.
+- The readout reports what the solve **achieved**, not what it aimed at, so an unreachable
+  target is visible rather than a quietly pinned slider.
+- **Bias now works everywhere.** It is an *offset* from the grade a button produced, held in
+  hidden saved params — so it survives a project reload, works with either button, and can be
+  used on a hand-built grade (the first move adopts the current settings as its zero point).
+  Previously it wrote absolute values taken from the film preset, which meant it stamped that
+  recipe over whatever grade was actually on the node, and went inert after a restart.
+  Creative's response is identical at every Bias value.
 - **"Grade on drop" was built, crashed Resolve, and was removed** before release. Calling
   `fetchImage` from the instance constructor trips an assertion inside Resolve that calls
   `abort()` — and since that is a process abort rather than an exception, the `try/catch` it
-  was wrapped in gave no protection whatsoever. It also fired on every node in every
-  pre-existing project, because the "runs once" flag didn't exist in files saved earlier.
-  Written up in [docs/ROADMAP.md](docs/ROADMAP.md); the remaining route is better static
-  defaults. Press Base Grade instead — it's one click.
-- The readout reports what the solve **achieved**, not just what it set: a target can be
-  unreachable, and silently pinning a slider while reporting success is a bug shape this
-  project keeps finding.
+  was wrapped in gave no protection at all. It also fired on every node in every pre-existing
+  project, because the "runs once" flag didn't exist in files saved earlier. Written up in
+  [docs/ROADMAP.md](docs/ROADMAP.md); the remaining route is better static defaults.
 - Internal: `lgg_core()` extracted into `OneGradePipeline.h` so the solver and the pipeline
-  share one definition of the grade curve. Test 14 proves the premise the solver rests on —
-  that evaluating `lgg_core` on a measured display percentile predicts what the pipeline
+  share one definition of the grade curve. Test 14 proves the premise the whole solve rests
+  on — that evaluating `lgg_core` on a measured display percentile predicts what the pipeline
   actually renders — across 3 encodes, 3 cameras and 3 grades.
 
 ### Added — Check Input (setup sanity check)
