@@ -433,7 +433,15 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
      overexpose a face that was already fine. Hence the Subject row: the same key asked of
      skin-toned pixels only, with its coverage % alongside. **The mask cannot tell skin from
      sand** — on a desert shot it matches most of the frame, and a high coverage % is the
-     tell that the number means nothing. Where the two keys disagree, frame median is wrong.
+     tell that the number means nothing (desert frame: **39.7%** coverage = sand, not a face
+     — the guard working as designed). Where the two keys disagree, frame median is wrong.
+     **Select the mask on CHROMATICITY ONLY.** v1 also gated on display luma 0.15-0.95 and
+     that is self-fulfilling: it picks mid-tone pixels by construction, so their median
+     lands near mid-gray and the key reads ~0 on every shot. Caught on the desert frame —
+     masked Y 0.2100 against a frame median of 0.6236, i.e. a filter artefact reported as a
+     measurement. Only a minimal luma guard remains (too dark / too blown for hue to mean
+     anything). **General lesson: a selection rule that constrains the quantity being
+     measured produces a number that describes the filter, not the footage.**
 
    **The Scene row is grade-independent — confirmed by accident and worth relying on.** The
    same cactus frame read `Y50 0.6236 / key -1.79 / DR 6.5` both ungraded and with a Custom

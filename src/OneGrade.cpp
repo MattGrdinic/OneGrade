@@ -528,14 +528,22 @@ void OneGrade::probeAnalyze(double p_Time)
                 // meaningless saturation, and it's the mids that a Density move addresses.
                 if (L > 0.15f && L < 0.85f) { satSum += ss; ++satN; }
 
-                // Crude skin mask: warm hue, moderate saturation, not crushed or blown.
-                // Exists because frame-median exposure is subject-blind — a dark interior
-                // drags the median down and asks for a push that would blow the windows
-                // and overexpose a face that was already fine. Deliberately reported with
-                // its own coverage %, because this mask cannot tell skin from sand: on a
-                // desert shot it will match most of the frame, and that is the tell.
-                if (hh >= 0.01f && hh <= 0.11f && ss >= 0.15f && ss <= 0.55f &&
-                    vv >= 0.15f && vv <= 0.95f)
+                // Crude skin mask: warm hue, plausible saturation. Exists because
+                // frame-median exposure is subject-blind — a dark interior drags the median
+                // down and asks for a push that would blow the windows and overexpose a
+                // face that was already fine. Reported with its own coverage %, because
+                // this mask cannot tell skin from sand: on a desert shot it matches ~40% of
+                // the frame, and that is the tell.
+                //
+                // Selection is on CHROMATICITY ONLY. A luminance window here (the first
+                // version used display 0.15-0.95) is self-fulfilling: it picks mid-tone
+                // pixels by construction, so their median lands near mid-gray and the key
+                // reads ~0 on every shot. Caught on the desert frame, where masked Y came
+                // back 0.21 against a frame median of 0.62 — a filter artefact, not a
+                // measurement. The only luma guard left excludes pixels too dark or too
+                // blown for their hue to mean anything.
+                if (hh >= 0.01f && hh <= 0.11f && ss >= 0.10f && ss <= 0.65f &&
+                    vv >= 0.03f && vv <= 1.05f)
                     skinY.push_back(xyz[1]);
             }
         }
