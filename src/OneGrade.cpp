@@ -380,7 +380,6 @@ public:
     void probeSetup(double p_Time);     // is the input actually camera log? + what the host says
     void applyAutoGrade(double p_Time);      // measure, then set the film look + Gain from key
     void applyAutoGradeClean(double p_Time); // measure, then contain the range with no LUT
-    void autoInitOnce();                     // first-drop auto-grade, guarded so it runs once
     void applyBias();                   // re-derive Rolloff/Lift from the cached measurement
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
     double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
@@ -457,8 +456,6 @@ private:
     OFX::DoubleParam* m_CleanMid;      // where p50 should land
     OFX::DoubleParam* m_CleanMidStr;   // how much of the midtone solve to apply
     OFX::DoubleParam* m_CleanMaxGain;  // ceiling on Gain: 1.0 = never brighten
-    OFX::BooleanParam* m_AutoInitDone;    // saved: has the first-drop grade already run?
-    OFX::BooleanParam* m_AutoInitEnable;  // user switch for the first-drop grade
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 
@@ -524,8 +521,6 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_CleanMid      = fetchDoubleParam("cleanMid");
     m_CleanMidStr   = fetchDoubleParam("cleanMidStr");
     m_CleanMaxGain  = fetchDoubleParam("cleanMaxGain");
-    m_AutoInitDone  = fetchBooleanParam("autoInitDone");
-    m_AutoInitEnable= fetchBooleanParam("autoInitEnable");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
@@ -539,7 +534,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
 
     populateLookLut();
     setEnabledness();
-    autoInitOnce();     // first drop only; guarded by a saved param so a reload can't re-stamp
+    // NOTHING THAT TOUCHES PIXELS MAY GO HERE. See autoInitOnce()'s removal note below.
 }
 
 // Grey out whatever the current Node Role doesn't own, then apply the LUT-mode rule
@@ -1065,35 +1060,42 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     setEnabledness();
 }
 
-// First-drop auto grade. Runs the Clean solve once, when the node is created, so a freshly
-// dropped OneGrade is already a reasonable starting point instead of a bright lifted one.
+// GRADE ON DROP -- TRIED, AND IT CRASHES RESOLVE. DO NOT RETRY THIS SHAPE.
 //
-// GUARDED BY A SAVED PARAM, not by instance state. `autoInitDone` is a hidden boolean that
-// persists in the project, so on reload it is already true and this does nothing. Without
-// that, every project open would re-measure the current frame and stamp over the user's
-// saved grade — the same class of bug the presets' eChangeUserEdit guard exists to prevent,
-// and far more destructive here because it would need no user action at all.
+// The idea was to run Base Grade once at instance creation so a freshly dropped node was
+// already in a gradable place. It was built, guarded by a saved `autoInitDone` param so a
+// reload could not re-stamp a user's grade, and wrapped in try/catch on the assumption that
+// the worst case was "no image this early, keep the defaults".
 //
-// Wrapped in every sense: whether a host will hand over an image this early is UNTESTED
-// (Auto Grade's own step 1 had to establish that fetchImage works in changedParam, and this
-// is earlier still). If it throws or the clip isn't ready, the node simply keeps its
-// defaults, which is exactly today's behaviour.
-void OneGrade::autoInitOnce()
-{
-    bool done = false;
-    m_AutoInitDone->getValue(done);
-    if (done) return;
-    m_AutoInitDone->setValue(true);     // set FIRST, so a throw can't leave it retrying forever
-
-    bool enabled = true;
-    m_AutoInitEnable->getValue(enabled);
-    if (!enabled) return;
-
-    try {
-        if (m_SrcClip && m_SrcClip->isConnected()) applyAutoGradeClean(0.0);
-    }
-    catch (...) { /* no image this early — defaults stand, which is the old behaviour */ }
-}
+// Every part of that assumption was wrong. Calling fetchImage() from the instance
+// CONSTRUCTOR trips an assertion inside Resolve, which calls abort(). Confirmed from a crash
+// report, 2026-08-03 -- the stack is unambiguous:
+//
+//     __assert_rtn -> abort
+//     ...
+//     OFX::Clip::fetchImage(double)
+//     OneGrade::probeAnalyze(double)
+//     OneGrade::applyAutoGradeClean(double)
+//     OneGrade::autoInitOnce()
+//     OneGrade::OneGrade(OfxImageEffectStruct*)
+//     OneGradeFactory::createInstance(...)
+//
+// TRY/CATCH CANNOT HELP: abort() is a process abort, not a C++ exception, so there is
+// nothing to catch. Defensive wrapping gives no protection at all against a host assert,
+// which is worth remembering the next time "wrap it and see" looks like a safe experiment.
+//
+// It was also far worse than "affects new nodes only". `autoInitDone` does not exist in
+// projects saved before that build, so it defaulted to false and fired on EVERY node in
+// every existing project -- the user's project died at 94% on load.
+//
+// The lesson generalises past this feature. fetchImage is safe from changedParam (validated
+// during Auto Grade step 1) and from render. It is NOT safe from a lifecycle hook the host
+// calls during project load. Anything that reads pixels must hang off a user action or a
+// render, never off instance construction.
+//
+// If a pleasing default on drop is still wanted, the only route that carries no risk is
+// better STATIC defaults -- footage-blind, but it cannot crash anything. See
+// docs/ROADMAP.md.
 
 // Bias: one slider trading highlight restraint against shadow openness, because the
 // measurement can only get a shot into the right neighbourhood — which end of that
@@ -1821,22 +1823,6 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         cb->setHint("Measure the frame and set Lift/Gamma/Gain so the picture sits inside the displayable range - nothing crushed at 0, nothing clipped at 1023 - with NO LUT and no film tint. The camera is set to the smooth decode and left to do the work. This is a starting point to grade FROM, not a look: it corrects range, never taste. Balance and Density are explicitly zeroed. Highlight Rolloff still comes from measured source clipping. Everything it writes is an ordinary slider value you can drag afterwards.");
         cb->setParent(*gAuto);
         page->addChild(*cb);
-
-        BooleanParamDescriptor* ai = p_Desc.defineBooleanParam("autoInitEnable");
-        ai->setLabels("Grade on drop", "Grade on drop", "Grade on drop");
-        ai->setHint("Run Base Grade automatically the first time this node is created, so a freshly dropped OneGrade already sits in a gradable place instead of bright and lifted. Runs ONCE per node: the fact that it has run is saved with the project, so reopening never re-measures and never overwrites your grade. Turn off if you would rather start from the raw defaults.");
-        ai->setDefault(true);
-        ai->setParent(*gAuto);
-        page->addChild(*ai);
-
-        // Saved, hidden, and the entire safety mechanism for grade-on-drop: it persists in
-        // the project, so on reload it is already true and the auto grade cannot re-fire.
-        BooleanParamDescriptor* ad = p_Desc.defineBooleanParam("autoInitDone");
-        ad->setLabels("(auto-init done)", "(auto-init done)", "(auto-init done)");
-        ad->setDefault(false);
-        ad->setIsSecret(true);
-        ad->setParent(*gAuto);
-        page->addChild(*ad);
 
         // Containment targets — the knobs the Clean constants get fitted with. Debug-only.
         auto tune = [&](const char* name, const char* label, const char* hint,

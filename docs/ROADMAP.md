@@ -92,7 +92,50 @@ Why this is strictly better than adjacency:
 
 ---
 
-## 2. Gamut compression, to make Export LUT near-exact
+## 2. A pleasing picture on drop — static defaults only
+
+**Status:** the analysed version was built, **crashed Resolve**, and was removed the same
+day (2026-08-03). Do not rebuild it in that shape.
+
+**What was tried.** Run Base Grade once from the instance constructor, guarded by a saved
+`autoInitDone` param so a project reload could not re-stamp a user's grade, and wrapped in
+try/catch on the assumption that the worst case was "no image available this early".
+
+**What actually happened.** `fetchImage()` from `createInstance` trips an assertion inside
+Resolve, which calls `abort()`. From the crash report:
+
+```
+__assert_rtn -> abort
+...
+OFX::Clip::fetchImage(double)
+OneGrade::probeAnalyze(double)
+OneGrade::applyAutoGradeClean(double)
+OneGrade::autoInitOnce()
+OneGrade::OneGrade(OfxImageEffectStruct*)
+OneGradeFactory::createInstance(...)
+```
+
+Three things worth keeping from that:
+
+- **`try/catch` gave zero protection.** `abort()` is a process abort, not a C++ exception.
+  "Wrap it and see" is not a safe experiment against a host assertion — the wrap was the
+  reason it *felt* safe to try.
+- **The blast radius was every existing project, not just new nodes.** `autoInitDone` did
+  not exist in projects saved before that build, so it defaulted to `false` and the
+  auto-grade fired on every OneGrade node at once. A "runs once" guard stored in a *new*
+  param is not a guard for *old* files.
+- **fetchImage is safe from `changedParam` and from `render`, and nowhere else.** Auto Grade
+  step 1 validated the first; this validated the negative. Anything reading pixels must hang
+  off a user action or a render, never off a lifecycle hook the host calls during load.
+
+**The route that remains.** Better **static defaults** — pick shipped values that land well
+on typical log footage. Footage-blind, so it helps the average clip and misses outliers, but
+it cannot crash anything and needs no measurement. The two buttons (Base Grade / Creative
+Grade) already cover the adaptive case with one click.
+
+---
+
+## 3. Gamut compression, to make Export LUT near-exact
 
 **Status:** identified while measuring `Export .cube` (2026-08-03), deliberately not done.
 
@@ -118,7 +161,7 @@ deliberate release of its own, not something to smuggle in behind an export butt
 
 ---
 
-## 3. Declaring OFX 1.5 colour management
+## 4. Declaring OFX 1.5 colour management
 
 **Status:** read-only probe shipped in v1.3.0; declaring support deliberately not done.
 
@@ -134,7 +177,7 @@ breaks the whole design, so it does not get switched on speculatively.
 
 ---
 
-## 4. Standing items
+## 5. Standing items
 
 Carried from `CLAUDE.md`, kept here so there is one place to look:
 

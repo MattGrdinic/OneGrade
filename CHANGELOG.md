@@ -111,11 +111,13 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   median to a fixed target is exactly the mistake Creative had to unlearn — it flattens
   deliberately dark shots into mid-gray. Containment at the ends is safe to enforce because
   clipping is a defect; the midtone is intent.
-- **"Grade on drop"** runs Base Grade once when the node is created, so a freshly dropped
-  OneGrade already sits somewhere gradable. Guarded by a **saved** param, so reopening a
-  project can never re-measure and stamp over your grade — and wrapped, because whether a
-  host hands over an image that early is untested. If it can't, the node keeps its defaults,
-  which is exactly the old behaviour.
+- **"Grade on drop" was built, crashed Resolve, and was removed** before release. Calling
+  `fetchImage` from the instance constructor trips an assertion inside Resolve that calls
+  `abort()` — and since that is a process abort rather than an exception, the `try/catch` it
+  was wrapped in gave no protection whatsoever. It also fired on every node in every
+  pre-existing project, because the "runs once" flag didn't exist in files saved earlier.
+  Written up in [docs/ROADMAP.md](docs/ROADMAP.md); the remaining route is better static
+  defaults. Press Base Grade instead — it's one click.
 - The readout reports what the solve **achieved**, not just what it set: a target can be
   unreachable, and silently pinning a slider while reporting success is a bug shape this
   project keeps finding.
