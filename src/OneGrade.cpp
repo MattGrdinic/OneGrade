@@ -1856,8 +1856,33 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     GroupParamDescriptor* gTrim = p_Desc.defineGroupParam("gTrim");
     gTrim->setLabels("7  Trim (after LUT)", "7  Trim (after LUT)", "7  Trim (after LUT)");
     defineBypass(p_Desc, page, "bypassTrim",
-                 "Mute this stage at render without losing its values. Post-LUT Exposure, Contrast and Highlight Rolloff are held neutral; the sliders grey out but keep their numbers.", gTrim);
-    page->addChild(*defineSlider(p_Desc, "postExp", "Exposure", "Post-LUT exposure trim in stops. Bring brightness back after a film-emulation LUT.", 0.0, -3.0, 3.0, 0.01, gTrim));
+                 "Mute this stage at render without losing its values. Exposure Trim, Contrast and Highlight Rolloff are held neutral; the sliders grey out but keep their numbers.", gTrim);
+    {
+        StringParamDescriptor* tip = p_Desc.defineStringParam("trimTip");
+        tip->setLabels("Tip", "Tip", "Tip");
+        tip->setStringType(eStringTypeLabel);
+        tip->setDefault("Finishing touches. Most grades need nothing here.");
+        tip->setHint("This group runs after the LUT, on the finished picture. It is for small final adjustments, not for grading: set exposure and contrast with the Lift/Gamma/Gain wheels in group 4, which work in the grade curve where they belong. If you find yourself pulling these a long way, the grade above wants changing instead.");
+        tip->setEnabled(false);
+        tip->setParent(*gTrim);
+        page->addChild(*tip);
+    }
+    // "Exposure" here was read as a second, competing exposure control — two places to set
+    // brightness, one of them after the LUT, which is a workflow trap rather than a feature
+    // (user's call, 2026-08-03). Renamed to say it is a trim, and the SLIDER now spans only
+    // +/-1 stop so it reads as the light touch it is meant to be.
+    //
+    // The HARD range deliberately stays at +/-3: setRange is a clamp the host applies to
+    // saved values, so narrowing it would quietly rewrite existing grades — and the film
+    // emulation presets legitimately sit at +0.55, bringing brightness back after a print
+    // stock crushes it. Narrow what the slider shows, never what a project can hold.
+    {
+        DoubleParamDescriptor* pe = defineSlider(p_Desc, "postExp", "Exposure Trim",
+            "A small brightness nudge on the finished picture, in stops - typically to bring level back after a film-emulation LUT has crushed it. This is NOT the exposure control: set exposure with Gain in group 4, which works in the grade curve. The slider spans +/-1 stop because that is the intended range; larger values can still be typed in and older grades keep whatever they were saved with.",
+            0.0, -3.0, 3.0, 0.01, gTrim);
+        pe->setDisplayRange(-1.0, 1.0);
+        page->addChild(*pe);
+    }
     page->addChild(*defineSlider(p_Desc, "postCon", "Contrast", "Post-LUT contrast trim about mid (0.5), applied after the LUT.", 1.0, 0.0, 2.0, 0.001, gTrim));
     page->addChild(*defineSlider(p_Desc, "rolloff", "Highlight Rolloff", "Soft-clips bright highlights per channel so lamps/speculars roll off to white instead of clipping to a flat neon patch. Higher = earlier, stronger shoulder. Only active on display-referred output (Rec.709 encodes or any LUT path).", 0.0, 0.0, 1.0, 0.001, gTrim));
 

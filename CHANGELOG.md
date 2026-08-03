@@ -39,6 +39,19 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   camera decode*. The input transform is one of the most useful things the plugin does and
   the old wording undersold it.
 
+### Changed — Trim reads as finishing, not as a second grade
+
+- **Trim > "Exposure" is now "Exposure Trim"**, and its slider spans **±1 stop** instead of
+  ±3. It was being read as a second, competing exposure control — two places to set
+  brightness, one of them after the LUT — which is a workflow trap rather than a feature.
+  Exposure belongs to **Gain** in group 4, where it acts in the grade curve.
+- The **hard** range stays ±3 on purpose. `setRange` is a clamp the host applies to saved
+  values, so narrowing it would quietly rewrite existing grades — and the film emulation
+  presets legitimately sit at +0.55, bringing level back after a print stock crushes it.
+  Narrow what the slider shows, never what a project can hold.
+- A tip line now says what the group is for: *"Finishing touches. Most grades need nothing
+  here."*
+
 ### Added — per-stage Bypass
 
 - **A "Bypass" checkbox on Balance, Density, Exposure, Look/Film LUT and Trim.** Auditioning
