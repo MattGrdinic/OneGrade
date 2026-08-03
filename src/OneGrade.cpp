@@ -458,6 +458,7 @@ private:
     OFX::DoubleParam* m_CleanMidStr;   // how much of the midtone solve to apply
     OFX::DoubleParam* m_CleanMaxGain;  // ceiling on Gain: 1.0 = never brighten
     OFX::DoubleParam* m_CleanShoulder; // rolloff per unit of highlight overshoot
+    OFX::DoubleParam* m_CleanDensity;  // baseline saturation, so Base isn't hazy
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 
@@ -524,6 +525,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_CleanMidStr   = fetchDoubleParam("cleanMidStr");
     m_CleanMaxGain  = fetchDoubleParam("cleanMaxGain");
     m_CleanShoulder = fetchDoubleParam("cleanShoulder");
+    m_CleanDensity  = fetchDoubleParam("cleanDensity");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
@@ -1012,7 +1014,21 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     m_LutMix->setValue(1.0);
     m_Temp->setValue(0.0);   m_Tint->setValue(0.0);
     m_OffTemp->setValue(0.0); m_OffTint->setValue(0.0);
-    m_Density->setValue(0.0);
+
+    // DENSITY: a baseline, not zero. The PQ smooth decode lands log footage flat, and a
+    // range correction alone leaves it reading hazy -- the office frame was the tell. Density
+    // is saturation gain in DI-log, so it enriches without the linear-space blow-out.
+    //
+    // ONE-POINT FIT, deliberately a constant. The user hand-dialled 0.284 on the office shot
+    // (measured sat 0.191). A sat-driven law is the obvious next step and the measurement is
+    // already there -- aiming every shot at a target saturation would give
+    // density = T/sat - 1, which from this point implies T = 0.245 and would ask the beach
+    // (sat 0.119) for density 1.06. That is almost certainly far too much for sand, so the
+    // slope is NOT evidenced and a constant is the honest fit until a second hand-dialled
+    // value says otherwise. Same discipline as Creative's rolloff line through the origin.
+    double density = 0.284;
+    m_CleanDensity->getValue(density);
+    m_Density->setValue(density);
     m_PostExp->setValue(0.0); m_PostCon->setValue(1.0);
 
     double tHigh = 0.90, tLow = 0.02, tMid = 0.42, midStr = 0.5, maxGain = 1.0;
@@ -1099,8 +1115,8 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     // silently pinning a slider while reporting success is the shape of bug this codebase
     // keeps finding. The achieved triple makes it visible.
     char msg[160];
-    snprintf(msg, sizeof msg, "Base G %.2f Gam %.2f L %+.2f R %.2f -> %.2f/%.2f/%.2f",
-             gain, gamma, lift, rolloff,
+    snprintf(msg, sizeof msg, "Base G %.2f Gam %.2f L %+.2f R %.2f D %.2f -> %.2f/%.2f/%.2f",
+             gain, gamma, lift, rolloff, density,
              withRolloff(og_grade_display(d01, lift, gamma, gain)),
              withRolloff(og_grade_display(d50, lift, gamma, gain)),
              withRolloff(og_grade_display(d99, lift, gamma, gain)));
@@ -1282,6 +1298,7 @@ void OneGrade::setEnabledness()
     m_CleanMidStr->setIsSecret(!debug);
     m_CleanMaxGain->setIsSecret(!debug);
     m_CleanShoulder->setIsSecret(!debug);
+    m_CleanDensity->setIsSecret(!debug);
 
     const bool lutOn = lutSelected();
     m_Encode->setEnabled(look && !lutOn);
@@ -1888,6 +1905,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         tune("cleanMid",  "Target Mid",  "Where the median should land if the midtone solve were applied in full. Only a fraction of it is - see Mid Strength.", 0.42, 0.10, 0.90);
         tune("cleanMaxGain","Max Gain","Ceiling on the Gain the solve may use. 1.0 means it can only ever darken, which is deliberate: a shot whose highlights sit below the target is not clipping, it is just dark, and brightening it destroys the intent. Raise above 1.0 only if you want genuinely underexposed footage pushed up.", 1.00, 0.50, 2.00);
         tune("cleanShoulder","Shoulder","How much Highlight Rolloff to apply per unit of highlight overshoot - how far the channels run past display white before grading. This is the shoulder that stands in for a film stock's, since Lift/Gamma/Gain cannot make an S-curve on its own. Source clipping (pin) sets a floor underneath it. 0 disables the overshoot term and leaves rolloff on source clipping alone, which is what Creative uses.", 0.476, 0.00, 1.50);
+        tune("cleanDensity","Density","Baseline colour density Base Grade applies. The smooth decode lands log footage flat, so a pure range correction reads hazy; this puts the richness back without a LUT. Currently a constant fitted to a single hand-dialled shot - if it oversaturates an already-colourful frame, that is the sign it should be driven by the measured 'sat' instead.", 0.284, 0.00, 1.00);
         tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.50, 0.00, 1.00);
 
         apply->setLabels("Creative Grade", "Creative Grade", "Creative Grade");
