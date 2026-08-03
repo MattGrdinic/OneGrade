@@ -114,19 +114,21 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   input and override the plugin's own camera transform. If it reports "(absent)", the next
   experiment is a deliberate one, not a speculative switch.
 
-### Experimental — Match Clip probe
+### Deferred — Match Clip
 
-- **A probe, not a feature yet.** Marc Wielage suggested matching a shot to the one before
-  or after it. Everything downstream of that is tractable — we already measure a frame and
-  already turn measurements into slider values — but one question gates it and only Resolve
-  can answer it: *can an OFX plugin see pixels belonging to a different clip at all?*
-- The **Match Clip (probe)** group asks the host for a frame N before and after the
-  playhead and reports what came back, including a verdict line. The outcome that matters
-  is telling a genuine read apart from the host **clamping** to this clip's own bounds and
-  handing back a frame we already had — a naive probe would call that success.
-- `setTemporalClipAccess` is now on for the effect and the source clip, which the OFX spec
-  requires before fetching any frame other than the render time.
-- Hidden behind `kMatchProbeUI` in `OneGrade.cpp`, currently on for testing.
+- **Not shipped, and the UI has been removed.** Marc Wielage suggested matching a shot to
+  the one before or after it. A working probe was built and taken back out: the only
+  mechanism OFX offers is fetching the source clip at another *time*, which even at best
+  makes the user do arithmetic about where the neighbouring clip starts. That's a bad
+  control, and no probe result would have made it a good one.
+- OFX has **no concept of a timeline** — the host hands an effect its input clips and that
+  is the whole model. There is no "adjacent clip" to ask for.
+- The design that replaces it, **Grab Reference** (measure any shot, then match another one
+  to it), needs no temporal access at all, works across any two clips rather than
+  neighbours, and reuses the existing measurement. It is written up in full, with the open
+  questions, in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+- `setTemporalClipAccess` is back **off**: advertising a capability we don't use is the
+  same class of mistake as the OpenCL black frame.
 
 ### Internal
 
@@ -143,8 +145,10 @@ bypass, and the LUT export idea are all theirs. Several of the points were ones 
 defended rather than fixed if they hadn't been made so precisely. Disagreeing well is a
 contribution, and this one improved the plugin more than any feature request has.
 
-**Marc Wielage** — for the match-clip idea (matching a shot to the one before or after it),
-currently under exploration. If it ships, it ships because they suggested it.
+**Marc Wielage** — for the match-clip idea (matching a shot to the one before or after it).
+It isn't in this release: the obvious implementation turned out to be the wrong shape, and
+working out why produced a better design than the one we started with. It's specced in
+[docs/ROADMAP.md](docs/ROADMAP.md) and it ships because they suggested it.
 
 ---
 
