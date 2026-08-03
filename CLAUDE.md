@@ -469,10 +469,38 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
    key -> exposure directly. Options to try: apply a fraction of key, clamp hard (±1 EV),
    or only correct when the shot falls outside a plausible band. Also note 18% grey is the
    wrong *target* for skin specifically — lit skin sits roughly a stop above mid-gray.
-3. **Wire the unambiguous params** — exposure (median to target), lift (1st percentile to a
-   *lifted* floor, not 0), gain (99.5th just under clip), rolloff (from energy above the
-   knee — the one that genuinely NEEDS analysis; a fixed knee can't know).
-4. **Density, balance, skin-aware targeting.**
+3. **BUILT — and it turned out to be one slider, not five.** Four hand-graded shots
+   (2026-08-02) were the **Cinematic Film Emulation preset with exactly one value moved:
+   Gain**. Lift, gamma, density, trim, and the `Gain Temp -0.220 / Gain Tint 0.090` tint
+   were **identical across all four** — the user's words: "the filmic look has a bit of a
+   tint, an opinionated look if you will". The car-interior grade *is* the untouched preset.
+   And Gain tracks the measured key:
+
+   | shot | key | gain | fit `0.80 + 0.19*key` |
+   |---|---|---|---|
+   | car interior | +2.60 | 0.800 | 0.800 (clamped) |
+   | desert | -0.79 | 0.642 | 0.650 |
+   | interview | -1.04 | 0.655 | 0.602 |
+   | cactus | -1.96 | 0.407 | 0.428 |
+
+   Three of four within 0.02. The interview is the outlier and explains itself: the only
+   shot on a different camera (F-Log2) with **RAW Exposure already at -0.50**, so part of
+   its correction happened upstream of Gain. `applyAutoGrade()` = `applyPreset(1)` then
+   `gain = clamp(0.80 + 0.19*key, 0.30, 0.80)`.
+
+   **The clamp at the preset value for key >= 0 is the important half.** It's how "key is
+   descriptive, not prescriptive" gets resolved: a dark shot is never pushed up, so a
+   deliberately low-key interior keeps its intent. That came out of a clamp, not a special
+   case. Floor at 0.30 because the fit is only evidenced to about -2 EV; the bare line
+   reaches zero near -4 EV.
+4. **Density, balance, skin-aware targeting, rolloff.** Note rolloff can't be judged from
+   the four graded shots — all had a Film LUT, so their `hot` was measured in Cineon and
+   read a structural 0%. Needs a re-measure on the fixed build.
+
+**Fit to the USER's grades, not to a convention.** Every textbook target tried before this
+(median -> 18% grey) contradicted what the user actually does. Four shots of ground truth
+beat the convention immediately. Re-fit the constants if the style shifts; they're two
+numbers in `applyAutoGrade()`.
 
 **Design rules agreed up front:** percentiles, never means (one blown practical wrecks a
 mean) · subsample to ~200k samples (a button that stalls on 8K is its own failure) ·

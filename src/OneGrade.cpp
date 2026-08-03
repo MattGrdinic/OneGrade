@@ -327,7 +327,10 @@ public:
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName);
     void setEnabledness();
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
-    void probeAnalyze(double p_Time);   // experimental: can we read pixels outside render?
+    void probeAnalyze(double p_Time);   // measure the frame and report (writes m_LastKey)
+    void applyAutoGrade(double p_Time); // measure, then set the film look + Gain from key
+    double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
+    bool   m_HaveKey = false;
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
     void setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
@@ -368,6 +371,7 @@ private:
     OFX::StringParam* m_ProbeDisplay;
     OFX::StringParam* m_ProbeShape;
     OFX::StringParam* m_ProbeSubject;
+    OFX::StringParam* m_ProbeApplied;
 };
 
 OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
@@ -405,6 +409,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeDisplay = fetchStringParam("probeDisplay");
     m_ProbeShape   = fetchStringParam("probeShape");
     m_ProbeSubject = fetchStringParam("probeSubject");
+    m_ProbeApplied = fetchStringParam("probeApplied");
 
     populateLookLut();
     setEnabledness();
@@ -576,6 +581,7 @@ void OneGrade::probeAnalyze(double p_Time)
         // is a linear gain in stops. DR: the scene's usable range, p1 to p99, which says
         // whether there is room to lift blacks and roll highlights or the shot is already flat.
         const double key = (y50 > 1e-6) ? std::log2(0.18 / y50) : 0.0;
+        m_LastKey = key; m_HaveKey = true;
         const double dr_stops = (y1 > 1e-6 && y99 > y1) ? std::log2(y99 / y1) : 0.0;
 
         char m2[128];
@@ -620,6 +626,48 @@ void OneGrade::probeAnalyze(double p_Time)
         m_ProbeStatus->setValue(m2);
     }
     catch (...) { m_ProbeStatus->setValue("fetchImage threw (unknown)"); }
+}
+
+// AUTO GRADE — step 3, fitted to the user's own grades rather than to a convention.
+//
+// Four hand-graded shots (2026-08-02) turned out to be the Cinematic Film Emulation preset
+// with exactly ONE slider moved per shot: Gain. Everything else — lift, gamma, density,
+// trim, and the Gain Temp -0.220 / Gain Tint 0.090 tint that gives the look its character —
+// was identical across all four. The car-interior grade IS the untouched preset.
+//
+// And Gain tracks the measured key:
+//     shot        key      gain
+//     car       +2.60      0.800   (= preset, untouched)
+//     desert    -0.79      0.642
+//     interview -1.04      0.655
+//     cactus    -1.96      0.407
+// which a line fits to within 0.02 on three of the four:  gain = 0.80 + 0.19*key.
+// (The interview is the outlier and explains itself: the only shot on a different camera,
+// with RAW Exposure already at -0.50, so part of its correction happened upstream of Gain.)
+//
+// The clamp at the preset value for key >= 0 is the important half. It means a dark shot is
+// never pushed up — the earlier finding that `key` is descriptive rather than prescriptive
+// (a low-key interior is *supposed* to sit low, and chasing 18% grey would flatten it) is
+// handled by refusing to act in that direction at all, rather than by a special case.
+//
+// Writes ordinary slider values the user can then drag. That is the whole design: a
+// starting point that shows its work, so a bad analysis costs one undo, not trust.
+void OneGrade::applyAutoGrade(double p_Time)
+{
+    probeAnalyze(p_Time);              // fills m_LastKey, and reports what it saw
+    if (!m_HaveKey) return;            // analysis failed; probeAnalyze has already said why
+
+    applyPreset(1);                    // Cinematic Film Emulation (Kodak 2383 D60)
+
+    // Fitted from the user's grades. Floor exists because the fit is only evidenced out to
+    // about -2 EV; beyond that it extrapolates, and an unclamped line reaches 0 near -4 EV.
+    const double gain = std::min(0.80, std::max(0.30, 0.80 + 0.19 * m_LastKey));
+    m_Gain->setValue(gain);
+
+    char msg[96];
+    snprintf(msg, sizeof msg, "Film look, Gain %.3f from key %+.2f EV", gain, m_LastKey);
+    m_ProbeApplied->setValue(msg);
+    setEnabledness();                  // the preset switches LUT Mode
 }
 
 void OneGrade::setEnabledness()
@@ -810,6 +858,9 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     // load must never trigger a frame fetch.
     else if (p_ParamName == "probeAnalyze" && p_Args.reason == OFX::eChangeUserEdit) {
         probeAnalyze(p_Args.time);
+    }
+    else if (p_ParamName == "probeApply" && p_Args.reason == OFX::eChangeUserEdit) {
+        applyAutoGrade(p_Args.time);
     }
     // Only on a real user edit — project load / plugin edits must not re-stamp the preset
     // over values the user has since tweaked.
@@ -1235,8 +1286,16 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "Luma percentiles after the full pipeline at NEUTRAL grade, in your current Output Encode: 1st, 50th, 99th. This is the space Lift/Gamma/Gain work in, so these are the numbers a black-point or highlight target would be set against. No LUT is applied.");
         probeLine("probeShape", "Shape",
                   "'hot' is the share above 1.0 in display - bright, but it pulls back fine if the range was captured. 'pin' is the share of the frame sitting ON the source ceiling, with that ceiling's code value after the @ - this is clipping at the sensor, where no exposure move brings anything back. Measured against the clip's own maximum rather than 1.0, because log formats don't all reach the top of the code range (Blackmagic peaks near 0.75). A low pin % means the highlights roll off and the range was captured; a high one means they are stacked on the ceiling and gone. 'sat' is mean HSV saturation over mid-tones only, which is what a Density move would act on.");
+        PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");
+        apply->setLabels("Auto Grade", "Auto Grade", "Auto Grade");
+        apply->setHint("Experimental. Analyses the frame, applies the Cinematic Film Emulation look, and sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
+        apply->setParent(*gAuto);
+        page->addChild(*apply);
+
         probeLine("probeSubject", "Subject",
                   "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
+        probeLine("probeApplied", "Applied",
+                  "What the Auto Grade button last wrote, and the measurement it came from. Blank until you press it. Analyze Frame never changes anything; only Auto Grade does.");
     }
 }
 
