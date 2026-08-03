@@ -52,6 +52,20 @@
 // current fits was found. See docs/AUTO-GRADE.md.
 static const bool kAnalysisDebugUI = false;
 
+// Master switch for the Match Clip probe (Marc Wielage's idea, 2026-08-03: match a shot to
+// the one before or after it). Currently TRUE because the feature is at the same stage Auto
+// Grade was at step 1 — one empirical question gates the whole thing, and only Resolve can
+// answer it: does fetchImage() at a time outside the current clip hand back the ADJACENT
+// clip, or does the host clamp to this clip's own bounds?
+//
+// Requesting frames other than the render time requires setTemporalClipAccess(true) on both
+// the effect and the source clip (OFX spec) — that flag is now on, which is the one thing
+// here that touches how the host schedules us.
+//
+// FLIP THIS TO FALSE BEFORE SHIPPING if the probe stays a probe. Kept separate from
+// kAnalysisDebugUI so the two experiments can be switched independently.
+static const bool kMatchProbeUI = true;
+
 #define kParamCount 13 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff
 
 // Folder scanned for built-in / film-look LUTs (Resolve's default LUT install).
@@ -341,6 +355,12 @@ public:
     void setEnabledness();
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
     void probeAnalyze(double p_Time);   // measure the frame and report (writes m_LastKey)
+    void probeTemporal(double p_Time);  // can we read frames outside the current clip?
+    // Coarse signature of one frame: mean of a sparse grid, per channel, plus dimensions.
+    // Deliberately cheap and deliberately NOT the full analysis — the temporal probe only
+    // has to answer "is this a different image from the one at the render time", and a mean
+    // over a few thousand samples separates two shots far more than reliably enough for that.
+    bool frameSignature(double p_Time, int& w, int& h, double& r, double& g, double& b);
     void applyAutoGrade(double p_Time); // measure, then set the film look + Gain from key
     void applyBias();                   // re-derive Rolloff/Lift from the cached measurement
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
@@ -406,6 +426,15 @@ private:
     OFX::PushButtonParam* m_ProbeBtn;
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
+
+    // Match Clip probe (experimental) — see probeTemporal().
+    OFX::IntParam*        m_MatchOffset;
+    OFX::PushButtonParam* m_MatchBtn;
+    OFX::StringParam*     m_MatchRange;
+    OFX::StringParam*     m_MatchPrev;
+    OFX::StringParam*     m_MatchCur;
+    OFX::StringParam*     m_MatchNext;
+    OFX::StringParam*     m_MatchVerdict;
 };
 
 OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
@@ -453,6 +482,13 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeBtn     = fetchPushButtonParam("probeAnalyze");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
+    m_MatchOffset  = fetchIntParam("matchOffset");
+    m_MatchBtn     = fetchPushButtonParam("matchProbe");
+    m_MatchRange   = fetchStringParam("matchRange");
+    m_MatchPrev    = fetchStringParam("matchPrev");
+    m_MatchCur     = fetchStringParam("matchCur");
+    m_MatchNext    = fetchStringParam("matchNext");
+    m_MatchVerdict = fetchStringParam("matchVerdict");
 
     populateLookLut();
     setEnabledness();
@@ -512,6 +548,115 @@ bool OneGrade::lutSelected()
 // Everything stays wrapped: fetchImage outside render may throw, return null, or hand back
 // zeros, and all three are answers as long as we survive them. `anyNonZero` is tracked
 // separately because an empty buffer and a black shot both read as p1 = p50 = p99 = 0.
+// Coarse per-frame signature: dimensions + a channel mean over a sparse grid. See the
+// declaration for why a mean is enough here (this answers "different image?", not "how is
+// it exposed?"). Returns false if the frame could not be read at all.
+bool OneGrade::frameSignature(double p_Time, int& w, int& h, double& mr, double& mg, double& mb)
+{
+    w = h = 0; mr = mg = mb = 0.0;
+    std::unique_ptr<OFX::Image> img(m_SrcClip->fetchImage(p_Time));
+    if (!img.get()) return false;
+
+    const OfxRectI b = img->getBounds();
+    w = b.x2 - b.x1; h = b.y2 - b.y1;
+    if (w <= 0 || h <= 0) return false;
+    if (img->getPixelDepth() != OFX::eBitDepthFloat ||
+        img->getPixelComponents() != OFX::ePixelComponentRGBA) return false;
+
+    const int step = std::max(1, std::min(w, h) / 64);   // ~4k samples regardless of format
+    double sr = 0, sg = 0, sb = 0; long n = 0;
+    for (int y = b.y1; y < b.y2; y += step)
+        for (int x = b.x1; x < b.x2; x += step) {
+            const float* p = (const float*)img->getPixelAddress(x, y);
+            if (!p) continue;
+            sr += p[0]; sg += p[1]; sb += p[2]; ++n;
+        }
+    if (n == 0) return false;
+    mr = sr / n; mg = sg / n; mb = sb / n;
+    return true;
+}
+
+// MATCH CLIP — step 1, the only question that can kill the idea (Marc Wielage's suggestion,
+// 2026-08-03: match this shot to the one before or after it).
+//
+// Everything downstream of this is tractable: we already measure a frame (Auto Grade) and we
+// already know how to turn a measurement into slider values. What we do NOT know is whether
+// an OFX plugin inside Resolve can see pixels belonging to a DIFFERENT CLIP at all. Resolve
+// gives each clip its own node graph, so the plausible outcomes are:
+//
+//   a) frames outside this clip come back -> match forward/back is real, build it
+//   b) the host CLAMPS to the clip's own bounds -> we get the first/last frame of this clip
+//      instead, which is useless for matching (it's the same shot) but must not be mistaken
+//      for success — hence the signature comparison rather than just "did it return"
+//   c) null / throw / zeros -> no temporal access, feature is dead in this form
+//
+// (b) is the trap: the call succeeds, so a naive probe reports "it works" while handing back
+// the same shot. That is why this reports a per-frame signature and an explicit verdict
+// instead of a boolean. Same discipline as the Auto Grade probe, where "empty buffer" and
+// "black shot" both had to stay distinguishable.
+//
+// Requires setTemporalClipAccess(true) on the effect AND the source clip; without it the
+// spec says fetching at another time is undefined, so a "no" here would be meaningless.
+void OneGrade::probeTemporal(double p_Time)
+{
+    m_MatchRange->setValue("");
+    m_MatchPrev->setValue("");
+    m_MatchCur->setValue("");
+    m_MatchNext->setValue("");
+    m_MatchVerdict->setValue("");
+
+    if (!m_SrcClip || !m_SrcClip->isConnected()) { m_MatchVerdict->setValue("No source clip connected"); return; }
+
+    int off = 48;
+    m_MatchOffset->getValue(off);
+    if (off < 1) off = 1;
+
+    try {
+        // What the host says it has. If this reports only the current clip's span, that is
+        // already most of the answer — and if it reports the whole timeline, promising.
+        const OfxRangeD fr = m_SrcClip->getFrameRange();
+        const OfxRangeD ur = m_SrcClip->getUnmappedFrameRange();
+        char rmsg[128];
+        snprintf(rmsg, sizeof rmsg, "t=%.0f range %.0f-%.0f unmapped %.0f-%.0f",
+                 p_Time, fr.min, fr.max, ur.min, ur.max);
+        m_MatchRange->setValue(rmsg);
+
+        int   cw=0, ch=0, pw=0, ph=0, nw=0, nh=0;
+        double cr=0, cg=0, cb=0, pr=0, pg=0, pb=0, nr=0, ng=0, nb=0;
+        const bool okCur  = frameSignature(p_Time,             cw, ch, cr, cg, cb);
+        const bool okPrev = frameSignature(p_Time - (double)off, pw, ph, pr, pg, pb);
+        const bool okNext = frameSignature(p_Time + (double)off, nw, nh, nr, ng, nb);
+
+        char m[128];
+        if (okCur)  { snprintf(m, sizeof m, "%dx%d  rgb %.4f %.4f %.4f", cw, ch, cr, cg, cb); m_MatchCur->setValue(m); }
+        else          m_MatchCur->setValue("unreadable");
+        if (okPrev) { snprintf(m, sizeof m, "%dx%d  rgb %.4f %.4f %.4f", pw, ph, pr, pg, pb); m_MatchPrev->setValue(m); }
+        else          m_MatchPrev->setValue("unreadable (null/throw)");
+        if (okNext) { snprintf(m, sizeof m, "%dx%d  rgb %.4f %.4f %.4f", nw, nh, nr, ng, nb); m_MatchNext->setValue(m); }
+        else          m_MatchNext->setValue("unreadable (null/throw)");
+
+        // Verdict. "Identical to current" is the clamp signature (b): a real neighbouring
+        // frame is never bit-equal on real footage, so an exact match means the host handed
+        // back the frame we already had. Compared with a tight epsilon rather than == so
+        // float noise in the sampling can't read as a difference.
+        const double eps = 1e-9;
+        auto same = [&](double a, double b_, double c, double d, double e, double f) {
+            return std::fabs(a-d) < eps && std::fabs(b_-e) < eps && std::fabs(c-f) < eps;
+        };
+        if (!okCur)                      m_MatchVerdict->setValue("Current frame unreadable - probe inconclusive");
+        else if (!okPrev && !okNext)     m_MatchVerdict->setValue("NO temporal access (both neighbours failed)");
+        else {
+            const bool pSame = okPrev && same(pr,pg,pb, cr,cg,cb);
+            const bool nSame = okNext && same(nr,ng,nb, cr,cg,cb);
+            if (pSame && nSame)          m_MatchVerdict->setValue("CLAMPED - both neighbours are this frame");
+            else if (pSame || nSame)     m_MatchVerdict->setValue("PARTIAL - one side clamped, one differs");
+            else                         m_MatchVerdict->setValue("DIFFERENT frames returned - promising");
+        }
+    }
+    catch (const std::exception& e) { m_MatchVerdict->setValue(std::string("threw: ") + e.what()); }
+    catch (...)                     { m_MatchVerdict->setValue("threw (unknown)"); }
+}
+
 void OneGrade::probeAnalyze(double p_Time)
 {
     m_ProbeScene->setValue("");
@@ -887,6 +1032,17 @@ void OneGrade::setEnabledness()
     m_ProbeSubject->setIsSecret(!debug);
     m_ProbeStatus->setIsSecret(!debug);
 
+    // Match Clip probe: its own compile-time switch, so it can be shipped dark independently
+    // of the Auto Grade debug surface. No runtime checkbox — it is one button and five
+    // read-only rows, and the whole point is that a tester can reach it immediately.
+    m_MatchOffset->setIsSecret(!kMatchProbeUI);
+    m_MatchBtn->setIsSecret(!kMatchProbeUI);
+    m_MatchRange->setIsSecret(!kMatchProbeUI);
+    m_MatchPrev->setIsSecret(!kMatchProbeUI);
+    m_MatchCur->setIsSecret(!kMatchProbeUI);
+    m_MatchNext->setIsSecret(!kMatchProbeUI);
+    m_MatchVerdict->setIsSecret(!kMatchProbeUI);
+
     const bool lutOn = lutSelected();
     m_Encode->setEnabled(look && !lutOn);
     if (!look)
@@ -1035,6 +1191,9 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     }
     // Experimental Auto Grade probe. Guarded on eChangeUserEdit like the preset: a project
     // load must never trigger a frame fetch.
+    else if (p_ParamName == "matchProbe" && p_Args.reason == OFX::eChangeUserEdit) {
+        probeTemporal(p_Args.time);
+    }
     else if (p_ParamName == "probeAnalyze" && p_Args.reason == OFX::eChangeUserEdit) {
         probeAnalyze(p_Args.time);
     }
@@ -1205,7 +1364,11 @@ void OneGradeFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
     p_Desc.setHostFrameThreading(false);
     p_Desc.setSupportsMultiResolution(kSupportsMultiResolution);
     p_Desc.setSupportsTiles(kSupportsTiles);
-    p_Desc.setTemporalClipAccess(false);
+    // ON since 2026-08-03 for the Match Clip probe: the OFX spec requires this before an
+    // effect may fetch a frame at any time other than the render time. It is a declaration
+    // of intent to the host's scheduler, not a per-frame cost, and render() still only ever
+    // touches p_Args.time. Revert to false if the match feature is abandoned.
+    p_Desc.setTemporalClipAccess(true);
     p_Desc.setRenderTwiceAlways(false);
     p_Desc.setSupportsMultipleClipPARs(kSupportsMultipleClipPARs);
 
@@ -1262,7 +1425,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 {
     ClipDescriptor* srcClip = p_Desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     srcClip->addSupportedComponent(ePixelComponentRGBA);
-    srcClip->setTemporalClipAccess(false);
+    srcClip->setTemporalClipAccess(true);   // see describe() — Match Clip probe
     srcClip->setSupportsTiles(kSupportsTiles);
     srcClip->setIsMask(false);
 
@@ -1524,6 +1687,48 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     page->addChild(*defineSlider(p_Desc, "postExp", "Exposure", "Post-LUT exposure trim in stops. Bring brightness back after a film-emulation LUT.", 0.0, -3.0, 3.0, 0.01, gTrim));
     page->addChild(*defineSlider(p_Desc, "postCon", "Contrast", "Post-LUT contrast trim about mid (0.5), applied after the LUT.", 1.0, 0.0, 2.0, 0.001, gTrim));
     page->addChild(*defineSlider(p_Desc, "rolloff", "Highlight Rolloff", "Soft-clips bright highlights per channel so lamps/speculars roll off to white instead of clipping to a flat neon patch. Higher = earlier, stronger shoulder. Only active on display-referred output (Rec.709 encodes or any LUT path).", 0.0, 0.0, 1.0, 0.001, gTrim));
+
+    // ---- Match Clip (experimental probe) ----
+    // Unnumbered and last, like Auto Grade was: this is not a pipeline stage, and it may not
+    // survive. Hidden entirely unless kMatchProbeUI is on. See probeTemporal() for what the
+    // three outcomes mean — the important one is telling "it worked" apart from "the host
+    // clamped and handed us our own frame back".
+    {
+        GroupParamDescriptor* gMatch = p_Desc.defineGroupParam("gMatch");
+        gMatch->setLabels("Match Clip (probe)", "Match Clip (probe)", "Match Clip (probe)");
+        gMatch->setOpen(false);
+
+        IntParamDescriptor* mo = p_Desc.defineIntParam("matchOffset");
+        mo->setLabels("Offset (frames)", "Offset (frames)", "Offset (frames)");
+        mo->setHint("How far forward and back to look, in frames. Make this larger than the current clip so the probe lands in a NEIGHBOURING clip rather than elsewhere in this one - that is the whole question being asked. 48 is two seconds at 24p.");
+        mo->setDefault(48);
+        mo->setRange(1, 100000);
+        mo->setDisplayRange(1, 500);
+        mo->setParent(*gMatch);
+        page->addChild(*mo);
+
+        PushButtonParamDescriptor* mb = p_Desc.definePushButtonParam("matchProbe");
+        mb->setLabels("Probe Adjacent Frames", "Probe Adjacent Frames", "Probe Adjacent Frames");
+        mb->setHint("Ask the host for a frame Offset before and after the playhead, and report what came back. Changes nothing about the picture. Read the Verdict line: 'DIFFERENT frames returned' means matching across clips is possible; 'CLAMPED' means the host handed back this clip's own frames, so the idea needs another approach.");
+        mb->setParent(*gMatch);
+        page->addChild(*mb);
+
+        auto row = [&](const char* name, const char* label, const char* hint) {
+            StringParamDescriptor* s = p_Desc.defineStringParam(name);
+            s->setLabels(label, label, label);
+            s->setStringType(eStringTypeLabel);
+            s->setDefault("");
+            s->setHint(hint);
+            s->setEnabled(false);
+            s->setParent(*gMatch);
+            page->addChild(*s);
+        };
+        row("matchRange",   "Range",   "What the host reports as the source clip's available frame range, and its unmapped range. If this spans only the current clip, that is already most of the answer.");
+        row("matchPrev",    "-Offset", "Dimensions and mean RGB of the frame Offset frames BEFORE the playhead.");
+        row("matchCur",     "Current", "Dimensions and mean RGB of the frame at the playhead - the reference the other two are compared against.");
+        row("matchNext",    "+Offset", "Dimensions and mean RGB of the frame Offset frames AFTER the playhead.");
+        row("matchVerdict", "Verdict", "What the three readings mean. A neighbour that is bit-identical to Current is the host clamping to this clip's bounds, not a successful read.");
+    }
 
     // ---- 8. Setup / Help ----
     GroupParamDescriptor* gHelp = p_Desc.defineGroupParam("gHelp");

@@ -54,6 +54,20 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
 - No bypass on the Input Transform: the camera decode is structural, not an effect.
   "Bypassing" it would emit raw log, which is never what the checkbox would mean.
 
+### Experimental — Match Clip probe
+
+- **A probe, not a feature yet.** Marc Wielage suggested matching a shot to the one before
+  or after it. Everything downstream of that is tractable — we already measure a frame and
+  already turn measurements into slider values — but one question gates it and only Resolve
+  can answer it: *can an OFX plugin see pixels belonging to a different clip at all?*
+- The **Match Clip (probe)** group asks the host for a frame N before and after the
+  playhead and reports what came back, including a verdict line. The outcome that matters
+  is telling a genuine read apart from the host **clamping** to this clip's own bounds and
+  handing back a frame we already had — a naive probe would call that success.
+- `setTemporalClipAccess` is now on for the effect and the source clip, which the OFX spec
+  requires before fetching any frame other than the render time.
+- Hidden behind `kMatchProbeUI` in `OneGrade.cpp`, currently on for testing.
+
 ### Internal
 
 - Plugin version bumped to **1.3** (`kPluginVersionMajor`/`Minor`). It had been left at
