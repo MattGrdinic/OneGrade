@@ -327,6 +327,7 @@ public:
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName);
     void setEnabledness();
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
+    void probeAnalyze(double p_Time);   // experimental: can we read pixels outside render?
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
     void setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
@@ -360,6 +361,10 @@ private:
     OFX::ChoiceParam* m_LookLut;
     OFX::DoubleParam* m_LutMix;
     CubeLUT           m_Lut;        // cached loaded LUT
+
+    // Auto Grade probe (experimental) — see probeAnalyze().
+    OFX::StringParam* m_ProbeStatus;
+    OFX::StringParam* m_ProbeLevels;
 };
 
 OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
@@ -392,6 +397,8 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_LookGroup= fetchChoiceParam("lookGroup");
     m_LookLut  = fetchChoiceParam("lookLut");
     m_LutMix   = fetchDoubleParam("lutMix");
+    m_ProbeStatus = fetchStringParam("probeStatus");
+    m_ProbeLevels = fetchStringParam("probeLevels");
 
     populateLookLut();
     setEnabledness();
@@ -419,6 +426,90 @@ bool OneGrade::lutSelected()
     m_LookLut->getValue(li);
     m_FilmLut->getValue(fi);
     return !resolveLutPath(mode, gi, li, fi).empty();
+}
+
+// EXPERIMENTAL PROBE — step 1 of the Auto Grade idea (2026-08-02).
+//
+// The whole "magic button" design rests on one unverified assumption: that a host will
+// hand us pixels from OUTSIDE a render call, so a button can analyse the frame and write
+// slider values. That is the standard OFX pattern for Analyze buttons, but hosts differ
+// and nothing in the spec obliges Resolve to honour it. Everything downstream — the
+// histogram, the heuristics, the param mapping — is undesignable until this is answered,
+// so it gets answered first and cheaply.
+//
+// Reports into two label params rather than a log file: string labels are known to update
+// live in Resolve (validated with `encodeNote`), so the answer shows up in the panel.
+//
+// Deliberately reads the RAW source: whatever the clip feeds the node (camera log), NOT
+// the graded result. Real analysis would decode to the working space first; the probe only
+// needs to prove the pixels are real, so it stays in whatever space they arrive in.
+//
+// Everything is wrapped: fetchImage outside render is exactly the kind of call a host may
+// answer with an exception, a null, or a buffer of zeros, and all three are useful answers
+// as long as we survive them.
+void OneGrade::probeAnalyze(double p_Time)
+{
+    m_ProbeLevels->setValue("");
+    if (!m_SrcClip || !m_SrcClip->isConnected()) { m_ProbeStatus->setValue("No source clip connected"); return; }
+
+    try {
+        std::unique_ptr<OFX::Image> src(m_SrcClip->fetchImage(p_Time));
+        if (!src.get()) { m_ProbeStatus->setValue("fetchImage returned null"); return; }
+
+        const OfxRectI b = src->getBounds();
+        const int w = b.x2 - b.x1, h = b.y2 - b.y1;
+        if (w <= 0 || h <= 0) { m_ProbeStatus->setValue("Empty bounds"); return; }
+        if (src->getPixelDepth() != OFX::eBitDepthFloat ||
+            src->getPixelComponents() != OFX::ePixelComponentRGBA) {
+            char msg[64]; snprintf(msg, sizeof msg, "%dx%d but not float RGBA", w, h);
+            m_ProbeStatus->setValue(msg); return;
+        }
+
+        // Coarse grid, ~200k samples max: percentiles don't need every pixel, and a button
+        // that stalls the UI on an 8K frame is its own kind of failure.
+        const int step = std::max(1, (int)(std::sqrt((double)(w * h) / 200000.0) + 0.5));
+        const int kBins = 1024;
+        std::vector<int> hist(kBins, 0);
+        long long n = 0;
+        double sum = 0.0;
+        bool anyNonZero = false;
+
+        for (int y = b.y1; y < b.y2; y += step) {
+            const float* row = static_cast<const float*>(src->getPixelAddress(b.x1, y));
+            if (!row) continue;
+            for (int x = 0; x < w; x += step) {
+                const float* p = row + (size_t)x * 4;
+                const float luma = 0.2126f*p[0] + 0.7152f*p[1] + 0.0722f*p[2];
+                if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) anyNonZero = true;
+                int bin = (int)(luma * (kBins - 1) + 0.5f);
+                hist[bin < 0 ? 0 : (bin >= kBins ? kBins - 1 : bin)]++;
+                sum += luma; ++n;
+            }
+        }
+        if (n == 0) { m_ProbeStatus->setValue("Bounds ok but no rows readable"); return; }
+
+        // Percentiles off the histogram. A frame of zeros reads as a perfectly valid
+        // p1=p50=p99=0, which is why anyNonZero is tracked separately — "the host gave us
+        // an empty buffer" and "the shot is black" have to be distinguishable.
+        auto pct = [&](double frac) {
+            long long target = (long long)(frac * n), acc = 0;
+            for (int i = 0; i < kBins; ++i) { acc += hist[i]; if (acc >= target) return i / (double)(kBins - 1); }
+            return 1.0;
+        };
+
+        char msg[96];
+        snprintf(msg, sizeof msg, "%s %dx%d step %d n=%lld",
+                 anyNonZero ? "OK" : "ALL ZERO", w, h, step, n);
+        m_ProbeStatus->setValue(msg);
+        snprintf(msg, sizeof msg, "p1 %.3f  p50 %.3f  p99 %.3f  avg %.3f",
+                 pct(0.01), pct(0.50), pct(0.99), sum / (double)n);
+        m_ProbeLevels->setValue(msg);
+    }
+    catch (std::exception& e) {
+        char msg[96]; snprintf(msg, sizeof msg, "threw: %.60s", e.what());
+        m_ProbeStatus->setValue(msg);
+    }
+    catch (...) { m_ProbeStatus->setValue("fetchImage threw (unknown)"); }
 }
 
 void OneGrade::setEnabledness()
@@ -604,6 +695,11 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
             }
         }
         setEnabledness();
+    }
+    // Experimental Auto Grade probe. Guarded on eChangeUserEdit like the preset: a project
+    // load must never trigger a frame fetch.
+    else if (p_ParamName == "probeAnalyze" && p_Args.reason == OFX::eChangeUserEdit) {
+        probeAnalyze(p_Args.time);
     }
     // Only on a real user edit — project load / plugin edits must not re-stamp the preset
     // over values the user has since tweaked.
@@ -995,6 +1091,37 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
              "Your DELIVERY curve, baked into the render. Independent of Timeline Color Space - do NOT change it to match. Rec.709 (Gamma 2.2) is the default (web/YouTube); Gamma 2.4 for broadcast; Rec.709 (Scene) for a scene-referred hand-off.");
     helpLine("help8", "Monitor", "Calibrate; check on a second screen",
              "Calibrate your monitor and have Resolve show your delivery space; check the grade on a second screen before committing.");
+
+    // ---- 9. Auto Grade (experimental probe) ----
+    // Step 1 of the Auto Grade design: this group exists only to answer "can a button read
+    // the frame?". It changes nothing about the picture — it reads pixels and prints what
+    // it found. Collapsed by default; remove the whole group if the answer turns out to be
+    // no, or grow it into the real analysis if yes. See probeAnalyze().
+    GroupParamDescriptor* gAuto = p_Desc.defineGroupParam("gAuto");
+    gAuto->setLabels("9  Auto Grade (experimental)", "9  Auto Grade", "9  Auto Grade");
+    gAuto->setOpen(false);
+    {
+        PushButtonParamDescriptor* btn = p_Desc.definePushButtonParam("probeAnalyze");
+        btn->setLabels("Analyze Frame", "Analyze Frame", "Analyze Frame");
+        btn->setHint("Experimental. Reads the current frame at the node's input and reports what it found below. Does not change the picture or any slider — this exists to prove the plugin can sample the image before any auto-grade feature is built on top of it.");
+        btn->setParent(*gAuto);
+        page->addChild(*btn);
+
+        auto probeLine = [&](const char* name, const char* label, const char* hint) {
+            StringParamDescriptor* s = p_Desc.defineStringParam(name);
+            s->setLabels(label, label, label);
+            s->setStringType(eStringTypeLabel);
+            s->setDefault("(not run)");
+            s->setHint(hint);
+            s->setEnabled(false);
+            s->setParent(*gAuto);
+            page->addChild(*s);
+        };
+        probeLine("probeStatus", "Result",
+                  "Whether pixels came back, the frame size, the sampling step and how many samples were read. 'ALL ZERO' means the host handed over a buffer but it was empty - a different answer from a black shot, and the one that would sink the idea.");
+        probeLine("probeLevels", "Levels",
+                  "Percentiles of the sampled luma at the node's INPUT (camera log, before any transform): 1st, 50th and 99th, plus the mean. Real analysis would decode to the working space first; this is only here to show the numbers describe the actual shot.");
+    }
 }
 
 ImageEffect* OneGradeFactory::createInstance(OfxImageEffectHandle p_Handle, ContextEnum /*p_Context*/)

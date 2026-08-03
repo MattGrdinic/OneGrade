@@ -382,6 +382,37 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
   look-first tool, family resemblance to a CST/RAW-tab neutral, not a match. Say this when
   users report "it doesn't look like a plain CST".
 
+## Auto Grade ("magic button") — user's idea, in progress from 2026-08-02
+One click that reads the frame, measures it, and sets the sliders to a pleasing cinematic
+starting point (creamy lifted lows, exposure on the key, smooth shoulder). **Why it's
+tractable where general image analysis isn't: the output is PARAM VALUES, not pixels.**
+`og::process()` and the three kernels are untouched — no golden-rule 4-file mirror, no
+CPU/GPU reduction agreement, no per-frame temporal instability (click once, values freeze).
+It is `applyPreset()` with the numbers measured instead of hardcoded, same
+`eChangeUserEdit` guard.
+
+**Staged, because two questions decide whether it's real:**
+1. **Probe — can a button read pixels outside `render`?** `probeAnalyze()` + the
+   "9 Auto Grade (experimental)" group. Fetches the source image in `changedParam`, walks a
+   coarse grid, reports size/percentiles into two label params. Wrapped in try/catch:
+   fetchImage outside render may throw, return null, or hand back zeros, and all three are
+   answers. `anyNonZero` is tracked separately so "empty buffer" stays distinguishable from
+   "black shot". **STATUS: built, awaiting the user's test in Resolve.**
+2. **Analysis + readout only** — same numbers, decoded to the working space, eyeballed on
+   footage before anything is wired to a param.
+3. **Wire the unambiguous params** — exposure (median to target), lift (1st percentile to a
+   *lifted* floor, not 0), gain (99.5th just under clip), rolloff (from energy above the
+   knee — the one that genuinely NEEDS analysis; a fixed knee can't know).
+4. **Density, balance, skin-aware targeting.**
+
+**Design rules agreed up front:** percentiles, never means (one blown practical wrecks a
+mean) · subsample to ~200k samples (a button that stalls on 8K is its own failure) ·
+**the button writes visible slider values the user can then adjust** — a starting point
+that shows its work, not a black box, so a bad analysis costs one undo rather than trust ·
+**no LUT selection in v1** ("warm scene therefore Golden Hour" is a guess; "median 0.31,
+target 0.42" is a measurement) · skin is most of what "pleasing" means and a luma histogram
+can't find it — a hue-window mask is the biggest quality lever, design for it early.
+
 ## Likely next tasks
 **Rolloff smoothness on Gen 5 (user's active thread):** the Highlight Rolloff softclip is
 not yet as smooth as the "Blackmagic Gen 5 Film to Video" LUT, which is the stated target
