@@ -98,7 +98,7 @@ gain = clamp(0.80 + 0.19 · key, 0.30, 0.80)
 ```
 
 Three of four land within 0.02. The interview is the outlier and explains itself: the only
-shot on a different camera, with RAW Exposure already at −0.50, so part of its correction
+shot on a different camera, with Scene Exposure already at −0.50, so part of its correction
 happened upstream of Gain.
 
 **The clamp at the preset value for `key ≥ 0` is the important half.** A dark shot is never
@@ -152,8 +152,8 @@ per-format table.
 
 **Warmth.** Only two of the four test shots contain an actual face (skin coverage 3.4% and
 10.3%; the other two, at 46.5% and 72.2%, are the mask eating desert sand). Those two
-measure skin `R/G` of **1.21** and **1.22** — indistinguishable — yet one was warmed to RAW
-Temperature 9242 and the other left at 6500. The warmed one is also the only shot on a
+measure skin `R/G` of **1.21** and **1.22** — indistinguishable — yet one was warmed to Scene
+White Balance 9242 and the other left at 6500. The warmed one is also the only shot on a
 different camera, which points at a property of the shoot rather than of the image.
 
 Gain and Rolloff each have a hard physical anchor: distance from mid-gray, and pixels dead

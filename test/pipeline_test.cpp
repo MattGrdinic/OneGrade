@@ -164,7 +164,7 @@ int main() {
         og::process(1, 5, P0, 0.5f, 0.5f, 0.5f, a0, b0, c0);   // enc=5 = linear output
         og::process(1, 5, P1, 0.5f, 0.5f, 0.5f, a1, b1, c1);
         check(close(a1,2.0f*a0,2e-2f)&&close(b1,2.0f*b0,2e-2f)&&close(c1,2.0f*c0,2e-2f),
-              "RAW exposure +1 stop doubles linear output");
+              "Scene Exposure +1 stop doubles linear output");
     }
 
     // 10. RAW temperature: neutral at 6500; warmer raises R / lowers B, cooler the reverse
@@ -177,7 +177,7 @@ int main() {
         og::process(1, 0, Pw, 0.5f, 0.5f, 0.5f, rw, gw, bw);
         og::process(1, 0, Pc, 0.5f, 0.5f, 0.5f, rc, gc, bc);
         check(finite3(r6,g6,b6) && rw>r6 && r6>rc && bw<b6 && b6<bc,
-              "RAW temp: warmer raises R / lowers B, 6500 sits between");
+              "Scene White Balance: warmer raises R / lowers B, 6500 sits between");
     }
 
     // 11. Node Role split: Input Transform (cam -> DaVinci Intermediate) chained into

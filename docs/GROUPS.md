@@ -58,7 +58,7 @@ Clip level) is still worth having alongside the group split.
 | Role | Owns | Camera | Output Encode |
 |---|---|---|---|
 | **0 Full Grade** (default) | everything | your pick | your pick |
-| **1 Input Transform** | camera decode + RAW exposure/temp | your pick | pinned to **DaVinci Intermediate** |
+| **1 Input Transform** | camera decode + scene exposure/WB | your pick | pinned to **DaVinci Intermediate** |
 | **2 Output Transform** | balance, density, LGG, LUT, trim, delivery | pinned to **DaVinci Wide Gamut / Intermediate** | your pick |
 
 Chained, **role 1 → role 2 reproduces role 0.** Put an Input Transform node in Group
@@ -68,11 +68,11 @@ Post-Clip, and the result matches a single Full Grade node.
 Controls a role doesn't own are greyed out in the panel **and forced neutral at render**
 (`OneGrade::setupAndProcess`). The render-time enforcement is the important half: it
 means switching roles, or loading a project saved under a different role, can never
-double-apply the look or apply the RAW stage twice. The UI greying is a convenience; the
+double-apply the look or apply the scene stage twice. The UI greying is a convenience; the
 render path is the guarantee.
 
 `changedParam` also stamps the values a role implies (role 1 sets the encode to DI and
-resets the look; role 2 sets Camera to DWG/DI and zeroes RAW), but only on
+resets the look; role 2 sets Camera to DWG/DI and zeroes the scene stage), but only on
 `eChangeUserEdit` — the same guard the presets use, so a project load never re-stamps
 over values you've since tweaked.
 
@@ -198,8 +198,8 @@ the DI hand-off for saturated out-of-gamut input.
    **Node Role → Output Transform**, then pick a Preset or set **Output Encode** to your
    delivery curve.
 
-In the Input Transform role the panel shows **three live controls** — Camera, RAW
-Exposure, RAW Temperature. Everything else is greyed.
+In the Input Transform role the panel shows **three live controls** — Camera, Scene
+Exposure, Scene White Balance. Everything else is greyed.
 
 **When to use Full Grade instead.** If you aren't grouping, or you want the whole
 transform-and-look chain to travel as a single node (one still, one copy-paste, portable

@@ -551,7 +551,7 @@ void OneGrade::probeAnalyze(double p_Time)
                 if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) anyNonZero = true;
                 srcTop.push_back(std::max(p[0], std::max(p[1], p[2])));
 
-                // Scene luminance: decode to camera-linear, then XYZ Y. Neutral RAW, so no
+                // Scene luminance: decode to camera-linear, then XYZ Y. Neutral scene stage, so no
                 // exposure gain and white_balance() at 6500 is identity — skipped, not
                 // approximated.
                 float lin[3] = { og::decode_log(camera, p[0]), og::decode_log(camera, p[1]), og::decode_log(camera, p[2]) };
@@ -607,7 +607,7 @@ void OneGrade::probeAnalyze(double p_Time)
         const double y1 = pct(sceneY, 0.01), y50 = pct(sceneY, 0.50), y99 = pct(sceneY, 0.99);
 
         // The two numbers a heuristic would actually act on. Key: how far the median sits
-        // from 18% mid-gray, in stops — that IS the exposure correction, since RAW Exposure
+        // from 18% mid-gray, in stops — that IS the exposure correction, since Scene Exposure
         // is a linear gain in stops. DR: the scene's usable range, p1 to p99, which says
         // whether there is room to lift blacks and roll highlights or the shot is already flat.
         const double key = (y50 > 1e-6) ? std::log2(0.18 / y50) : 0.0;
@@ -657,7 +657,7 @@ void OneGrade::probeAnalyze(double p_Time)
             const double sy = pct(skinY, 0.50);
             const double skey = (sy > 1e-6) ? std::log2(0.18 / sy) : 0.0;
             // Warmth as the skin's own chromaticity: R/G and B/G of the masked pixels.
-            // The user's fix for "too cool" on this footage was RAW Temperature 6500 ->
+            // The user's fix for "too cool" on this footage was Scene White Balance 6500 ->
             // 9242, so what has to be measurable is how far skin sits from where skin
             // should sit - not a global grey-world guess, which a teal shirt would skew.
             const double g = (skinG > 1e-6) ? skinG : 1.0;
@@ -692,7 +692,7 @@ void OneGrade::probeAnalyze(double p_Time)
 //     cactus    -1.96      0.407
 // which a line fits to within 0.02 on three of the four:  gain = 0.80 + 0.19*key.
 // (The interview is the outlier and explains itself: the only shot on a different camera,
-// with RAW Exposure already at -0.50, so part of its correction happened upstream of Gain.)
+// with Scene Exposure already at -0.50, so part of its correction happened upstream of Gain.)
 //
 // The clamp at the preset value for key >= 0 is the important half. It means a dark shot is
 // never pushed up — the earlier finding that `key` is descriptive rather than prescriptive
@@ -797,7 +797,7 @@ void OneGrade::setEnabledness()
     const bool input  = (role == 1);
     const bool output = (role == 2);
     const bool look   = !input;    // look/grade layer belongs to Full + Output Transform
-    const bool src    = !output;   // camera + RAW belong to Full + Input Transform
+    const bool src    = !output;   // camera + scene exp/WB belong to Full + Input Transform
 
     m_Camera->setEnabled(src);
     m_RawExp->setEnabled(src);
@@ -878,7 +878,7 @@ void OneGrade::populateLookLut()
 // Presets are one-shot starting points down the "happy path": EVERY preset sets Camera
 // to Rec.2100 PQ — the deliberately compressive smooth decode the plugin now defaults
 // to (near-perfect highlight rolloff, smooth color, rich texture on log footage) — plus
-// Balance, Density, Lift/Gamma/Gain, LUT and Trim. RAW and Output Encode are never
+// Balance, Density, Lift/Gamma/Gain, LUT and Trim. Scene Exposure/WB and Output Encode are never
 // touched. "None / Reset Look" returns the look params to neutral (Camera stays put).
 // Names call out which LUT path a preset drives: Film Emulation = Resolve's print-film
 // LUTs (Cineon path, swap stocks in Film Look LUT); Custom LUT = OneGrade's built-in
@@ -980,7 +980,7 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
             if (role == 1) {            // Input Transform -> hand off in DaVinci Intermediate
                 m_Encode->setValue(4);
                 m_LutMode->setValue(0);
-                applyPreset(0);         // neutral look; leaves Camera and RAW alone
+                applyPreset(0);         // neutral look; leaves Camera and the scene stage alone
             } else if (role == 2) {     // Output Transform -> takes the pre-clip's DWG/DI
                 m_Camera->setValue(1);
                 m_RawExp->setValue(0.0);
@@ -1092,13 +1092,13 @@ void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArgum
     params[12] = (float)m_Rolloff->getValueAtTime(p_Args.time);
 
     // Force the params the role doesn't own to neutral, so the two nodes chain cleanly:
-    // the look must be applied once (on the output node), the RAW/WB stage once (input).
+    // the look must be applied once (on the output node), the scene exp/WB stage once (input).
     if (role == 1) {            // Input Transform: no look at all
         params[0]=0.f; params[1]=0.f; params[2]=0.f;              // temp, tint, density
         params[3]=0.f; params[4]=1.f; params[5]=1.f;              // lift, gamma, gain
         params[6]=0.f; params[7]=0.f;                             // offset temp/tint
         params[8]=0.f; params[9]=1.f; params[12]=0.f;             // trim exp/contrast/rolloff
-    } else if (role == 2) {     // Output Transform: RAW stage already happened upstream
+    } else if (role == 2) {     // Output Transform: scene exp/WB already happened upstream
         params[10]=0.f; params[11]=6500.f;                        // rawExp, rawTemp
     }
 
@@ -1221,7 +1221,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         probeLine("probeStatus", "Result",
                   "Whether pixels came back, the frame size, the sampling step and how many samples were read. 'ALL ZERO' means the host handed over a buffer but it was empty - a different answer from a black shot.");
         probeLine("probeScene", "Scene",
-                  "Measured on scene light (XYZ luminance after the camera decode, before any grade). Y50 is the median. 'key' is how far that median sits from 18% mid-gray in stops - the exposure correction the shot is asking for, since RAW Exposure is a linear gain in stops. 'DR' is p1 to p99 in stops: how much usable range the shot actually has.");
+                  "Measured on scene light (XYZ luminance after the camera decode, before any grade). Y50 is the median. 'key' is how far that median sits from 18% mid-gray in stops - the exposure correction the shot is asking for, since Scene Exposure is a linear gain in stops. 'DR' is p1 to p99 in stops: how much usable range the shot actually has.");
         probeLine("probeDisplay", "Display",
                   "Luma percentiles after the full pipeline at NEUTRAL grade, in your current Output Encode: 1st, 50th, 99th. This is the space Lift/Gamma/Gain work in, so these are the numbers a black-point or highlight target would be set against. No LUT is applied.");
         probeLine("probeShape", "Shape",
@@ -1262,7 +1262,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     ChoiceParamDescriptor* preset = p_Desc.defineChoiceParam("preset");
     preset->setLabels("Preset", "Preset", "Preset");
-    preset->setHint("One-click starting points on the happy path: every preset sets Camera to Rec.2100 PQ (the smooth decode, also the default) plus Balance, Density, Lift/Gamma/Gain, LUT and Trim — every slider stays live to tweak per clip; RAW and Output Encode are never touched. Film Emulation presets drive Resolve's print-film stocks (swap in Film Look LUT); Custom LUT presets drive OneGrade's built-in looks, shipped inside the plugin (swap in Look LUT; six looks available). Trim any LUT with LUT Mix. None / Reset Look returns the look params to neutral (Camera stays put).");
+    preset->setHint("One-click starting points on the happy path: every preset sets Camera to 'Rec.2100 PQ - Smooth Decode' (also the default) plus Balance, Density, Lift/Gamma/Gain, LUT and Trim — every slider stays live to tweak per clip; Scene Exposure, Scene White Balance and Output Encode are never touched. Film Emulation presets drive Resolve's print-film stocks (swap in Film Look LUT); Custom LUT presets drive OneGrade's built-in looks, shipped inside the plugin (swap in Look LUT; six looks available). Trim any LUT with LUT Mix. None / Reset Look returns the look params to neutral (Camera stays put).");
     preset->appendOption("None / Reset Look");
     preset->appendOption("Cinematic Film Emulation (Kodak 2383 D60)");
     preset->appendOption("Cinematic Film Emulation (Fujifilm 3513DI D60)");
@@ -1277,7 +1277,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     gInput->setLabels("1  Input Transform", "1  Input Transform", "1  Input Transform");
     ChoiceParamDescriptor* cam = p_Desc.defineChoiceParam("camera");
     cam->setLabels("Camera", "Camera", "Camera");
-    cam->setHint("Source camera log/gamut, decoded to DaVinci Wide Gamut linear working space. The default, Rec.2100 PQ, is NOT a camera match: it's a deliberately compressive smooth decode that flatters log footage (near-perfect highlight rolloff, smooth color) — the happy path all presets build on. For a colorimetric starting point instead, pick the real camera: e.g. Blackmagic Gen 5 Film for Pocket/URSA/Pyxis clips, DaVinci Wide Gamut / Intermediate for clips already in that space.");
+    cam->setHint("Source camera log/gamut, decoded to the DaVinci Wide Gamut linear working space. Every entry except the last is a colorimetric decode: pick your camera and you get a faithful transform - Blackmagic Gen 5 Film for Pocket/URSA/Pyxis clips, DaVinci Wide Gamut / Intermediate for clips already in that space, and so on. The default, 'Rec.2100 PQ - Smooth Decode', is the exception and is NOT a camera match: it runs log footage through the PQ inverse EOTF, a strongly compressive curve that happens to land log material with a near-perfect highlight rolloff and smooth color. It is a look wearing a transfer function, and it is the happy path all presets build on. Use it when you want a good image fast; pick your real camera when you want a faithful one.");
     cam->appendOption("Blackmagic Gen 5 Film");
     // Same space, same words as Output Encode's option 4 — this pair used to read
     // "Blackmagic (DWG/DI)" here and "DaVinci Intermediate" there, which looked like two
@@ -1292,15 +1292,23 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     cam->appendOption("Fuji F-Log2");
     cam->appendOption("Panasonic V-Log");
     cam->appendOption("Rec.2100 HLG (HDR)");
-    cam->appendOption("Rec.2100 PQ / ST.2084 (HDR)");
-    cam->setDefault(11);    // Rec.2100 PQ — the creative "smooth decode" default (see hint)
+    // Index 11 is a transfer function used deliberately "wrong" — a compressive curve that
+    // flatters log footage — not a camera. It used to read "Rec.2100 PQ / ST.2084 (HDR)",
+    // which put a look in a slot the rest of the list reserves for colorimetric decodes;
+    // a forum reader called that out and they were right (2026-08-03). Renamed, NOT moved:
+    // choice params save by index, so reordering would silently repoint every saved grade.
+    cam->appendOption("Rec.2100 PQ - Smooth Decode");
+    cam->setDefault(11);    // the creative "smooth decode" default (see hint)
     cam->setParent(*gInput);
     page->addChild(*cam);
 
-    // RAW-tab analogs: exposure + white balance applied on scene-linear before the CST,
-    // so the Camera RAW tab can be left at its defaults (simplifies the round-trip).
-    page->addChild(*defineSlider(p_Desc, "rawExp", "RAW Exposure", "Exposure in stops on scene light, before the CST. Matches the Camera RAW tab's Exposure control.", 0.0, -5.0, 5.0, 0.01, gInput));
-    page->addChild(*defineSlider(p_Desc, "rawTemp", "RAW Temperature", "White-balance color temperature in Kelvin (chromatic adaptation). Raise = warmer, lower = cooler. 6500 = neutral. Approximates the Camera RAW tab's Temp (not byte-exact: no sensor metadata reaches the plugin).", 6500.0, 2000.0, 15000.0, 10.0, gInput));
+    // Exposure + white balance on scene light, before the gamut transform. These were
+    // called "RAW Exposure" / "RAW Temperature" until 2026-08-03 because they stand in for
+    // the Camera RAW tab's controls — but no sensor data reaches an OFX plugin, so the name
+    // promised a relationship that doesn't exist and confused beginners (forum feedback).
+    // Labels only; the param IDs stay rawExp/rawTemp so saved grades are unaffected.
+    page->addChild(*defineSlider(p_Desc, "rawExp", "Scene Exposure", "Exposure in stops applied to scene light immediately after the camera decode, before the gamut transform - a linear gain on the scene, which is mechanically the same operation the Camera RAW tab's Exposure performs. Called 'Scene' rather than 'RAW' because this acts on the decoded image, not on the raw file: no sensor data reaches an OpenFX plugin.", 0.0, -5.0, 5.0, 0.01, gInput));
+    page->addChild(*defineSlider(p_Desc, "rawTemp", "Scene White Balance", "White-balance color temperature in Kelvin, applied as a Bradford chromatic adaptation in XYZ right after the camera decode - the closest point in the chain to the sensor. Raise = warmer, lower = cooler; 6500 = neutral. This is a physically real white balance, but NOT the Camera RAW tab's: reproducing a raw decoder's WB needs sensor metadata, which an OpenFX plugin never receives.", 6500.0, 2000.0, 15000.0, 10.0, gInput));
 
     // ---- 2. Balance ----  (white balance in linear; watch the vectorscope while adjusting)
     GroupParamDescriptor* gBal = p_Desc.defineGroupParam("gBalance");
@@ -1446,8 +1454,8 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
              "Preferences > General > 'Use Mac display color profiles for viewers' ON. That enables its sub-option 'Viewers match QuickTime player when using Rec.709 Scene', which only engages on a Rec.709 Scene timeline - see Timeline Color Space above.");
     helpLine("help5", "Clips", "Camera raw/log defaults - no CST or LUT first",
              "Leave clips at their camera raw/log defaults - no input CST or LUT before this node. OneGrade does the camera transform itself.");
-    helpLine("help6", "Camera control", "Default Rec.2100 PQ = smooth decode",
-             "Default Rec.2100 PQ is the creative smooth decode the presets use, not a camera match. Pick your camera's real log for a colorimetric transform instead.");
+    helpLine("help6", "Camera control", "Default 'Smooth Decode' is a look, not a camera",
+             "The default Camera entry, 'Rec.2100 PQ - Smooth Decode', is a deliberately compressive curve that flatters log footage - the look the presets build on, not a colorimetric match. Every other entry in the list IS a faithful camera decode; pick yours for an accurate transform instead.");
     helpLine("help7", "Output Encode", "Delivery curve - NOT the Timeline setting",
              "Your DELIVERY curve, baked into the render. Independent of Timeline Color Space - do NOT change it to match. Rec.709 (Gamma 2.2) is the default (web/YouTube); Gamma 2.4 for broadcast; Rec.709 (Scene) for a scene-referred hand-off.");
     helpLine("help8", "Monitor", "Calibrate; check on a second screen",

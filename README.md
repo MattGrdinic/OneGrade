@@ -92,10 +92,11 @@ node, and it isn't meant to be.
   per-model tuning on top of the log/gamut transform. OneGrade can't reproduce that: no
   sensor metadata reaches an OFX plugin, so all it has is the camera's published log curve
   and gamut. Expect a family resemblance to the RAW-tab default, not a match.
-- **The default Camera isn't a camera match at all.** Rec.2100 PQ is a deliberate creative
-  choice — a compressive *smooth decode* that flatters log footage with a near-perfect
-  highlight rolloff. It's the happy path the presets are built on. If you want a
-  colorimetric starting point, pick your actual camera from the list.
+- **The default Camera isn't a camera match at all, and says so.** The entry is named
+  **Rec.2100 PQ - Smooth Decode**: a deliberate creative choice, a compressive curve that
+  flatters log footage with a near-perfect highlight rolloff. It's the happy path the
+  presets are built on. Every *other* entry in the list is a faithful decode — if you want
+  a colorimetric starting point, pick your actual camera.
 - **Don't A/B it against "Gen 5 Film to Video" either.** That LUT bakes in Blackmagic's
   contrast and tone curve; it isn't a plain colorimetric conversion. The fair neutral
   reference is a CST node with tone mapping off.
@@ -129,8 +130,8 @@ in one node. The other two roles split it across Resolve's group grading levels 
 group shares one setup:
 
 - **Input Transform (Group Pre-Clip)** — camera decode only, handed off in DaVinci
-  Intermediate. The panel drops to three live controls: Camera, RAW Exposure, RAW
-  Temperature.
+  Intermediate. The panel drops to three live controls: Camera, Scene Exposure, Scene
+  White Balance.
 - **Output Transform (Group Post-Clip)** — takes that hand-off and applies the look, LUT,
   trim and delivery encode.
 
@@ -140,9 +141,9 @@ the look can never be applied twice. See **Workflows** below, and
 [docs/GROUPS.md](docs/GROUPS.md) for the full explanation.
 
 **0 · Preset** — one-click starting points on the happy path. Every preset sets
-**Camera → Rec.2100 PQ** (the smooth decode, also the plugin default) plus Balance,
-Density, Lift/Gamma/Gain, LUT and Trim; every slider stays live to tweak per clip. RAW
-and Output Encode are never touched. The name tells you which LUT path it drives:
+**Camera → Rec.2100 PQ - Smooth Decode** (also the plugin default) plus Balance,
+Density, Lift/Gamma/Gain, LUT and Trim; every slider stays live to tweak per clip. The
+scene stage and Output Encode are never touched. The name tells you which LUT path it drives:
 - **Cinematic Film Emulation (Kodak 2383 D60)** — cooled highlights against warm
   practicals, shadows lifted off video-black, gain pulled so highlights roll into the
   print stock, brightness brought back after. Swap stocks in **Film Look LUT**.
@@ -179,8 +180,8 @@ preset — is documented in [docs/CREATING-LUTS.md](docs/CREATING-LUTS.md).
 
 **1 · Input Transform**
 - **Camera** — how the clip is decoded into the working space. The default,
-  **Rec.2100 PQ**, is not a camera match: it's a deliberately compressive *smooth
-  decode* that flatters log footage (near-perfect highlight rolloff, smooth color, rich
+  **Rec.2100 PQ - Smooth Decode**, is not a camera match: it's a deliberately compressive
+  *smooth decode* that flatters log footage (near-perfect highlight rolloff, smooth color, rich
   texture) — the happy path the presets build on. For a colorimetric transform instead,
   pick the real camera: Blackmagic Gen 5 Film (Pocket 4K/6K, URSA, Pyxis), DaVinci Wide
   Gamut / Intermediate, Sony S-Log3, ARRI LogC3/LogC4, Canon Log3, RED Log3G10, DJI D-Log,
