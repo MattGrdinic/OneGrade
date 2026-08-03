@@ -231,13 +231,33 @@ exclusive (they use different transforms):
   Encode at Mix 0 — what you see at 0 is the curve the blend happens in. (Tying the encode
   to Mix instead would put a contrast cliff between 0.000 and 0.001.)
 
-**7 · Trim (after LUT)**
-- **Exposure / Contrast** — final trims applied *after* the LUT. Film emulations darken
-  the image by design; raise **Exposure** here to bring it back.
+**7 · Trim (after LUT)** — *finishing touches; most grades need nothing here.*
+- **Exposure Trim / Contrast** — small final adjustments applied *after* the LUT. Film
+  emulations darken the image by design; raise **Exposure Trim** to bring it back. This is
+  **not** the exposure control — set exposure with **Gain** in group 4, which works in the
+  grade curve. The slider spans ±1 stop because that is the intended range.
 - **Highlight Rolloff** — per-channel soft clip so lamps and speculars roll off to white
   instead of clipping into a flat "neon" patch. Higher = earlier, stronger shoulder.
   Only engages on display-referred output (Rec.709 encodes or any LUT path) — never on
   Cineon / DI / Linear feeds to downstream nodes.
+
+**Bypass** — Balance, Density, Exposure, Look/Film LUT and Trim each carry a **Bypass**
+checkbox, so a stage can be auditioned in and out in one click. The sliders keep their
+values while muted, so switching back restores the grade exactly. Bypassing the LUT also
+hands **Output Encode** back to you, since a selected LUT otherwise pins it.
+
+**Export LUT** — bakes the entire node (camera transform, balance, density, grade, output
+encode, any LUT, trim) into a single `.cube` at 17/33/65³, honouring Node Role and any
+Bypass. This is how you archive or hand on a project **without** needing OneGrade
+installed to open it correctly.
+
+> **Accuracy.** The bake is exact on lattice points. Between them it is as good as the
+> pipeline is smooth, and ours isn't everywhere: the output encode hard-clips out-of-gamut
+> channels to zero, and no lattice can follow a step. In practice it matches the node
+> through the normal tonal range (~4/255 on the grey axis at 33³, median error 0 across the
+> whole cube) and **can differ on blown, saturated highlights**, where mildly tinted bright
+> colour reached ~150/255 in testing. 65³ roughly halves that — it's the default here for
+> that reason — but can't remove it. Treat it as an excellent stand-in, not a bit-exact one.
 
 ## Workflows
 

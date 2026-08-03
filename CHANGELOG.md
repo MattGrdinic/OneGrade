@@ -110,8 +110,6 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
 - Plugin version bumped to **1.3** (`kPluginVersionMajor`/`Minor`). It had been left at
   1.1 through the v1.2.0 release.
 
-<!-- Entries below land as the work does; see the branch feat/forum-feedback. -->
-
 ---
 
 ## Acknowledgements
