@@ -463,6 +463,7 @@ private:
     OFX::DoubleParam* m_CleanMidStr;   // how much of the midtone solve to apply
     OFX::DoubleParam* m_CleanMaxGain;  // ceiling on Gain: 1.0 = never brighten
     OFX::DoubleParam* m_CleanShoulder; // rolloff per unit of highlight overshoot
+    OFX::DoubleParam* m_CleanMaxExp;   // ceiling on how far Base may brighten, in stops
     OFX::DoubleParam* m_CleanDensity;  // baseline saturation, so Base isn't hazy
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
@@ -530,6 +531,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_CleanMidStr   = fetchDoubleParam("cleanMidStr");
     m_CleanMaxGain  = fetchDoubleParam("cleanMaxGain");
     m_CleanShoulder = fetchDoubleParam("cleanShoulder");
+    m_CleanMaxExp   = fetchDoubleParam("cleanMaxExp");
     m_CleanDensity  = fetchDoubleParam("cleanDensity");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
@@ -1043,12 +1045,13 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     m_Density->setValue(density);
     m_PostCon->setValue(1.0);   // postExp is solved below, not zeroed
 
-    double tHigh = 0.90, tLow = 0.02, tMid = 0.42, midStr = 0.5, maxGain = 1.0;
+    double tHigh = 0.90, tLow = 0.02, tMid = 0.42, midStr = 0.5, maxGain = 1.0, maxExp = 0.85;
     m_CleanHigh->getValue(tHigh);
     m_CleanLow->getValue(tLow);
     m_CleanMid->getValue(tMid);
     m_CleanMidStr->getValue(midStr);
     m_CleanMaxGain->getValue(maxGain);
+    m_CleanMaxExp->getValue(maxExp);
 
     // Rolloff is applied AFTER the grade, in the trim step, so it squashes whatever the
     // solve placed. Ignoring it made the solve quietly undershoot: on an interview frame the
@@ -1212,7 +1215,16 @@ void OneGrade::applyAutoGradeClean(double p_Time)
             // same number is the mistake this feature has already had to unlearn once.
             if (a50 > 1e-4 && tMidEff > 1e-4) {
                 const double want = std::log2(tMidEff / a50);
-                postExp = std::min(2.0, std::max(-2.0, postExp + damp * want));
+                // BRIGHTENING IS CAPPED; DARKENING IS NOT. Pulling a blown frame down is
+                // always safe. Pushing a dark one up is how a deliberately low-key shot gets
+                // destroyed, and the loop cannot notice that on its own -- it only knows
+                // whether it is at target, so it will hit a wrong target precisely.
+                //
+                // The car interior is the case: key +2.90, natural median 0.183, so the
+                // blended target asks for +1.74 stops and the picture goes milky. The user's
+                // own grade on that shot used +0.55. Same clamp, same reason, as the Gain
+                // ceiling -- and the third place this feature has needed one.
+                postExp = std::min(maxExp, std::max(-2.0, postExp + damp * want));
             }
         }
         gain = bg; lift = bl; gamma = bgm; postExp = bpe;
@@ -1421,6 +1433,7 @@ void OneGrade::setEnabledness()
     m_CleanMidStr->setIsSecret(!debug);
     m_CleanMaxGain->setIsSecret(!debug);
     m_CleanShoulder->setIsSecret(!debug);
+    m_CleanMaxExp->setIsSecret(!debug);
     m_CleanDensity->setIsSecret(!debug);
 
     const bool lutOn = lutSelected();
@@ -2027,6 +2040,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         tune("cleanLow",  "Target Low",  "Where the 0.1st percentile - effectively the darkest part of the picture - should land. Just off zero, so shadows sit above black rather than crushing into it. This is deliberately a much deeper percentile than the highlight end uses: placing p1 here left 1% of the frame below the target and that 1% was visibly crushed.", 0.02, 0.00, 0.30);
         tune("cleanMid",  "Target Mid",  "Where the median should land if the midtone solve were applied in full. Only a fraction of it is - see Mid Strength.", 0.42, 0.10, 0.90);
         tune("cleanMaxGain","Max Gain","Ceiling on the Gain the solve may use. 1.0 means it can only ever darken, which is deliberate: a shot whose highlights sit below the target is not clipping, it is just dark, and brightening it destroys the intent. Raise above 1.0 only if you want genuinely underexposed footage pushed up.", 1.00, 0.50, 2.00);
+        tune("cleanMaxExp","Max Exposure","The most Base may BRIGHTEN a shot, in stops. Darkening is never limited - pulling a blown frame down is always safe - but pushing a dark one up destroys a deliberately low-key image, and the solver cannot tell the difference: it only knows whether it reached the target. A dark car interior asked for +1.74 stops without this; the same shot graded by hand used +0.55.", 0.85, 0.00, 2.00);
         tune("cleanShoulder","Shoulder","How much Highlight Rolloff to apply per unit of highlight overshoot - how far the channels run past display white before grading. This is the shoulder that stands in for a film stock's, since Lift/Gamma/Gain cannot make an S-curve on its own. Source clipping (pin) sets a floor underneath it. 0 disables the overshoot term and leaves rolloff on source clipping alone, which is what Creative uses.", 0.476, 0.00, 1.50);
         tune("cleanDensity","Density","Baseline colour density Base Grade applies. The smooth decode lands log footage flat, so a pure range correction reads hazy; this puts the richness back without a LUT. Currently a constant fitted to a single hand-dialled shot - if it oversaturates an already-colourful frame, that is the sign it should be driven by the measured 'sat' instead.", 0.284, 0.00, 1.00);
         tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.50, 0.00, 1.00);
