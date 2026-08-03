@@ -493,9 +493,18 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
    deliberately low-key interior keeps its intent. That came out of a clamp, not a special
    case. Floor at 0.30 because the fit is only evidenced to about -2 EV; the bare line
    reaches zero near -4 EV.
-4. **Density, balance, skin-aware targeting, rolloff.** Note rolloff can't be judged from
-   the four graded shots — all had a Film LUT, so their `hot` was measured in Cineon and
-   read a structural 0%. Needs a re-measure on the fixed build.
+4. **Warmth + rolloff — the two gaps the user named after trying the button** ("the auto
+   grade is quite cool and highlights are quite harsh", interview shot, 2026-08-02). Their
+   grade fixed both with controls the button doesn't touch: **RAW Temperature 6500 -> 9242**
+   and **Density 0.436**, plus **Rolloff 0.557**. Measurements added for these, not yet
+   fitted — need a data pass on the fixed build first:
+   - **`peak` = p99.9 / p99.** Rolloff is NOT a function of `hot`: the user gave a
+     **36%-hot cactus rolloff 0** and a **22.9%-hot interview rolloff 0.557**. Size of the
+     bright region is the wrong signal; *shape* of the top end is the right one. A compact
+     blown specular (window, lamp) runs far past the bulk; a broad sunlit field sits just
+     above it. That distinction is what makes a shot look "harsh".
+   - **skin `R/G` and `B/G`** in display. Warmth has to be measured on skin, not grey-world:
+     a teal shirt filling a third of the frame would drag any global estimate cold.
 
 **Fit to the USER's grades, not to a convention.** Every textbook target tried before this
 (median -> 18% grey) contradicted what the user actually does. Four shots of ground truth

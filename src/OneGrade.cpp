@@ -371,6 +371,7 @@ private:
     OFX::StringParam* m_ProbeDisplay;
     OFX::StringParam* m_ProbeShape;
     OFX::StringParam* m_ProbeSubject;
+    OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
 };
 
@@ -409,6 +410,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeDisplay = fetchStringParam("probeDisplay");
     m_ProbeShape   = fetchStringParam("probeShape");
     m_ProbeSubject = fetchStringParam("probeSubject");
+    m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
 
     populateLookLut();
@@ -467,6 +469,7 @@ void OneGrade::probeAnalyze(double p_Time)
     m_ProbeDisplay->setValue("");
     m_ProbeShape->setValue("");
     m_ProbeSubject->setValue("");
+    m_ProbePeak->setValue("");
     if (!m_SrcClip || !m_SrcClip->isConnected()) { m_ProbeStatus->setValue("No source clip connected"); return; }
 
     try {
@@ -509,6 +512,7 @@ void OneGrade::probeAnalyze(double p_Time)
         // stalls the UI on an 8K frame is its own kind of failure.
         const int step = std::max(1, (int)(std::sqrt((double)(w * h) / 200000.0) + 0.5));
         std::vector<float> sceneY, dispL, skinY;
+        double skinR = 0.0, skinG = 0.0, skinB = 0.0;   // skin chromaticity, for a warmth read
         sceneY.reserve(220000); dispL.reserve(220000);
         long long hot = 0;
         std::vector<float> srcTop;   // per-sample max input channel, for ceiling detection
@@ -558,8 +562,10 @@ void OneGrade::probeAnalyze(double p_Time)
                 // measurement. The only luma guard left excludes pixels too dark or too
                 // blown for their hue to mean anything.
                 if (hh >= 0.01f && hh <= 0.11f && ss >= 0.10f && ss <= 0.65f &&
-                    vv >= 0.03f && vv <= 1.05f)
+                    vv >= 0.03f && vv <= 1.05f) {
                     skinY.push_back(xyz[1]);
+                    skinR += dr; skinG += dg; skinB += db;
+                }
             }
         }
         const size_t n = dispL.size();
@@ -574,6 +580,7 @@ void OneGrade::probeAnalyze(double p_Time)
         // previous call, so three ranks cost three linear passes — still far cheaper than
         // a full sort, and exact where a histogram would only be as good as its bin width.
         const double d1 = pct(dispL, 0.01), d50 = pct(dispL, 0.50), d99 = pct(dispL, 0.99);
+        const double d999 = pct(dispL, 0.999);
         const double y1 = pct(sceneY, 0.01), y50 = pct(sceneY, 0.50), y99 = pct(sceneY, 0.99);
 
         // The two numbers a heuristic would actually act on. Key: how far the median sits
@@ -604,6 +611,15 @@ void OneGrade::probeAnalyze(double p_Time)
         long long pinned = 0;
         for (float v : srcTop) if (v >= srcMax - eps) ++pinned;
 
+        // Highlight SHAPE, not size. A big bright landscape and a small blown window both
+        // raise 'hot', but only the second needs a rolloff: the user gave a 36%-hot cactus
+        // rolloff 0 and a 22.9%-hot interview rolloff 0.557. What separates them is how far
+        // the very top runs past the bulk - a compact specular core sits far above p99,
+        // a broad bright field sits just above it. peak = p99.9 / p99.
+        const double peak = (d99 > 1e-6) ? d999 / d99 : 1.0;
+        snprintf(m2, sizeof m2, "p99.9 %.3f  peak x%.2f", d999, peak);
+        m_ProbePeak->setValue(m2);
+
         snprintf(m2, sizeof m2, "hot %.1f%%  pin %.2f%%@%.3f  sat %.3f",
                  100.0 * (double)hot / (double)n, 100.0 * (double)pinned / (double)n,
                  srcMax, satN ? satSum / (double)satN : 0.0);
@@ -615,7 +631,13 @@ void OneGrade::probeAnalyze(double p_Time)
         if (skinY.size() >= 200) {
             const double sy = pct(skinY, 0.50);
             const double skey = (sy > 1e-6) ? std::log2(0.18 / sy) : 0.0;
-            snprintf(m2, sizeof m2, "skin %.1f%%  Y %.4f  key %+.2f EV", skinFrac, sy, skey);
+            // Warmth as the skin's own chromaticity: R/G and B/G of the masked pixels.
+            // The user's fix for "too cool" on this footage was RAW Temperature 6500 ->
+            // 9242, so what has to be measurable is how far skin sits from where skin
+            // should sit - not a global grey-world guess, which a teal shirt would skew.
+            const double g = (skinG > 1e-6) ? skinG : 1.0;
+            snprintf(m2, sizeof m2, "skin %.1f%% key %+.2f  R/G %.2f B/G %.2f",
+                     skinFrac, skey, skinR / g, skinB / g);
         } else {
             snprintf(m2, sizeof m2, "skin %.1f%% - too few to trust", skinFrac);
         }
@@ -1292,6 +1314,8 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         apply->setParent(*gAuto);
         page->addChild(*apply);
 
+        probeLine("probePeak", "Peak",
+                  "p99.9 in display, and how far it runs past p99. A compact blown specular - a window, a lamp - sits far above the bulk of the highlights and gives a high multiplier; a broad bright field like sunlit sand sits just above it. This is the shape of the top end rather than its size, which is what decides whether a shot wants Highlight Rolloff.");
         probeLine("probeSubject", "Subject",
                   "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
         probeLine("probeApplied", "Applied",
