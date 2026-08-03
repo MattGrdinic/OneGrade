@@ -364,7 +364,9 @@ private:
 
     // Auto Grade probe (experimental) — see probeAnalyze().
     OFX::StringParam* m_ProbeStatus;
-    OFX::StringParam* m_ProbeLevels;
+    OFX::StringParam* m_ProbeScene;
+    OFX::StringParam* m_ProbeDisplay;
+    OFX::StringParam* m_ProbeShape;
 };
 
 OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
@@ -397,8 +399,10 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_LookGroup= fetchChoiceParam("lookGroup");
     m_LookLut  = fetchChoiceParam("lookLut");
     m_LutMix   = fetchDoubleParam("lutMix");
-    m_ProbeStatus = fetchStringParam("probeStatus");
-    m_ProbeLevels = fetchStringParam("probeLevels");
+    m_ProbeStatus  = fetchStringParam("probeStatus");
+    m_ProbeScene   = fetchStringParam("probeScene");
+    m_ProbeDisplay = fetchStringParam("probeDisplay");
+    m_ProbeShape   = fetchStringParam("probeShape");
 
     populateLookLut();
     setEnabledness();
@@ -428,28 +432,33 @@ bool OneGrade::lutSelected()
     return !resolveLutPath(mode, gi, li, fi).empty();
 }
 
-// EXPERIMENTAL PROBE — step 1 of the Auto Grade idea (2026-08-02).
+// AUTO GRADE ANALYSIS — step 2 of the "magic button" (2026-08-02).
 //
-// The whole "magic button" design rests on one unverified assumption: that a host will
-// hand us pixels from OUTSIDE a render call, so a button can analyse the frame and write
-// slider values. That is the standard OFX pattern for Analyze buttons, but hosts differ
-// and nothing in the spec obliges Resolve to honour it. Everything downstream — the
-// histogram, the heuristics, the param mapping — is undesignable until this is answered,
-// so it gets answered first and cheaply.
+// Step 1 answered the only question that could have killed the idea: Resolve DOES hand
+// over pixels from outside a render call (validated in Resolve, 4K frame, 230400 samples).
+// So a button can measure the frame and write slider values, and the whole feature stays
+// in the param layer — no kernel work, no golden-rule mirror.
 //
-// Reports into two label params rather than a log file: string labels are known to update
-// live in Resolve (validated with `encodeNote`), so the answer shows up in the panel.
+// This step measures and REPORTS ONLY. Nothing is written to a slider yet: the numbers
+// have to be shown to describe real shots correctly before any of them is allowed to move
+// the picture. Wiring comes in step 3.
 //
-// Deliberately reads the RAW source: whatever the clip feeds the node (camera log), NOT
-// the graded result. Real analysis would decode to the working space first; the probe only
-// needs to prove the pixels are real, so it stays in whatever space they arrive in.
+// The measurement runs the samples through the REAL pipeline, not a parallel copy of it:
+//   - scene luminance is XYZ Y straight out of `to_XYZ`, which is exact and gamut-agnostic
+//     (Rec.709 luma weights would be wrong against DWG primaries)
+//   - display values come from `og::process()` itself at neutral params, so what's measured
+//     is what the node would render with the grade zeroed
+// Percentiles come from `nth_element` over the kept samples rather than a histogram: at
+// ~200k samples the memory is under a megabyte and it removes binning error entirely.
 //
-// Everything is wrapped: fetchImage outside render is exactly the kind of call a host may
-// answer with an exception, a null, or a buffer of zeros, and all three are useful answers
-// as long as we survive them.
+// Everything stays wrapped: fetchImage outside render may throw, return null, or hand back
+// zeros, and all three are answers as long as we survive them. `anyNonZero` is tracked
+// separately because an empty buffer and a black shot both read as p1 = p50 = p99 = 0.
 void OneGrade::probeAnalyze(double p_Time)
 {
-    m_ProbeLevels->setValue("");
+    m_ProbeScene->setValue("");
+    m_ProbeDisplay->setValue("");
+    m_ProbeShape->setValue("");
     if (!m_SrcClip || !m_SrcClip->isConnected()) { m_ProbeStatus->setValue("No source clip connected"); return; }
 
     try {
@@ -461,17 +470,25 @@ void OneGrade::probeAnalyze(double p_Time)
         if (w <= 0 || h <= 0) { m_ProbeStatus->setValue("Empty bounds"); return; }
         if (src->getPixelDepth() != OFX::eBitDepthFloat ||
             src->getPixelComponents() != OFX::ePixelComponentRGBA) {
-            char msg[64]; snprintf(msg, sizeof msg, "%dx%d but not float RGBA", w, h);
-            m_ProbeStatus->setValue(msg); return;
+            char m2[64]; snprintf(m2, sizeof m2, "%dx%d but not float RGBA", w, h);
+            m_ProbeStatus->setValue(m2); return;
         }
 
-        // Coarse grid, ~200k samples max: percentiles don't need every pixel, and a button
-        // that stalls the UI on an 8K frame is its own kind of failure.
+        // Measure the NEUTRAL node: the analysis has to describe the footage, not the grade
+        // already on it, or clicking twice would chase its own tail. Camera and Output
+        // Encode are the user's, since they decide what space the numbers even mean.
+        int camera = 0, encode = 0;
+        m_Camera->getValue(camera);
+        m_Encode->getValue(encode);
+        float neutral[kParamCount] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+
+        // Coarse grid, ~200k samples: percentiles don't need every pixel, and a button that
+        // stalls the UI on an 8K frame is its own kind of failure.
         const int step = std::max(1, (int)(std::sqrt((double)(w * h) / 200000.0) + 0.5));
-        const int kBins = 1024;
-        std::vector<int> hist(kBins, 0);
-        long long n = 0;
-        double sum = 0.0;
+        std::vector<float> sceneY, dispL;
+        sceneY.reserve(220000); dispL.reserve(220000);
+        long long clipped = 0;
+        double satSum = 0.0; long long satN = 0;
         bool anyNonZero = false;
 
         for (int y = b.y1; y < b.y2; y += step) {
@@ -479,35 +496,65 @@ void OneGrade::probeAnalyze(double p_Time)
             if (!row) continue;
             for (int x = 0; x < w; x += step) {
                 const float* p = row + (size_t)x * 4;
-                const float luma = 0.2126f*p[0] + 0.7152f*p[1] + 0.0722f*p[2];
                 if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) anyNonZero = true;
-                int bin = (int)(luma * (kBins - 1) + 0.5f);
-                hist[bin < 0 ? 0 : (bin >= kBins ? kBins - 1 : bin)]++;
-                sum += luma; ++n;
+
+                // Scene luminance: decode to camera-linear, then XYZ Y. Neutral RAW, so no
+                // exposure gain and white_balance() at 6500 is identity — skipped, not
+                // approximated.
+                float lin[3] = { og::decode_log(camera, p[0]), og::decode_log(camera, p[1]), og::decode_log(camera, p[2]) };
+                float xyz[3]; og::to_XYZ(camera, lin, xyz);
+                sceneY.push_back(xyz[1]);
+
+                // Display: the actual render path at neutral grade.
+                float dr, dg, db;
+                og::process(camera, encode, neutral, p[0], p[1], p[2], dr, dg, db);
+                const float L = 0.2126f*dr + 0.7152f*dg + 0.0722f*db;
+                dispL.push_back(L);
+                if (L > 0.95f) ++clipped;
+
+                // Saturation on mid-tones only: shadows and blown highlights both report
+                // meaningless saturation, and it's the mids that a Density move addresses.
+                if (L > 0.15f && L < 0.85f) {
+                    float hh, ss, vv; og::rgb2hsv(dr, dg, db, hh, ss, vv);
+                    satSum += ss; ++satN;
+                }
             }
         }
+        const size_t n = dispL.size();
         if (n == 0) { m_ProbeStatus->setValue("Bounds ok but no rows readable"); return; }
 
-        // Percentiles off the histogram. A frame of zeros reads as a perfectly valid
-        // p1=p50=p99=0, which is why anyNonZero is tracked separately — "the host gave us
-        // an empty buffer" and "the shot is black" have to be distinguishable.
-        auto pct = [&](double frac) {
-            long long target = (long long)(frac * n), acc = 0;
-            for (int i = 0; i < kBins; ++i) { acc += hist[i]; if (acc >= target) return i / (double)(kBins - 1); }
-            return 1.0;
+        auto pct = [](std::vector<float>& v, double frac) {
+            size_t k = (size_t)(frac * (v.size() - 1));
+            std::nth_element(v.begin(), v.begin() + k, v.end());
+            return (double)v[k];
         };
+        // Each nth_element is O(n) and correct whatever state the vector is left in by the
+        // previous call, so three ranks cost three linear passes — still far cheaper than
+        // a full sort, and exact where a histogram would only be as good as its bin width.
+        const double d1 = pct(dispL, 0.01), d50 = pct(dispL, 0.50), d99 = pct(dispL, 0.99);
+        const double y1 = pct(sceneY, 0.01), y50 = pct(sceneY, 0.50), y99 = pct(sceneY, 0.99);
 
-        char msg[96];
-        snprintf(msg, sizeof msg, "%s %dx%d step %d n=%lld",
-                 anyNonZero ? "OK" : "ALL ZERO", w, h, step, n);
-        m_ProbeStatus->setValue(msg);
-        snprintf(msg, sizeof msg, "p1 %.3f  p50 %.3f  p99 %.3f  avg %.3f",
-                 pct(0.01), pct(0.50), pct(0.99), sum / (double)n);
-        m_ProbeLevels->setValue(msg);
+        // The two numbers a heuristic would actually act on. Key: how far the median sits
+        // from 18% mid-gray, in stops — that IS the exposure correction, since RAW Exposure
+        // is a linear gain in stops. DR: the scene's usable range, p1 to p99, which says
+        // whether there is room to lift blacks and roll highlights or the shot is already flat.
+        const double key = (y50 > 1e-6) ? std::log2(0.18 / y50) : 0.0;
+        const double dr_stops = (y1 > 1e-6 && y99 > y1) ? std::log2(y99 / y1) : 0.0;
+
+        char m2[128];
+        snprintf(m2, sizeof m2, "%s %dx%d step %d n=%zu", anyNonZero ? "OK" : "ALL ZERO", w, h, step, n);
+        m_ProbeStatus->setValue(m2);
+        snprintf(m2, sizeof m2, "Y50 %.4f  key %+.2f EV  DR %.1f st", y50, key, dr_stops);
+        m_ProbeScene->setValue(m2);
+        snprintf(m2, sizeof m2, "p1 %.3f  p50 %.3f  p99 %.3f", d1, d50, d99);
+        m_ProbeDisplay->setValue(m2);
+        snprintf(m2, sizeof m2, "clip %.2f%%  sat %.3f", 100.0 * (double)clipped / (double)n,
+                 satN ? satSum / (double)satN : 0.0);
+        m_ProbeShape->setValue(m2);
     }
     catch (std::exception& e) {
-        char msg[96]; snprintf(msg, sizeof msg, "threw: %.60s", e.what());
-        m_ProbeStatus->setValue(msg);
+        char m2[96]; snprintf(m2, sizeof m2, "threw: %.60s", e.what());
+        m_ProbeStatus->setValue(m2);
     }
     catch (...) { m_ProbeStatus->setValue("fetchImage threw (unknown)"); }
 }
@@ -1118,9 +1165,13 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             page->addChild(*s);
         };
         probeLine("probeStatus", "Result",
-                  "Whether pixels came back, the frame size, the sampling step and how many samples were read. 'ALL ZERO' means the host handed over a buffer but it was empty - a different answer from a black shot, and the one that would sink the idea.");
-        probeLine("probeLevels", "Levels",
-                  "Percentiles of the sampled luma at the node's INPUT (camera log, before any transform): 1st, 50th and 99th, plus the mean. Real analysis would decode to the working space first; this is only here to show the numbers describe the actual shot.");
+                  "Whether pixels came back, the frame size, the sampling step and how many samples were read. 'ALL ZERO' means the host handed over a buffer but it was empty - a different answer from a black shot.");
+        probeLine("probeScene", "Scene",
+                  "Measured on scene light (XYZ luminance after the camera decode, before any grade). Y50 is the median. 'key' is how far that median sits from 18% mid-gray in stops - the exposure correction the shot is asking for, since RAW Exposure is a linear gain in stops. 'DR' is p1 to p99 in stops: how much usable range the shot actually has.");
+        probeLine("probeDisplay", "Display",
+                  "Luma percentiles after the full pipeline at NEUTRAL grade, in your current Output Encode: 1st, 50th, 99th. This is the space Lift/Gamma/Gain work in, so these are the numbers a black-point or highlight target would be set against. No LUT is applied.");
+        probeLine("probeShape", "Shape",
+                  "'clip' is the share of samples above 0.95 in display - how much is already at or near white. 'sat' is mean HSV saturation over mid-tones only (shadows and blown highlights report meaningless saturation), which is what a Density move would act on.");
     }
 }
 

@@ -397,9 +397,18 @@ It is `applyPreset()` with the numbers measured instead of hardcoded, same
    coarse grid, reports size/percentiles into two label params. Wrapped in try/catch:
    fetchImage outside render may throw, return null, or hand back zeros, and all three are
    answers. `anyNonZero` is tracked separately so "empty buffer" stays distinguishable from
-   "black shot". **STATUS: built, awaiting the user's test in Resolve.**
-2. **Analysis + readout only** — same numbers, decoded to the working space, eyeballed on
-   footage before anything is wired to a param.
+   "black shot". **ANSWERED YES — validated in Resolve 2026-08-02:** a 4K frame came back
+   from `fetchImage` inside `changedParam`, 230400 samples, plausible log percentiles
+   (p1 0.240 / p50 0.465 / p99 0.725). The button approach is viable; the feature stays in
+   the param layer.
+2. **Analysis + readout only — BUILT, awaiting on-footage sanity check.** Measures through
+   the *real* pipeline, not a parallel copy: scene luminance is **XYZ Y from `to_XYZ`**
+   (exact and gamut-agnostic — Rec.709 luma weights are wrong against DWG primaries), and
+   display values come from **`og::process()` itself at neutral params**, using the user's
+   Camera + Output Encode. Measuring the *neutral* node is deliberate: analysing the graded
+   result would make a second click chase its own tail. Percentiles via `nth_element` over
+   the kept samples (~200k, under a megabyte) rather than a histogram — no binning error.
+   Reports Y50 / key EV / DR stops, display p1-p50-p99, clip % and mid-tone saturation.
 3. **Wire the unambiguous params** — exposure (median to target), lift (1st percentile to a
    *lifted* floor, not 0), gain (99.5th just under clip), rolloff (from energy above the
    knee — the one that genuinely NEEDS analysis; a fixed knee can't know).
