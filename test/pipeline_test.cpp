@@ -223,6 +223,68 @@ int main() {
         check(ok && sawNegative, "neutral node preserves out-of-gamut negatives (DI hand-off)");
     }
 
+    // 13. LUT EXPORT — guards the bake used by `Export .cube`.
+    //
+    //     Two claims, and only the ones measurement actually supports:
+    //
+    //     (a) ON-LATTICE the bake is exact. This is the strong test: it is a perfect
+    //         detector for the index-order transpose that is the easy bug here (a .cube
+    //         stores red varying fastest, ((b*N + g)*N + r)*3, and a transposed bake loads
+    //         fine, looks like a plausible grade, and has its red and blue axes swapped).
+    //         Sampling exactly at lattice points has zero interpolation error, so any
+    //         deviation above float noise is a real structural bug.
+    //
+    //     (b) OFF-LATTICE, only along the GREY AXIS, and only loosely. The pipeline hard-
+    //         clips out-of-gamut channels at the output encode, which puts a discontinuity
+    //         through the colour cube; trilinear interpolation cannot follow a step, so a
+    //         tight global tolerance here would be asserting something false. Measured on
+    //         Gen 5 -> 709 2.2 at 33^3: grey axis ~4 LSB, mildly tinted bright colour ~152
+    //         LSB, median over the whole cube 0 LSB. See exportCube() for the full note.
+    {
+        const int N = 33;
+        float P[13]; neutral13(P);
+        P[3] = 0.08f; P[4] = 1.1f; P[5] = 0.85f; P[2] = 0.2f; P[0] = -0.15f;   // a real grade
+
+        bool ok = true;
+        for (int cam : {0, 2, 11}) {
+            const int enc = 1;                                   // Rec.709 Gamma 2.2
+            std::vector<float> lat((size_t)N*N*N*3);
+            const float d = 1.0f / (float)(N - 1);
+            for (int bi = 0; bi < N; ++bi)
+                for (int gi = 0; gi < N; ++gi)
+                    for (int ri = 0; ri < N; ++ri) {
+                        float ro, go, bo;
+                        og::process(cam, enc, P, ri*d, gi*d, bi*d, ro, go, bo);
+                        const size_t idx = (((size_t)bi*N + gi)*N + ri)*3;
+                        lat[idx+0]=ro; lat[idx+1]=go; lat[idx+2]=bo;
+                    }
+
+            // (a) exact on lattice points
+            for (int bi = 0; bi < N; bi += 4)
+                for (int gi = 0; gi < N; gi += 4)
+                    for (int ri = 0; ri < N; ri += 4) {
+                        float er, eg, eb;
+                        og::process(cam, enc, P, ri*d, gi*d, bi*d, er, eg, eb);
+                        float lr = ri*d, lg = gi*d, lb = bi*d;
+                        og::apply_lut(lat.data(), N, 1.0f, lr, lg, lb);
+                        ok &= close(lr, er, 1e-5f) && close(lg, eg, 1e-5f) && close(lb, eb, 1e-5f);
+                    }
+
+            // (b) grey axis, off lattice, through the normal log range
+            auto cl = [](float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); };
+            for (int i = 0; i <= 200; ++i) {
+                const float t = 0.10f + 0.60f * i / 200.f;
+                float er, eg, eb; og::process(cam, enc, P, t, t, t, er, eg, eb);
+                float lr = t, lg = t, lb = t;
+                og::apply_lut(lat.data(), N, 1.0f, lr, lg, lb);
+                ok &= std::fabs(cl(lr)-cl(er)) < 8.f/255.f
+                   && std::fabs(cl(lg)-cl(eg)) < 8.f/255.f
+                   && std::fabs(cl(lb)-cl(eb)) < 8.f/255.f;
+            }
+        }
+        check(ok, "LUT export: bake is exact on-lattice, close on the grey axis");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

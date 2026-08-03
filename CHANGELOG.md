@@ -54,6 +54,30 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
 - No bypass on the Input Transform: the camera decode is structural, not an effect.
   "Bypassing" it would emit raw log, which is never what the checkbox would mean.
 
+### Added — Export LUT
+
+- **A new "Export LUT" group bakes the whole node into a `.cube`.** Camera transform,
+  balance, density, grade, output encode, any selected LUT and the trim, in one file. This
+  is the answer to the strongest professional objection to a plugin like this: a project
+  graded with OneGrade otherwise needs OneGrade archived beside it, and because this node is
+  the entire pipeline, substituting it later would mean starting over rather than replacing
+  one effect. Bake it and the dependency is gone.
+- Sizes 17 / 33 / **65 (default)**. Node Role and every Bypass are honoured, so what you
+  export is what you see — both read through the same `resolveConfig()` the renderer uses,
+  rather than a second implementation that would drift.
+- **Accuracy, measured rather than assumed.** The bake is **exact on lattice points**
+  (worst 1.5e-08). Off-lattice it is as good as the pipeline is smooth, and ours is not
+  smooth everywhere: the output encode **hard-clips out-of-gamut channels to zero**, which
+  puts a step through the colour cube that no lattice can follow. On Gen 5 → Rec.709 2.2 at
+  33³ the grey axis is within ~4/255, the median over the whole cube is 0, but mildly
+  tinted bright colour can reach ~150/255. 65³ roughly halves that and cannot remove it,
+  because the limit is the discontinuity and not the sampling.
+- So: **an excellent archival stand-in, not a bit-exact one.** It matches the node through
+  the normal tonal range and can differ on blown, saturated highlights. The hint and the
+  docs say exactly that. A soft gamut compression before the clip would make the bake
+  near-exact and is noted as future work — it changes the look, so it isn't being smuggled
+  in behind an export button.
+
 ### Experimental — Match Clip probe
 
 - **A probe, not a feature yet.** Marc Wielage suggested matching a shot to the one before

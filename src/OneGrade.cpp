@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <map>
 #include <filesystem>
+#include <fstream>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX            // keep windows.h from defining min/max macros (breaks std::min/max in OFX headers)
@@ -223,6 +224,31 @@ static std::string resolveLutPath(int p_Mode, int p_Group, int p_Look, int p_Fil
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// The COMPLETE per-pixel chain as rendered: pipeline -> LUT -> trim -> highlight rolloff.
+// og::process() stops at the output encode; steps 8-9 have always lived in the processor,
+// which was fine while the CPU render loop was the only caller. The .cube exporter is a
+// second caller, and an exported LUT that disagrees with the node it was exported from is
+// worse than no exporter at all — so both now go through this one function.
+//
+// This is the CPU/GPU golden rule applied one level up: the kernels mirror og::process(),
+// and everything that reads og::process() mirrors this.
+static inline void og_full_chain(int camera, int encode, const float* P,
+                                 const float* lut, int lutSize, float lutMix,
+                                 float ri, float gi, float bi,
+                                 float& ro, float& go, float& bo)
+{
+    og::process(camera, encode, P, ri, gi, bi, ro, go, bo);
+    const bool lutOn = (lut && lutSize >= 2 && lutMix > 0.0f);
+    if (lutOn) og::apply_lut(lut, lutSize, lutMix, ro, go, bo);
+    og::apply_trim(P[8], P[9], ro, go, bo);                 // post-LUT trim
+    // Rolloff is display-referred only — never distort a Cineon/DI/Linear feed.
+    if (P[12] > 0.0f && (encode <= 2 || lutOn)) {
+        ro = og::softclip(ro, P[12]);
+        go = og::softclip(go, P[12]);
+        bo = og::softclip(bo, P[12]);
+    }
+}
+
 class OneGradeProcessor : public OFX::ImageProcessor
 {
 public:
@@ -310,13 +336,9 @@ void OneGradeProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
             float* srcPix = static_cast<float*>(_srcImg ? _srcImg->getPixelAddress(x, y) : nullptr);
             if (srcPix)
             {
-                og::process(_camera, _encode, _params, srcPix[0], srcPix[1], srcPix[2],
-                            dstPix[0], dstPix[1], dstPix[2]);
-                if (_lut && _lutSize >= 2 && _lutMix > 0.0f)
-                    og::apply_lut(_lut, _lutSize, _lutMix, dstPix[0], dstPix[1], dstPix[2]);
-                og::apply_trim(_params[8], _params[9], dstPix[0], dstPix[1], dstPix[2]);  // post-LUT trim
-                if (_params[12] > 0.0f && (_encode <= 2 || (_lut && _lutSize >= 2 && _lutMix > 0.0f)))
-                    for (int c = 0; c < 3; ++c) dstPix[c] = og::softclip(dstPix[c], _params[12]);  // highlight roll-off (display-referred only)
+                og_full_chain(_camera, _encode, _params, _lut, _lutSize, _lutMix,
+                              srcPix[0], srcPix[1], srcPix[2],
+                              dstPix[0], dstPix[1], dstPix[2]);
                 dstPix[3] = srcPix[3];
             }
             else
@@ -346,6 +368,17 @@ void OneGradeProcessor::setLut(const float* p_Lut, int p_LutSize, float p_LutMix
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Everything the node does at one point in time, after every override has been applied.
+// One definition, two consumers: the renderer and the .cube exporter. See resolveConfig().
+struct RenderConfig
+{
+    float params[kParamCount] = {0};
+    int   camera = 0;
+    int   encode = 0;
+    bool  lutOk  = false;   // a LUT resolved AND loaded (and isn't bypassed)
+    float lutMix = 0.f;
+};
+
 class OneGrade : public OFX::ImageEffect
 {
 public:
@@ -372,6 +405,8 @@ public:
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
     void setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
+    RenderConfig resolveConfig(double p_Time);   // the single definition of what this node does
+    void exportCube(double p_Time);              // bake that definition into a .cube file
 
 private:
     OFX::Clip* m_DstClip;
@@ -426,6 +461,12 @@ private:
     OFX::PushButtonParam* m_ProbeBtn;
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
+
+    // LUT export — see exportCube().
+    OFX::StringParam*     m_LutExportPath;
+    OFX::ChoiceParam*     m_LutExportSize;
+    OFX::PushButtonParam* m_LutExportBtn;
+    OFX::StringParam*     m_LutExportStatus;
 
     // Match Clip probe (experimental) — see probeTemporal().
     OFX::IntParam*        m_MatchOffset;
@@ -482,6 +523,10 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeBtn     = fetchPushButtonParam("probeAnalyze");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
+    m_LutExportPath   = fetchStringParam("lutExportPath");
+    m_LutExportSize   = fetchChoiceParam("lutExportSize");
+    m_LutExportBtn    = fetchPushButtonParam("lutExportBtn");
+    m_LutExportStatus = fetchStringParam("lutExportStatus");
     m_MatchOffset  = fetchIntParam("matchOffset");
     m_MatchBtn     = fetchPushButtonParam("matchProbe");
     m_MatchRange   = fetchStringParam("matchRange");
@@ -1191,6 +1236,9 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     }
     // Experimental Auto Grade probe. Guarded on eChangeUserEdit like the preset: a project
     // load must never trigger a frame fetch.
+    else if (p_ParamName == "lutExportBtn" && p_Args.reason == OFX::eChangeUserEdit) {
+        exportCube(p_Args.time);
+    }
     else if (p_ParamName == "matchProbe" && p_Args.reason == OFX::eChangeUserEdit) {
         probeTemporal(p_Args.time);
     }
@@ -1227,19 +1275,22 @@ void OneGrade::render(const OFX::RenderArguments& p_Args)
     }
 }
 
-void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args)
+// Resolve EVERYTHING the node does at one time, in one place: camera, encode, which LUT,
+// and the 13 pipeline values after Node Role and per-stage Bypass have both had their say.
+//
+// Split out of setupAndProcess() when the .cube exporter arrived (2026-08-03). The exporter
+// has to bake precisely what the node renders, and the reliable way to guarantee that is to
+// have one definition of "what the node renders" rather than two that are meant to agree.
+// Every override below is load-bearing -- role forcing, the LUT encode coupling, bypass --
+// and an exporter that reimplemented them would drift on the first change to any of them.
+RenderConfig OneGrade::resolveConfig(double p_Time)
 {
-    std::unique_ptr<OFX::Image> dst(m_DstClip->fetchImage(p_Args.time));
-    std::unique_ptr<OFX::Image> src(m_SrcClip->fetchImage(p_Args.time));
-
-    if ((src->getPixelDepth() != dst->getPixelDepth()) || (src->getPixelComponents() != dst->getPixelComponents()))
-        OFX::throwSuiteStatusException(kOfxStatErrValue);
-
+    RenderConfig cfg;
     int role = 0, camera = 0, encode = 0, lutMode = 0;
-    m_NodeRole->getValueAtTime(p_Args.time, role);
-    m_Camera->getValueAtTime(p_Args.time, camera);
-    m_Encode->getValueAtTime(p_Args.time, encode);
-    m_LutMode->getValueAtTime(p_Args.time, lutMode);
+    m_NodeRole->getValueAtTime(p_Time, role);
+    m_Camera->getValueAtTime(p_Time, camera);
+    m_Encode->getValueAtTime(p_Time, encode);
+    m_LutMode->getValueAtTime(p_Time, lutMode);
 
     // Node Role is authoritative at render time, not just in the UI: a grade saved in one
     // role and switched to another (or loaded from an older project) must still render the
@@ -1255,11 +1306,11 @@ void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArgum
     // happen BEFORE the encode coupling below, which is only legitimate when a LUT is
     // really going to be applied.
     int lookGroup = 0, lookLut = 0, filmLut = 0;
-    m_LookGroup->getValueAtTime(p_Args.time, lookGroup);
-    m_LookLut->getValueAtTime(p_Args.time, lookLut);
-    m_FilmLut->getValueAtTime(p_Args.time, filmLut);
+    m_LookGroup->getValueAtTime(p_Time, lookGroup);
+    m_LookLut->getValueAtTime(p_Time, lookLut);
+    m_FilmLut->getValueAtTime(p_Time, filmLut);
     const std::string lutPath = resolveLutPath(lutMode, lookGroup, lookLut, filmLut);
-    const float lutMix = (float)m_LutMix->getValueAtTime(p_Args.time);
+    const float lutMix = (float)m_LutMix->getValueAtTime(p_Time);
 
     // Per-stage bypass, read before the encode coupling below because bypassing the LUT
     // stage has to release the encode override too — otherwise the "bypass" would still be
@@ -1269,11 +1320,11 @@ void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArgum
     // and nothing for the golden-rule mirror to worry about (the kernels never learn that
     // bypass exists).
     bool bypBal = false, bypDen = false, bypExp = false, bypLut = false, bypTrim = false;
-    m_BypBalance->getValueAtTime(p_Args.time, bypBal);
-    m_BypDensity->getValueAtTime(p_Args.time, bypDen);
-    m_BypExposure->getValueAtTime(p_Args.time, bypExp);
-    m_BypLut->getValueAtTime(p_Args.time, bypLut);
-    m_BypTrim->getValueAtTime(p_Args.time, bypTrim);
+    m_BypBalance->getValueAtTime(p_Time, bypBal);
+    m_BypDensity->getValueAtTime(p_Time, bypDen);
+    m_BypExposure->getValueAtTime(p_Time, bypExp);
+    m_BypLut->getValueAtTime(p_Time, bypLut);
+    m_BypTrim->getValueAtTime(p_Time, bypTrim);
 
     const bool lutOk = !bypLut && !lutPath.empty() && m_Lut.load(lutPath);
 
@@ -1295,19 +1346,19 @@ void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArgum
     // no LUT -> user's Output Encode is used unchanged
 
     float params[kParamCount];
-    params[0] = (float)m_Temp->getValueAtTime(p_Args.time);
-    params[1] = (float)m_Tint->getValueAtTime(p_Args.time);
-    params[2] = (float)m_Density->getValueAtTime(p_Args.time);
-    params[3] = (float)m_Lift->getValueAtTime(p_Args.time);
-    params[4] = (float)m_Gamma->getValueAtTime(p_Args.time);
-    params[5] = (float)m_Gain->getValueAtTime(p_Args.time);
-    params[6] = (float)m_OffTemp->getValueAtTime(p_Args.time);
-    params[7] = (float)m_OffTint->getValueAtTime(p_Args.time);
-    params[8] = (float)m_PostExp->getValueAtTime(p_Args.time);
-    params[9] = (float)m_PostCon->getValueAtTime(p_Args.time);
-    params[10] = (float)m_RawExp->getValueAtTime(p_Args.time);
-    params[11] = (float)m_RawTemp->getValueAtTime(p_Args.time);
-    params[12] = (float)m_Rolloff->getValueAtTime(p_Args.time);
+    params[0] = (float)m_Temp->getValueAtTime(p_Time);
+    params[1] = (float)m_Tint->getValueAtTime(p_Time);
+    params[2] = (float)m_Density->getValueAtTime(p_Time);
+    params[3] = (float)m_Lift->getValueAtTime(p_Time);
+    params[4] = (float)m_Gamma->getValueAtTime(p_Time);
+    params[5] = (float)m_Gain->getValueAtTime(p_Time);
+    params[6] = (float)m_OffTemp->getValueAtTime(p_Time);
+    params[7] = (float)m_OffTint->getValueAtTime(p_Time);
+    params[8] = (float)m_PostExp->getValueAtTime(p_Time);
+    params[9] = (float)m_PostCon->getValueAtTime(p_Time);
+    params[10] = (float)m_RawExp->getValueAtTime(p_Time);
+    params[11] = (float)m_RawTemp->getValueAtTime(p_Time);
+    params[12] = (float)m_Rolloff->getValueAtTime(p_Time);
 
     // Force the params the role doesn't own to neutral, so the two nodes chain cleanly:
     // the look must be applied once (on the output node), the scene exp/WB stage once (input).
@@ -1332,12 +1383,134 @@ void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArgum
     // bypLut needs no entry here: it already cleared lutOk above, which drops both the LUT
     // sample and its encode override in one go.
 
+    std::memcpy(cfg.params, params, sizeof params);
+    cfg.camera = camera;
+    cfg.encode = encode;
+    cfg.lutOk  = lutOk;
+    cfg.lutMix = lutMix;
+    return cfg;
+}
+
+// LUT EXPORT — bake the whole node into a .cube (forum feedback, 2026-08-03).
+//
+// The strongest professional objection to a plugin like this is the dependency it creates:
+// a project that needs OneGrade to open correctly needs OneGrade archived alongside it, and
+// because this node fulfils the entire grading pipeline, substituting it later would mean
+// starting over rather than replacing one effect. That's a real problem and it doesn't have
+// a rebuttal — it has a fix, and the person who raised it also named it.
+//
+// It is possible at all because OneGrade has **no spatial operations**: every stage is a
+// function of one pixel's RGB and nothing else — no neighbourhood, no frame history, no
+// resolution dependence. A plugin with a blur or a spatial key could not do this at any
+// lattice size. Being a per-pixel function is necessary; it is NOT sufficient, which is the
+// part worth writing down, because the first version of this comment claimed the bake was
+// exact and measurement said otherwise:
+//
+//   ON-LATTICE the bake is exact — worst error 1.5e-08 across cameras (test 13 guards it,
+//   and it is a perfect detector for the index-order transpose that is the easy bug here).
+//
+//   OFF-LATTICE it depends entirely on how smooth the pipeline is between lattice points,
+//   and ours is not smooth everywhere. The output encode HARD-CLIPS out-of-gamut channels
+//   to 0, which puts a discontinuity surface through the middle of the colour cube: on one
+//   side blue is 0, a hair across it blue is large. Trilinear interpolation cannot follow a
+//   step. Measured on Gen 5 -> Rec.709 2.2, neutral params, 33^3:
+//       grey axis, log 0.10-0.70 .................  4 LSB
+//       mildly tinted (+/-15% of grey) ...........  152 LSB
+//       median over the whole cube ...............  0 LSB
+//   So most of the cube is perfect and the error is concentrated where a bright, saturated
+//   channel crosses the Rec.709 gamut boundary. 65^3 roughly halves it but cannot remove it
+//   — the limit is the discontinuity, not the sampling.
+//
+// That makes this an excellent archival stand-in and NOT a bit-exact one. The honest
+// framing, which the hint and the docs both use: the exported LUT matches the node through
+// the normal tonal range and can differ on blown, saturated highlights.
+//
+// FUTURE WORK: a soft gamut compression before the clip would make the function continuous
+// and the bake near-exact. That is a pipeline change (golden-rule 4-file mirror) and it
+// changes the look, so it is not smuggled in behind an export button.
+//
+// Domain: camera code values in [0,1], because that is what the node is fed — the cube
+// replaces the node in front of the same log footage, not somewhere else in a chain. Source
+// values above 1.0 clamp to the top of the lattice.
+void OneGrade::exportCube(double p_Time)
+{
+    static const char* kCamNames[] = {
+        "Blackmagic Gen 5 Film", "DaVinci Wide Gamut / Intermediate", "Sony S-Log3",
+        "ARRI LogC3", "ARRI LogC4", "Canon Log3", "RED Log3G10", "DJI D-Log",
+        "Fuji F-Log2", "Panasonic V-Log", "Rec.2100 HLG", "Rec.2100 PQ - Smooth Decode" };
+    static const char* kEncNames[] = {
+        "Rec.709 (Scene)", "Rec.709 (Gamma 2.2)", "Rec.709 (Gamma 2.4)",
+        "Cineon Log", "DaVinci Wide Gamut / Intermediate", "Linear" };
+
+    std::string path;
+    m_LutExportPath->getValue(path);
+    if (path.empty()) { m_LutExportStatus->setValue("Set a file path first"); return; }
+    if (path.size() < 5 || path.compare(path.size() - 5, 5, ".cube") != 0) path += ".cube";
+
+    int sizeIdx = 1;
+    m_LutExportSize->getValue(sizeIdx);
+    const int N = (sizeIdx == 0) ? 17 : (sizeIdx == 2) ? 65 : 33;
+
+    // Exactly what the node renders at this time — role forcing, LUT encode coupling and
+    // per-stage bypass all already applied. Not a re-derivation.
+    const RenderConfig cfg = resolveConfig(p_Time);
+    const float* lut  = cfg.lutOk ? m_Lut.data.data() : nullptr;
+    const int lutSize = cfg.lutOk ? m_Lut.size : 0;
+    const float lutMix= cfg.lutOk ? cfg.lutMix : 0.0f;
+
+    std::ofstream f(path.c_str());
+    if (!f.is_open()) { m_LutExportStatus->setValue("Could not open file for writing"); return; }
+
+    const char* camName = (cfg.camera >= 0 && cfg.camera < 12) ? kCamNames[cfg.camera] : "?";
+    const char* encName = (cfg.encode >= 0 && cfg.encode < 6)  ? kEncNames[cfg.encode]  : "?";
+
+    f << "# Generated by OneGrade " << kPluginVersionMajor << "." << kPluginVersionMinor << "\n"
+      << "# Input:  " << camName << " code values, domain 0-1\n"
+      << "# Output: " << encName << "\n"
+      << "# Feed this the same camera-log footage the node was fed, with no other\n"
+      << "# transform in front of it. Source values above 1.0 clamp to the lattice top.\n"
+      << "TITLE \"OneGrade " << camName << " to " << encName << "\"\n"
+      << "LUT_3D_SIZE " << N << "\n"
+      << "DOMAIN_MIN 0.0 0.0 0.0\n"
+      << "DOMAIN_MAX 1.0 1.0 1.0\n";
+
+    // .cube stores red varying fastest, matching og::apply_lut's ((b*N + g)*N + r) layout.
+    f.setf(std::ios::fixed); f.precision(6);
+    const float d = 1.0f / (float)(N - 1);
+    for (int bi = 0; bi < N; ++bi)
+        for (int gi = 0; gi < N; ++gi)
+            for (int ri = 0; ri < N; ++ri) {
+                float ro, go, bo;
+                og_full_chain(cfg.camera, cfg.encode, cfg.params, lut, lutSize, lutMix,
+                              ri * d, gi * d, bi * d, ro, go, bo);
+                f << ro << " " << go << " " << bo << "\n";
+            }
+
+    const bool ok = f.good();
+    f.close();
+
+    char msg[128];
+    if (ok) snprintf(msg, sizeof msg, "Wrote %d^3 LUT (%d points)", N, N * N * N);
+    else    snprintf(msg, sizeof msg, "Write failed after opening the file");
+    m_LutExportStatus->setValue(msg);
+}
+
+void OneGrade::setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args)
+{
+    std::unique_ptr<OFX::Image> dst(m_DstClip->fetchImage(p_Args.time));
+    std::unique_ptr<OFX::Image> src(m_SrcClip->fetchImage(p_Args.time));
+
+    if ((src->getPixelDepth() != dst->getPixelDepth()) || (src->getPixelComponents() != dst->getPixelComponents()))
+        OFX::throwSuiteStatusException(kOfxStatErrValue);
+
+    const RenderConfig cfg = resolveConfig(p_Args.time);
+
     p_Proc.setDstImg(dst.get());
     p_Proc.setSrcImg(src.get());
     p_Proc.setGPURenderArgs(p_Args);
     p_Proc.setRenderWindow(p_Args.renderWindow);
-    p_Proc.setParams(params, camera, encode);
-    p_Proc.setLut(lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0, lutOk ? lutMix : 0.0f);
+    p_Proc.setParams(cfg.params, cfg.camera, cfg.encode);
+    p_Proc.setLut(cfg.lutOk ? m_Lut.data.data() : nullptr, cfg.lutOk ? m_Lut.size : 0, cfg.lutOk ? cfg.lutMix : 0.0f);
     p_Proc.process();
 }
 
@@ -1687,6 +1860,50 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     page->addChild(*defineSlider(p_Desc, "postExp", "Exposure", "Post-LUT exposure trim in stops. Bring brightness back after a film-emulation LUT.", 0.0, -3.0, 3.0, 0.01, gTrim));
     page->addChild(*defineSlider(p_Desc, "postCon", "Contrast", "Post-LUT contrast trim about mid (0.5), applied after the LUT.", 1.0, 0.0, 2.0, 0.001, gTrim));
     page->addChild(*defineSlider(p_Desc, "rolloff", "Highlight Rolloff", "Soft-clips bright highlights per channel so lamps/speculars roll off to white instead of clipping to a flat neon patch. Higher = earlier, stronger shoulder. Only active on display-referred output (Rec.709 encodes or any LUT path).", 0.0, 0.0, 1.0, 0.001, gTrim));
+
+    // ---- Export LUT ----
+    // Answers the archival objection: a project graded with OneGrade otherwise needs
+    // OneGrade archived alongside it, and since this node is the whole pipeline, replacing
+    // it later would mean starting over. Baking to a .cube removes the dependency entirely.
+    // Only possible because nothing here is spatial — see exportCube().
+    {
+        GroupParamDescriptor* gExport = p_Desc.defineGroupParam("gExport");
+        gExport->setLabels("Export LUT", "Export LUT", "Export LUT");
+        gExport->setOpen(false);
+
+        StringParamDescriptor* ep = p_Desc.defineStringParam("lutExportPath");
+        ep->setLabels("File", "File", "File");
+        ep->setStringType(eStringTypeFilePath);
+        ep->setHint("Where to write the .cube. The extension is added if you leave it off.");
+        ep->setDefault("");
+        ep->setParent(*gExport);
+        page->addChild(*ep);
+
+        ChoiceParamDescriptor* es = p_Desc.defineChoiceParam("lutExportSize");
+        es->setLabels("Size", "Size", "Size");
+        es->setHint("Lattice resolution. 65 is the default here rather than the more usual 33, because this pipeline hard-clips out-of-gamut channels and a coarse lattice interpolates across that step badly on bright saturated colour - 65 roughly halves the error for a file that is still small. Drop to 33 if a tool you are handing it to expects that size. 17 is for quick checks only.");
+        es->appendOption("17 (draft)");
+        es->appendOption("33 (standard)");
+        es->appendOption("65 (high)");
+        es->setDefault(2);
+        es->setParent(*gExport);
+        page->addChild(*es);
+
+        PushButtonParamDescriptor* eb = p_Desc.definePushButtonParam("lutExportBtn");
+        eb->setLabels("Export .cube", "Export .cube", "Export .cube");
+        eb->setHint("Bake this node - camera transform, balance, density, grade, output encode, any LUT, and the trim - into a single .cube, so a project can be archived or handed on without needing the plugin installed. Feed the exported LUT the same camera-log footage this node is fed, with nothing else in front of it. Accuracy: the bake matches the node through the normal tonal range (about 4/255 on the grey axis at 33, better at 65) but can differ on blown, saturated highlights, where the output encode clips a channel to zero and no lattice can follow that step exactly. It is an excellent stand-in, not a bit-exact one. Two other things a .cube cannot carry: source values above 1.0, and the sliders staying live - it is a snapshot, so re-export after changing the grade. Node Role and any Bypass are honoured, so what you export is what you see.");
+        eb->setParent(*gExport);
+        page->addChild(*eb);
+
+        StringParamDescriptor* est = p_Desc.defineStringParam("lutExportStatus");
+        est->setLabels("Status", "Status", "Status");
+        est->setStringType(eStringTypeLabel);
+        est->setDefault("");
+        est->setHint("Result of the last export.");
+        est->setEnabled(false);
+        est->setParent(*gExport);
+        page->addChild(*est);
+    }
 
     // ---- Match Clip (experimental probe) ----
     // Unnumbered and last, like Auto Grade was: this is not a pipeline stage, and it may not
