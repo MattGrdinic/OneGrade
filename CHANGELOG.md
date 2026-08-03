@@ -1,0 +1,72 @@
+# Changelog
+
+All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
+
+---
+
+## v1.3.0 — the feedback release
+
+Almost everything here came from other people telling us what was wrong with the plugin,
+which is the best possible reason to cut a release. See **Acknowledgements** below.
+
+### Licensing
+
+- **OneGrade is now GPL-3.0-or-later** (previously BSD-3-Clause). Use it for any work,
+  paid or not — the licence puts no condition on your grades or your deliverables. Fork it
+  and contribute freely. But anyone who *redistributes* it, modified or not, has to ship
+  the complete source under the GPL as well, so it can't be reskinned and sold as a closed
+  product. A `LICENSE` file finally exists; the repo had none.
+- Versions up to **v1.2.0** stay BSD-3-Clause. That grant can't be withdrawn — it applies
+  to those versions forever. The GPL starts here.
+
+### Renamed — labels only, no saved grade is affected
+
+- **"RAW Exposure" → "Scene Exposure"** and **"RAW Temperature" → "Scene White Balance"**.
+  The old names promised a relationship to Resolve's Camera RAW tab that cannot exist: no
+  sensor metadata reaches an OpenFX plugin. Scene Exposure genuinely *is* the same
+  operation the RAW tab performs (a linear gain on scene light); Scene White Balance is a
+  Bradford chromatic adaptation in XYZ — a physically real white balance, but not a raw
+  decoder's. The hints now say both things plainly.
+- **Camera entry 11: "Rec.2100 PQ / ST.2084 (HDR)" → "Rec.2100 PQ - Smooth Decode".**
+  That entry is a deliberately compressive curve that flatters log footage — a look, not a
+  camera — and it was sitting in the one slot of the list every other entry reserves for a
+  faithful decode. The objection was never to the arithmetic (a decode curve and a look
+  curve are the same class of operation) but to the label, because a label is a claim other
+  people read.
+- Both were **renamed, not reordered**. Choice params save by index and double params save
+  by name, so every existing grade loads exactly as before.
+- The Camera hint now states outright that *every other entry in the list is a faithful
+  camera decode*. The input transform is one of the most useful things the plugin does and
+  the old wording undersold it.
+
+### Internal
+
+- Plugin version bumped to **1.3** (`kPluginVersionMajor`/`Minor`). It had been left at
+  1.1 through the v1.2.0 release.
+
+<!-- Entries below land as the work does; see the branch feat/forum-feedback. -->
+
+---
+
+## Acknowledgements
+
+**justin_daniels** — for the detailed critique on the Blackmagic forum that prompted this
+entire release: the RAW naming, the honest label on the smooth decode, per-operation
+bypass, and the LUT export idea are all theirs. Several of the points were ones we'd have
+defended rather than fixed if they hadn't been made so precisely. Disagreeing well is a
+contribution, and this one improved the plugin more than any feature request has.
+
+**Marc Wielage** — for the match-clip idea (matching a shot to the one before or after it),
+currently under exploration. If it ships, it ships because they suggested it.
+
+---
+
+## Earlier releases
+
+| Version | Highlights |
+|---|---|
+| **v1.2.0** | Auto Grade ("magic button") — measures the frame and sets a cinematic starting point; live Bias slider; Node Role group split (Pre-Clip / Post-Clip). |
+| **v1.1.1** | LUT encode-override made visible in the panel; "DaVinci Wide Gamut / Intermediate" naming unified across Camera and Output Encode. |
+| **v1.1.0** | Renamed PowerGrade → OneGrade (the old name collides with Resolve's Gallery feature). Breaking: saved grades do not carry over. |
+| **v1.0.x** | Six built-in look LUTs shipped inside the bundle; per-platform Resolve LUT directory; CUDA build (sm_120) and the OpenCL black-frame fix; Rec.709 Gamma 2.2 default. |
+| **v0.x** | Initial OpenFX plugin: camera CST, balance, density, exposure, output encode, LUT, trim. |

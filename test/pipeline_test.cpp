@@ -1,6 +1,7 @@
 // OneGrade — CPU unit tests for the color pipeline (OneGradePipeline.h).
 // Builds with any C++17 compiler; no OFX/GPU needed. Returns non-zero on failure.
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "../src/OneGradePipeline.h"
 #include <cstdio>
 #include <cmath>

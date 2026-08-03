@@ -1,6 +1,7 @@
 // OneGrade — shared CPU-side color pipeline (single source of truth for the math).
 // The GPU kernels (Metal/OpenCL/CUDA) mirror this exact math.
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //  Faithful to the reference node tree:  CST -> Balance -> Density -> Exposure -> Output
 //    0. RAW       : exposure (stops) + white balance (Kelvin) on scene-linear, pre-CST

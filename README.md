@@ -442,5 +442,25 @@ wrong, delete it (`git push origin :refs/tags/vX.Y.Z`) and re-tag.
 
 ## License
 
-Plugin code: BSD-3-Clause. Vendored OpenFX SDK under `third_party/openfx/` retains its own
-license.
+OneGrade is **free software** under the **GNU General Public License v3.0 or later** —
+see [LICENSE](LICENSE). Copyright © 2026 Matthew Grdinic.
+
+**What that means in practice:**
+
+- **Use it for anything, including paid work.** Grade client jobs with it, deploy it across
+  a facility, ship the render. The GPL puts no restriction on the *output* of the software —
+  your grades and your deliverables are yours, with no obligation of any kind.
+- **Fork it, patch it, contribute back.** Pull requests welcome.
+- **If you redistribute it — modified or not — you must ship the complete source under the
+  GPL too.** That's the whole point: nobody can take OneGrade, reskin it, and sell it as a
+  closed product, because their customers would be entitled to the source and free to pass
+  it on.
+
+**A note on the history:** versions up to and including **v1.2.0** were published under
+BSD-3-Clause. That grant is perpetual and cannot be withdrawn, so anyone who obtained the
+code under those terms keeps them for those versions. The GPL applies from **v1.3.0**
+onward.
+
+**Third-party code:** the vendored OpenFX SDK under `third_party/openfx/` is BSD-3-Clause
+and retains its own license (see `third_party/openfx/LICENSE.md`); it is compatible with
+the GPL and is not relicensed by this project.

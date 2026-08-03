@@ -1,5 +1,6 @@
 // OneGrade — cross-platform OpenFX color grade plugin for DaVinci Resolve.
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (C) 2026 Matthew Grdinic
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "OneGrade.h"
 #include "OneGradePipeline.h"
@@ -33,7 +34,7 @@
                            "Set Output Encode to Cineon Log to feed a film-look LUT node."
 #define kPluginIdentifier  "com.mattgrdinic.OneGrade"
 #define kPluginVersionMajor 1
-#define kPluginVersionMinor 1
+#define kPluginVersionMinor 3
 
 #define kSupportsTiles              false
 #define kSupportsMultiResolution    false
