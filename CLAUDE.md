@@ -349,6 +349,16 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
   real toolkit); do NOT expand it from `CMAKE_CUDA_ARCHITECTURES_ALL_MAJOR`, which is baked
   into CMake and lags it (3.31 still lists CUDA 13's removed `compute_50`, stops at 90).
   Separable compilation must stay OFF or the `-dlink` strips the fatbinary's PTX.
+- **SIGNED AXES STEER, MAGNITUDES DO NOT** (2026-08-06, measured on the beach sunset — the rule
+  that reshaped the descriptor set; `docs/AUTO-GRADE.md` §9, pinned by test 24). Linear
+  prediction vs measurement, neutral → grade: `b*` (signed axis) **5%**, `C*` (magnitude
+  √(a²+b²)) **37–57%**, `sep` (distance between centroids) **the wrong sign** — +1.1 predicted
+  against −3.8 measured. A distance is built from squares, so a linear model cannot express
+  "apart in a" cancelling "together in b". Anything intended as a *solve target* must be a
+  signed component; magnitudes are fine as diagnostics. `kSteerableDescN` enforces it
+  structurally. Separation is consequently three signed Lab components between two regions
+  (`dL*` tone, `da*`/`db*` hue), not one distance — which also gave it the TONE axis the user's
+  own definition named and the first version lacked entirely.
 - **Two controls are discontinuous at their own defaults** (found 2026-08-06 by the descriptor
   Jacobian, not looked for; both pinned by test 20, both explained in `docs/AUTO-GRADE.md` §9).
   **Rolloff at 0**: `softclip()` early-outs at `amt<=0` but asymptotes hard at 1.0 for any
