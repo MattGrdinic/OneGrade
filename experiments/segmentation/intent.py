@@ -108,22 +108,29 @@ def targets(rows, strength):
         return [], f"{big[0]['label']} covers {big[0]['cover']:.0f}% — nothing to separate from"
 
     A, B = big[0], big[1]
-    da, db = A["a"] - B["a"], A["b"] - B["b"]
-    mag = float(np.hypot(da, db))
-    if mag < MIN_GAP:
-        return [], (f"{A['label']} and {B['label']} are the same colour "
-                    f"(gap {mag:.1f}) — no axis to widen")
-    ua, ub = da / mag, db / mag
-
-    # TRUST THE AXIS IN PROPORTION TO HOW WELL DEFINED IT IS. The direction comes from the
-    # difference between two region means, so when that difference is small the direction is
-    # mostly noise — and pushing hard along a noisy axis does not separate anything, it just
-    # applies an arbitrary cast. A beach sunset with sand and sky 3.3 apart was getting the same
-    # push as a shot with a gap of 54.
+    # THE AXIS IS (L*, a*, b*) — TONE COUNTS AS SEPARATION, NOT JUST COLOUR.
     #
-    # Ramped rather than thresholded: a hard cutoff makes the behaviour jump either side of it,
-    # which is the shape of trap this project has hit twice already (rolloff at 0, RAW Temp at
-    # 6500). A frame near the boundary should get a small move, not a coin flip.
+    # The user's framing: "more apparent separation in color and brightness, one or the other."
+    # A colour-only axis missed exactly the frames where brightness was the whole story: a face
+    # against a bright car window is 26.6 L* apart and 4.1 in colour, and a boy against a sunset
+    # sky is 46.5 apart in tone and 3.3 in colour. Both were being scored as near-noise and
+    # damped to a fifth strength, when both are strongly separable — just not on the axis being
+    # looked at.
+    #
+    # No rescaling between the three: Lab is built so that Euclidean distance is roughly
+    # perceptually uniform, which is the entire reason for measuring in it.
+    dL, da, db = A["L"] - B["L"], A["a"] - B["a"], A["b"] - B["b"]
+    mag = float(np.sqrt(dL * dL + da * da + db * db))
+    if mag < MIN_GAP:
+        return [], (f"{A['label']} and {B['label']} are indistinguishable "
+                    f"(gap {mag:.1f}) — nothing to widen")
+    uL, ua, ub = dL / mag, da / mag, db / mag
+
+    # Trust the axis in proportion to how well defined it is. The direction is a difference of
+    # two region means, so at a small gap it is mostly noise, and pushing hard along a noisy axis
+    # applies an arbitrary cast rather than separating anything. Ramped rather than thresholded:
+    # a hard cutoff makes behaviour jump either side of it, the shape of trap this project has
+    # already hit twice (rolloff at 0, RAW Temp at 6500).
     confidence = min(1.0, mag / AXIS_FULL)
     strength *= confidence
 
@@ -141,20 +148,23 @@ def targets(rows, strength):
     out = []
     for r, sign, w in ((A, +1.0, wA), (B, -1.0, wB)):
         s = strength * sign * w / (wA + wB)
-        out.append(dict(r, da=ua * s, db=ub * s, protect=INTENT[r["label"]]["protect"]))
+        out.append(dict(r, dL=uL * s, da=ua * s, db=ub * s,
+                        protect=INTENT[r["label"]]["protect"]))
     for r in big[2:]:                       # present, but not what the frame is built from
-        out.append(dict(r, da=0.0, db=0.0, protect=INTENT[r["label"]]["protect"]))
+        out.append(dict(r, dL=0.0, da=0.0, db=0.0,
+                        protect=INTENT[r["label"]]["protect"]))
 
-    # Memory-colour sanity check. Widening the gap is the goal, but not at the cost of a thing
-    # looking wrong: water driven warm or foliage driven magenta is a widened axis and a worse
-    # picture. Flagged rather than vetoed — one shot of ground truth is not enough to know how
-    # often the two genuinely conflict.
-    warn = []
-    for t in out[:2]:
-        pa, pb = INTENT[t["label"]]["push"]
-        if (pa or pb) and (pa * t["da"] + pb * t["db"]) < 0:
-            warn.append(f"{t['label']} is being pushed against its memory colour")
-    return out, ("; ".join(warn) + " (widening anyway)") if warn else None
+    # NO MEMORY-COLOUR CHECK. An earlier version warned when a region was pushed against its
+    # expected colour -- foliage driven magenta, water driven warm -- on the assumption that a
+    # widened axis was not worth a thing looking wrong. The user's call, and it settles the
+    # design: "the push of the cactus into magenta is totally fine, we just want to say this
+    # element has some tonal balance against its surroundings such that the image appears more
+    # three dimensional."
+    #
+    # The goal is APPARENT SEPARATION, not colorimetric plausibility. Memory colour is a
+    # constraint on realism and this feature is not trying to be realistic -- which is also why
+    # film emulation is popular. Protection still exists, but it is spent entirely on skin.
+    return out, None
 
 
 def report(path, model, strength):
@@ -183,18 +193,19 @@ def report(path, model, strength):
             print(f"     {r['label']:<11}{r['cover']:5.1f}%  a*{r['a']:+6.1f} b*{r['b']:+6.1f}")
         return
 
-    print(f"  {'region':<11}{'cover':>7}{'a*':>8}{'b*':>8}{'->da*':>8}{'->db*':>8}{'hold':>7}")
+    print(f"  {'region':<11}{'cover':>7}{'L*':>7}{'a*':>7}{'b*':>7}"
+          f"{'->dL*':>8}{'->da*':>8}{'->db*':>8}{'hold':>6}")
     for t in tg:
-        print(f"  {t['label']:<11}{t['cover']:6.1f}%{t['a']:8.1f}{t['b']:8.1f}"
-              f"{t['da']:+8.2f}{t['db']:+8.2f}{t['protect']:7.2f}")
+        print(f"  {t['label']:<11}{t['cover']:6.1f}%{t['L']:7.1f}{t['a']:7.1f}{t['b']:7.1f}"
+              f"{t['dL']:+8.2f}{t['da']:+8.2f}{t['db']:+8.2f}{t['protect']:6.2f}")
 
     # What the move is FOR: the pair the frame is actually built from, and whether the targets
     # open the gap or close it. A heuristic that quietly reduces separation is worse than none.
     a, b = tg[0], tg[1]
-    gap = float(np.hypot(a["a"] - b["a"], a["b"] - b["b"]))
+    gap = float(np.sqrt((a["L"]-b["L"])**2 + (a["a"]-b["a"])**2 + (a["b"]-b["b"])**2))
     print(f"  axis {a['label']}->{b['label']} gap {gap:.1f}"
           f"  confidence {min(1.0, gap/AXIS_FULL):.2f}")
-    for ax, key in (("a*", "a"), ("b*", "b")):
+    for ax, key in (("L*", "L"), ("a*", "a"), ("b*", "b")):
         d0 = a[key] - b[key]
         d1 = (a[key] + a["d" + key]) - (b[key] + b["d" + key])
         if abs(d0) < 0.5 and abs(d1) < 0.5:
