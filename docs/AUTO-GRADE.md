@@ -269,8 +269,11 @@ them.
 | **Peak** | p99.9 and how far it runs past p99. |
 | **Shape** | `hot` (above display white), `pin %@ceiling` (clipped at source), mid-tone saturation. |
 | **Subject** | skin coverage %, skin-masked key, skin `R/G` and `B/G`. High coverage means the mask matched the scene, not a face. |
-| **Colour** | mid-tone `a*` / `b*` / `C`, and `sep` — how far apart the two dominant colour populations sit. |
-| **Regions** | the two populations (share + hue, cooler first) and `db*`, how much warmer the top third is than the bottom. |
+| **Colour** | mid-tone `a*` / `b*` / `C` / `sep`, at NEUTRAL — describes the footage, not the grade on it. |
+| **Graded** | the same, for the grade actually on the node. The one that moves. Measured pre-LUT. |
+| **Regions** | the two colour populations (share + hue, cooler first) and `db*`. |
+| **Separation** | the triple, neutral → graded: `dL*` tone, `da*` / `db*` hue. |
+| **Drives b\*** · **Drives dL\*** · **Drives db\*** | which controls produced each change: measured, linear-predicted, and the top three contributors. A large act/lin gap means the grade sits outside the linear range. |
 | **Response** | measured Jacobian rows: how far `b*` moves per nudge of each balance control on *this* shot. |
 | **Applied** | what Auto Grade last wrote and the measurement behind it. |
 
