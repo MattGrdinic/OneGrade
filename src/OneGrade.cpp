@@ -434,7 +434,7 @@ public:
     std::vector<float> m_LastThumbSrc;   // 512x512 RGB, SOURCE values, top-down
     // Render the stored source thumbnail through a parameter set. The model wants a
     // normally exposed picture, so callers pass the grade that is actually in effect.
-    void renderThumb(const float* P, std::vector<unsigned char>& out) const;
+    void renderThumb(const RenderConfig& cfg, std::vector<unsigned char>& out) const;
     int         m_LastCam = 0;      // the camera/encode the samples were classified under:
     int         m_LastEnc = 1;      // re-solving in a different space would be meaningless
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
@@ -1639,16 +1639,13 @@ void OneGrade::applyMagicGrade(double p_Time)
         // has already run, so these are the parameters actually in effect, and the result is a
         // normally exposed image -- which is what the model was trained on and what every frame
         // in the offline validation set was.
-        float Pg[oga::kParamN];
-        Pg[0]  = (float)m_Temp->getValue();     Pg[1]  = (float)m_Tint->getValue();
-        Pg[2]  = (float)m_Density->getValue();  Pg[3]  = (float)m_Lift->getValue();
-        Pg[4]  = (float)m_Gamma->getValue();    Pg[5]  = (float)m_Gain->getValue();
-        Pg[6]  = (float)m_OffTemp->getValue();  Pg[7]  = (float)m_OffTint->getValue();
-        Pg[8]  = (float)m_PostExp->getValue();  Pg[9]  = (float)m_PostCon->getValue();
-        Pg[10] = (float)m_RawExp->getValue();   Pg[11] = (float)m_RawTemp->getValue();
-        Pg[12] = (float)m_Rolloff->getValue();
+        // resolveConfig gives the parameters the RENDER will use -- role overrides, bypasses,
+        // the LUT-driven encode override, and the loaded cube itself. It does file I/O to load
+        // the LUT, which is why it is called here on a button press rather than from
+        // setEnabledness, where it would run constantly.
+        const RenderConfig cfg = resolveConfig(p_Time);
         std::vector<unsigned char> thumb;
-        renderThumb(Pg, thumb);
+        renderThumb(cfg, thumb);
         std::vector<unsigned char> mask; int mw = 0, mh = 0;
         if (s_seg.run(thumb.data(), 512, 512, mask, mw, mh) &&
             oga::assign_regions(S, mask, mw, mh)) {
@@ -1792,18 +1789,29 @@ void OneGrade::applySeparation()
     if (which == 6) m_OffTemp->setValue(v); else m_Temp->setValue(v);
 }
 
-void OneGrade::renderThumb(const float* P, std::vector<unsigned char>& out) const
+// THE MODEL MUST SEE WHAT THE VIEWER SEES, so this goes through og_full_chain -- the single
+// definition of the complete render -- rather than reimplementing part of it.
+//
+// The first version called og::process() plus trim and skipped the LUT, which made it a third
+// copy of a chain whose own comment says "everything that reads og::process() mirrors this".
+// The consequence was not subtle: with a film stock selected the pre-LUT encode is Cineon, so
+// the model was being handed a flat log picture while the viewer saw a graded one. On a
+// downward city view the plugin reported BUILT 100% where the same frame, exported after
+// Creative Grade, segments as BUILT 92.9% / GROUND 7.1%.
+//
+// Third time this feature has fed the model a different picture than the one it was validated
+// on. The fix each time is the same: stop paraphrasing the render.
+void OneGrade::renderThumb(const RenderConfig& cfg, std::vector<unsigned char>& out) const
 {
+    const float* lut  = cfg.lutOk ? m_Lut.data.data() : nullptr;
+    const int lutSize = cfg.lutOk ? m_Lut.size : 0;
+    const float mix   = cfg.lutOk ? cfg.lutMix : 0.0f;
     const size_t n = m_LastThumbSrc.size() / 3;
     out.assign(n * 3, 0);
     for (size_t i = 0; i < n; ++i) {
         float r, g, b;
-        og::process(m_LastCam, m_LastEnc, P,
-                    m_LastThumbSrc[i*3], m_LastThumbSrc[i*3+1], m_LastThumbSrc[i*3+2], r, g, b);
-        og::apply_trim(P[8], P[9], r, g, b);
-        if (P[12] > 0.f && m_LastEnc <= 2) {
-            r = og::softclip(r, P[12]); g = og::softclip(g, P[12]); b = og::softclip(b, P[12]);
-        }
+        og_full_chain(cfg.camera, cfg.encode, cfg.params, lut, lutSize, mix,
+                      m_LastThumbSrc[i*3], m_LastThumbSrc[i*3+1], m_LastThumbSrc[i*3+2], r, g, b);
         out[i*3+0] = (unsigned char)(og::clamp01(r) * 255.f + 0.5f);
         out[i*3+1] = (unsigned char)(og::clamp01(g) * 255.f + 0.5f);
         out[i*3+2] = (unsigned char)(og::clamp01(b) * 255.f + 0.5f);
