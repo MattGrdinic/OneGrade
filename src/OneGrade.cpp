@@ -164,6 +164,21 @@ static std::string bundleModelDir()
     return r.empty() ? r : (std::filesystem::path(r) / "Model").string();
 }
 
+// The segmenter, loaded once. Shared by the white-balance pass and the region pass, which both
+// need it and would otherwise each carry their own copy of a 12 MB model.
+static og::seg::Segmenter& s_segmenter()
+{
+    static og::seg::Segmenter seg;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        const std::string mdir = bundleModelDir();
+        if (!mdir.empty()) seg.load(mdir + "/ade20k.param", mdir + "/ade20k.bin");
+    }
+    return seg;
+}
+static bool s_seg_ready() { return s_segmenter().ready(); }
+
 // Find a Look LUT by case-insensitive name fragment across all groups. Fills (group, lut)
 // indices when found. Used by the Custom LUT presets to select the matching built-in look
 // (shipped in the bundle, so this normally resolves on any machine).
@@ -435,6 +450,9 @@ public:
     // Render the stored source thumbnail through a parameter set. The model wants a
     // normally exposed picture, so callers pass the grade that is actually in effect.
     void renderThumb(const RenderConfig& cfg, std::vector<unsigned char>& out) const;
+    // Solve Scene White Balance so the frame's neutral-expectation regions read neutral.
+    bool estimateWhiteBalance(double& outKelvin, float& outCover, float& outB0) const;
+    std::vector<uint8_t> m_LastRegions;   // 512x512 region map from the last segmentation
     int         m_LastCam = 0;      // the camera/encode the samples were classified under:
     int         m_LastEnc = 1;      // re-solving in a different space would be meaningless
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
@@ -504,6 +522,7 @@ private:
     // Magic Grade: the chosen move, saved with the project so the Separation slider keeps
     // scaling it after a reload without needing the frame back.
     OFX::PushButtonParam* m_MagicBtn;
+    OFX::BooleanParam* m_WbFirst;
     OFX::DoubleParam*  m_Separation;
     OFX::IntParam*     m_MagicCycle;   // which option the next press should offer
     OFX::IntParam*     m_MagicParam;   // index into P[]: 6 Offset Temp, 0 Gain Temp, -1 none
@@ -591,6 +610,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeSubject = fetchStringParam("probeSubject");
     m_AutoBias     = fetchDoubleParam("autoBias");
     m_MagicBtn     = fetchPushButtonParam("magicGrade");
+    m_WbFirst      = fetchBooleanParam("wbFirst");
     m_Separation   = fetchDoubleParam("separation");
     m_MagicCycle   = fetchIntParam("magicCycle");
     m_MagicParam   = fetchIntParam("magicParam");
@@ -1610,7 +1630,45 @@ void OneGrade::applyBias()
 // already known to work.
 void OneGrade::applyMagicGrade(double p_Time)
 {
-    applyAutoGrade(p_Time);            // Creative Grade first: exposure, black point, the look.
+    // WHITE BALANCE FIRST, optionally. It has to happen before applyAutoGrade because every
+    // measurement downstream -- exposure key, black point, and the subject comparison itself --
+    // reads a frame whose cast this removes. Costs one extra analyse and one extra segmentation,
+    // which is why it is a checkbox rather than unconditional.
+    bool wbFirst = false;
+    m_WbFirst->getValue(wbFirst);
+    char wbNote[64] = {0};
+    if (wbFirst) {
+        probeAnalyze(p_Time);                       // fetch + source thumbnail
+        if (m_LastThumbSrc.size() == (size_t)512 * 512 * 3 && s_seg_ready()) {
+            RenderConfig neutral{};                 // segment the UNGRADED frame: the cast is
+            neutral.camera = m_LastCam;             // what we are here to measure, so it must
+            neutral.encode = m_LastEnc;             // still be in the picture
+            neutral.params[4] = 1.f; neutral.params[5] = 1.f;
+            neutral.params[9] = 1.f; neutral.params[11] = 6500.f;
+            std::vector<unsigned char> t0;
+            renderThumb(neutral, t0);
+            std::vector<unsigned char> m0; int w0 = 0, h0 = 0;
+            if (s_segmenter().run(t0.data(), 512, 512, m0, w0, h0)) {
+                m_LastRegions.assign((size_t)512 * 512, (uint8_t)oga::R_OTHER);
+                for (int y = 0; y < 512; ++y)
+                    for (int x = 0; x < 512; ++x)
+                        m_LastRegions[(size_t)y * 512 + x] =
+                            m0[(size_t)(y * h0 / 512) * w0 + (x * w0 / 512)];
+                double k = 6500.0; float cover = 0.f, b0 = 0.f;
+                if (estimateWhiteBalance(k, cover, b0)) {
+                    m_RawTemp->setValue(k);
+                    snprintf(wbNote, sizeof wbNote, "  WB %.0fK", k);
+                } else {
+                    // Two different declines, and the difference is worth showing: "no
+                    // reference" is a sunset with no neutral surface in it, "not neutral" is the
+                    // reference itself looking wrong.
+                    snprintf(wbNote, sizeof wbNote, "  WB none (%.0f%% ref)", cover);
+                }
+            }
+        }
+    }
+
+    applyAutoGrade(p_Time);            // Creative Grade: exposure, black point, the look.
     if (!m_HaveKey || m_LastSamples.size() < 512) {
         m_MagicNote->setValue("No frame to analyse");
         m_MagicWhy->setValue("");
@@ -1624,14 +1682,7 @@ void OneGrade::applyMagicGrade(double p_Time)
     // used is reported in the panel: that exact failure (a missing resource quietly changing
     // behaviour) is the most repeated bug in this project's history.
     oga::SampleSet& S = m_LastSamples;
-    static og::seg::Segmenter s_seg;
-    static bool s_segTried = false;
-    if (!s_segTried) {
-        s_segTried = true;
-        const std::string mdir = bundleModelDir();
-        if (!mdir.empty())
-            s_seg.load(mdir + "/ade20k.param", mdir + "/ade20k.bin");
-    }
+    og::seg::Segmenter& s_seg = s_segmenter();
     const char* src = "heuristic";
     bool got = false;
     if (s_seg.ready() && m_LastThumbSrc.size() == (size_t)512 * 512 * 3) {
@@ -1649,6 +1700,13 @@ void OneGrade::applyMagicGrade(double p_Time)
         std::vector<unsigned char> mask; int mw = 0, mh = 0;
         if (s_seg.run(thumb.data(), 512, 512, mask, mw, mh) &&
             oga::assign_regions(S, mask, mw, mh)) {
+            // Kept at thumbnail resolution for the white-balance estimator, which needs to pick
+            // reference PIXELS rather than the sparse sample set the descriptors use.
+            m_LastRegions.assign((size_t)512 * 512, (uint8_t)oga::R_OTHER);
+            for (int y = 0; y < 512; ++y)
+                for (int x = 0; x < 512; ++x)
+                    m_LastRegions[(size_t)y * 512 + x] =
+                        mask[(size_t)(y * mh / 512) * mw + (x * mw / 512)];
             got = true;
             src = "model";
         }
@@ -1747,6 +1805,7 @@ void OneGrade::applyMagicGrade(double p_Time)
     snprintf(msg, sizeof msg, "%d/%d  %s %.0f%% -> %s %+.3f  [%s]",
              c.option + 1, c.options, oga::region_name(c.subject), c.cover,
              (c.param == 6) ? "Offset Temp" : "Gain Temp", base * sep, src);
+    if (wbNote[0]) strncat(msg, wbNote, sizeof msg - strlen(msg) - 1);
     m_MagicNote->setValue(msg);
 
     // WHY, in the panel, in a sentence. The feature exists to surface a move an inexperienced
@@ -1801,6 +1860,109 @@ void OneGrade::applySeparation()
 //
 // Third time this feature has fed the model a different picture than the one it was validated
 // on. The fix each time is the same: stop paraphrasing the render.
+// WHITE BALANCE FIRST — remove the cast before anything reads the frame's colour.
+//
+// WHY IT MATTERS HERE SPECIFICALLY. magic_decide() picks a direction from the subject's lean
+// RELATIVE to the rest of the scene. A global cast is indistinguishable from scene content to
+// that comparison, so a cool room reads as "the subject leans cool" and the move pushes further
+// along an error the camera made. Correct it first and every remaining difference is the room.
+//
+// GREY WORLD WOULD BE WRONG. Averaging the whole frame to neutral turns a beach sunset grey --
+// it cannot tell a colour that is a mistake from a colour that is the entire point. The
+// classifier answers exactly that: balance on the regions with a defensible neutral expectation
+// and ignore the ones that are legitimately coloured.
+//
+//   reference   BUILT, GROUND      walls, floors, roads, pavement -- painted or poured, and
+//                                  near neutral far more often than not
+//   ignored     SKY, WATER, VEG    blue, blue-green and green ON PURPOSE
+//   ignored     TERRAIN            sand and earth are warm by nature, not by error
+//   ignored     SKIN               a strong reference, but its target is NOT neutral; wiring it
+//                                  in needs a skin chromaticity target rather than zero
+//
+// With no reference it declines, which is the honest answer on a sunset over water: there is no
+// neutral surface in the frame, and inventing one is how you get a grey sunset.
+//
+// Solves TEMPERATURE ONLY, driving the reference regions' b* to zero -- the warm/cool axis is
+// what a temperature control moves, and it is what the user corrected by hand (6500 -> 8301).
+// Tint would need its own control and its own evidence.
+bool OneGrade::estimateWhiteBalance(double& outKelvin, float& outCover, float& outB0) const
+{
+    outKelvin = 6500.0; outCover = 0.f; outB0 = 0.f;
+    if (m_LastThumbSrc.size() != (size_t)512 * 512 * 3) return false;
+    if (m_LastRegions.size() != (size_t)512 * 512) return false;
+
+    // Reference pixels only, and enough of them to mean something.
+    std::vector<size_t> ref;
+    ref.reserve(4096);
+    for (size_t i = 0; i < m_LastRegions.size(); ++i) {
+        const uint8_t r = m_LastRegions[i];
+        if (r == oga::R_BUILT || r == oga::R_GROUND) ref.push_back(i);
+    }
+    outCover = 100.f * (float)ref.size() / (float)m_LastRegions.size();
+    if (outCover < 15.f) return false;      // too little to trust; decline rather than guess
+
+    // Mean b* of the reference, as a function of Scene White Balance. Monotonic -- raising the
+    // temperature warms the image -- so a plain bisection lands it.
+    auto refB = [&](double kelvin) {
+        float P[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+        P[11] = (float)kelvin;
+        double sum = 0.0;
+        for (size_t k = 0; k < ref.size(); k += 4) {          // every 4th is plenty for a mean
+            const size_t i = ref[k];
+            float r, g, b;
+            og::process(m_LastCam, m_LastEnc, P,
+                        m_LastThumbSrc[i*3], m_LastThumbSrc[i*3+1], m_LastThumbSrc[i*3+2], r, g, b);
+            float L, a, bb; oga::display_to_Lab(m_LastEnc, r, g, b, L, a, bb);
+            sum += bb;
+        }
+        return sum / (double)((ref.size() + 3) / 4);
+    };
+
+    // IS THE REFERENCE ACTUALLY NEUTRAL? Coverage says a lot of the frame is labelled wall or
+    // floor; it does not say the model was right. A macro of grass comes back 98% "wall", and
+    // balancing on it would correct the green out of the foliage -- a confident, wrong move on a
+    // frame the rest of Magic Grade correctly declines to touch.
+    //
+    // So the assumption gets checked: a surface that is supposed to be neutral should not be
+    // strongly coloured. Measured across the eight test frames -- city 6.4, car interior 7.5,
+    // grass-as-wall 11.7 -- so 9 separates them.
+    //
+    // FITTED ON EIGHT FRAMES AND THE MARGIN IS THIN. The failure mode it buys is a false
+    // negative: a genuinely neutral wall under a STRONG cast also reads as strongly coloured,
+    // and would be declined when it is exactly the case worth correcting. That is the safe
+    // direction to fail in -- declining changes nothing, and the checkbox is optional -- but if
+    // real interiors start being refused, this number is the reason and it should go up.
+    {
+        float P[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+        double sa = 0.0, sb = 0.0; long long n = 0;
+        for (size_t k = 0; k < ref.size(); k += 4) {
+            const size_t i = ref[k];
+            float r, g, b;
+            og::process(m_LastCam, m_LastEnc, P,
+                        m_LastThumbSrc[i*3], m_LastThumbSrc[i*3+1], m_LastThumbSrc[i*3+2], r, g, b);
+            float L, a, bb; oga::display_to_Lab(m_LastEnc, r, g, b, L, a, bb);
+            sa += a; sb += bb; ++n;
+        }
+        if (n > 0 && std::sqrt((sa/n)*(sa/n) + (sb/n)*(sb/n)) > 9.0) return false;
+    }
+
+    outB0 = (float)refB(6500.0);
+    double lo = 2500.0, hi = 15000.0;
+    if (refB(lo) > 0.0 || refB(hi) < 0.0) return false;   // target unreachable in a sane range
+    for (int i = 0; i < 24; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        if (refB(mid) < 0.0) lo = mid; else hi = mid;
+    }
+    outKelvin = 0.5 * (lo + hi);
+
+    // white_balance() forces identity on 6499 < T < 6501 while the Planckian locus at 6500 K is
+    // not D65, so stepping just off the default jumps a neutral grey by a* +2.06 (see
+    // docs/AUTO-GRADE.md 9). Snapping a near-neutral answer to exactly 6500 avoids paying that
+    // for a correction too small to see.
+    if (std::fabs(outKelvin - 6500.0) < 120.0) outKelvin = 6500.0;
+    return true;
+}
+
 void OneGrade::renderThumb(const RenderConfig& cfg, std::vector<unsigned char>& out) const
 {
     const float* lut  = cfg.lutOk ? m_Lut.data.data() : nullptr;
@@ -2648,6 +2810,13 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             mg->setHint("Applies Creative Grade, then looks at what is actually in the frame - sky, water, foliage, a person - decides which of those the shot is about, and makes ONE colour move to set it off against the rest. The move is chosen, not calculated to a target: which slider depends on whether the subject is the bright or the dark part of the frame, and which direction depends on the way it already leans. Press again to pick a different subject; the readout says which option you are on and how many there are. Some shots have nothing to separate - a flat aerial, a macro of leaves - and on those it simply leaves you with Creative Grade and says so.");
             mg->setParent(*gMagic);
             page->addChild(*mg);
+
+            BooleanParamDescriptor* wb = p_Desc.defineBooleanParam("wbFirst");
+            wb->setLabels("White Balance First", "White Balance First", "White Balance First");
+            wb->setHint("Neutralise the frame's colour cast before Magic Grade looks at it. Magic Grade decides by comparing the subject against the rest of the scene, so a cast the camera introduced gets read as something in the room and pushed further -- balancing first means every difference it acts on is really there. It balances on surfaces that ought to be neutral, walls and floors and pavement, and deliberately ignores sky, water and foliage, which are coloured on purpose; a sunset over water has no neutral surface in it, so on those it leaves the balance alone and says so. Writes an ordinary Scene White Balance value you can drag afterwards.");
+            wb->setDefault(false);
+            wb->setParent(*gMagic);
+            page->addChild(*wb);
 
             page->addChild(*defineSlider(p_Desc, "separation", "Separation",
                 "How far to push the colour move Magic Grade chose. 1.0 is the move as decided, 0 removes it entirely, and past 1 exaggerates it. It rescales the SAME decision rather than making a new one, so dragging it feels like one control getting stronger rather than like pressing the button again. Negative reverses the move, which is occasionally what you want when the automatic direction reads backwards on a particular shot.",
