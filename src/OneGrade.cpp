@@ -387,7 +387,7 @@ public:
     void applyBias();                   // offset the grade by Bias, relative to the anchor
     void applyMagicGrade(double p_Time); // Creative, then one classifier-chosen colour move
     void applySeparation();             // rescale the stored magic move without re-deciding
-    void armBias();                     // store the current grade as Bias's zero point
+    void armBias(bool reset = false);   // store the current grade as Bias's zero point
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
     double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
     double m_LastGain = 0.80;           // Gain the measurement asked for (bias moves off this)
@@ -478,6 +478,7 @@ private:
     OFX::DoubleParam*  m_BiasGamma;
     OFX::DoubleParam*  m_BiasRoll;
     OFX::DoubleParam*  m_BiasHot;
+    OFX::DoubleParam*  m_BiasAt;      // slider position when the anchor was captured
     // Magic Grade: the chosen move, saved with the project so the Separation slider keeps
     // scaling it after a reload without needing the frame back.
     OFX::PushButtonParam* m_MagicBtn;
@@ -486,6 +487,8 @@ private:
     OFX::IntParam*     m_MagicParam;   // index into P[]: 6 Offset Temp, 0 Gain Temp, -1 none
     OFX::DoubleParam*  m_MagicBase;    // the move at Separation 1.0
     OFX::DoubleParam*  m_MagicAnchor;  // the control's value before the move
+    OFX::DoubleParam*  m_MagicSepAt;   // Separation position when that anchor was captured
+    OFX::DoubleParam*  m_BiasMirror;   // second face of autoBias, shown in the Magic section
     OFX::StringParam*  m_MagicNote;
     OFX::StringParam*  m_MagicWhy;    // the reasoning, in a sentence
     OFX::BooleanParam* m_ShowAnalysis;
@@ -571,6 +574,8 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_MagicParam   = fetchIntParam("magicParam");
     m_MagicBase    = fetchDoubleParam("magicBase");
     m_MagicAnchor  = fetchDoubleParam("magicAnchor");
+    m_MagicSepAt   = fetchDoubleParam("magicSepAt");
+    m_BiasMirror   = fetchDoubleParam("autoBiasMirror");
     m_MagicNote    = fetchStringParam("magicNote");
     m_MagicWhy     = fetchStringParam("magicWhy");
     m_BiasArmed    = fetchBooleanParam("biasArmed");
@@ -579,6 +584,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_BiasGamma    = fetchDoubleParam("biasGamma");
     m_BiasRoll     = fetchDoubleParam("biasRoll");
     m_BiasHot      = fetchDoubleParam("biasHot");
+    m_BiasAt       = fetchDoubleParam("biasAt");
     m_ShowAnalysis = fetchBooleanParam("showAnalysis");
     m_ProbeBtn     = fetchPushButtonParam("probeAnalyze");
     m_CleanBtn      = fetchPushButtonParam("autoGradeClean");
@@ -1250,8 +1256,8 @@ void OneGrade::applyAutoGrade(double p_Time)
     });
     m_Lift->setValue(lift);
 
-    armBias();                         // this grade becomes Bias's zero point
-    applyBias();                       // then honour whatever Bias is currently set to
+    armBias(true);                     // fresh grade: Bias returns to neutral
+    applyBias();
 
     char msg[128];
     snprintf(msg, sizeof msg, "Creative G %.3f L %+.3f (blk %.3f)  Roll %.3f",
@@ -1380,7 +1386,7 @@ void OneGrade::applyAutoGradeClean(double p_Time)
              chain(d99, lift, gain, postExp));
     m_ProbeApplied->setValue(msg);
 
-    armBias();                         // this grade becomes Bias's zero point
+    armBias(true);                     // fresh grade: Bias returns to neutral
     applyBias();
     setEnabledness();
 }
@@ -1444,8 +1450,21 @@ void OneGrade::applyAutoGradeClean(double p_Time)
 // If bias is moved on a node that was never auto-graded, the CURRENT parameter values become
 // the anchor. That makes the slider work on a hand-built grade too, and it is safe because
 // changedParam fires before anything else has been touched.
-void OneGrade::armBias()
+// Capture the current grade as Bias's zero point.
+//
+// `reset` is what a fresh button press does: Base, Creative and Magic all hand back a complete
+// grade, and leaving a stale Bias on top of it pins every future press to whatever lean was left
+// behind. Pressing the button should give you the grade the button computed, not that grade
+// plus yesterday's taste.
+//
+// A manual edit re-arms WITHOUT resetting, recording the bias value the anchor was taken at so
+// the offset is measured from there. That is what makes a hand tweak survive: the slider does
+// not jump, the picture does not move, and the next drag continues from where the user left it
+// rather than from where the button did.
+void OneGrade::armBias(bool reset)
 {
+    if (reset) { m_AutoBias->setValue(0.0); m_BiasMirror->setValue(0.0); }
+    m_BiasAt->setValue(reset ? 0.0 : m_AutoBias->getValue());
     m_BiasGain->setValue(m_Gain->getValue());
     m_BiasLift->setValue(m_Lift->getValue());
     m_BiasGamma->setValue(m_Gamma->getValue());
@@ -1458,9 +1477,14 @@ void OneGrade::applyBias()
 {
     bool armed = false;
     m_BiasArmed->getValue(armed);
-    if (!armed) armBias();          // adopt whatever is on the node right now
+    if (!armed) armBias(false);     // adopt whatever is on the node right now
 
     double bias = 0.0; m_AutoBias->getValue(bias);
+    // Offset from where the anchor was taken, not from zero. After a manual Lift/Gamma/Gain
+    // edit the anchor is re-armed at the current values with biasAt set to the slider's current
+    // position, so this delta is zero at that instant and the hand tweak is preserved exactly.
+    double biasAt = 0.0; m_BiasAt->getValue(biasAt);
+    bias -= biasAt;
     double aGain = 1.0, aLift = 0.0, aGamma = 1.0, aRoll = 0.0, aHot = 0.0;
     m_BiasGain->getValue(aGain);
     m_BiasLift->getValue(aLift);
@@ -1608,6 +1632,9 @@ void OneGrade::applyMagicGrade(double p_Time)
     m_MagicParam->setValue(c.param);
     m_MagicBase->setValue(base);
     m_MagicAnchor->setValue(anchor);
+    m_MagicSepAt->setValue(0.0);       // a fresh decision: Separation 1.0 means the full move
+    m_Separation->setValue(1.0);
+    sep = 1.0;
     applySeparation();
 
     char msg[160];
@@ -1645,11 +1672,14 @@ void OneGrade::applySeparation()
 {
     int which = -1; m_MagicParam->getValue(which);
     if (which != 0 && which != 6) return;          // nothing chosen yet
-    double base = 0.0, anchor = 0.0, sep = 1.0;
+    double base = 0.0, anchor = 0.0, sep = 1.0, sepAt = 0.0;
     m_MagicBase->getValue(base);
     m_MagicAnchor->getValue(anchor);
     m_Separation->getValue(sep);
-    const double v = std::min(1.0, std::max(-1.0, anchor + base * sep));
+    // Same treatment as Bias: offset from the slider position the anchor was captured at, so a
+    // manual Offset Temp / Gain Temp tweak survives and the next drag continues from it.
+    m_MagicSepAt->getValue(sepAt);
+    const double v = std::min(1.0, std::max(-1.0, anchor + base * (sep - sepAt)));
     if (which == 6) m_OffTemp->setValue(v); else m_Temp->setValue(v);
 }
 
@@ -1910,6 +1940,34 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
         applyAutoGrade(p_Args.time);
     }
     // Live: re-derive Rolloff/Lift as the slider moves. No re-analysis, so it keeps up.
+    // MANUAL EDITS RE-ANCHOR THE SLIDERS THAT OWN THOSE CONTROLS.
+    //
+    // Without this the workflow is quietly destructive: press Creative, hand-tweak Gain, nudge
+    // Bias, and the tweak is gone -- applyBias() recomputes from an anchor captured before the
+    // edit ever happened. The user's hand work loses to a stored number, silently, which is the
+    // worst way for it to lose.
+    //
+    // Re-arming at the CURRENT slider position rather than at zero is what makes it seamless:
+    // the offset is zero at that instant, so nothing jumps and nothing moves, and the next drag
+    // simply continues from where the hand left off. Guarded on eChangeUserEdit so the plugin's
+    // own setValue calls -- which is most of what touches these params -- never re-anchor.
+    else if (p_Args.reason == OFX::eChangeUserEdit &&
+             (p_ParamName == "lift" || p_ParamName == "gamma" ||
+              p_ParamName == "gain" || p_ParamName == "rolloff")) {
+        armBias(false);
+    }
+    else if (p_Args.reason == OFX::eChangeUserEdit &&
+             (p_ParamName == "offTemp" || p_ParamName == "temp")) {
+        int which = -1; m_MagicParam->getValue(which);
+        if (which == 6 || which == 0) {
+            m_MagicAnchor->setValue((which == 6) ? m_OffTemp->getValue() : m_Temp->getValue());
+            m_MagicSepAt->setValue(m_Separation->getValue());
+        }
+    }
+    else if (p_ParamName == "autoBiasMirror" && p_Args.reason == OFX::eChangeUserEdit) {
+        m_AutoBias->setValue(m_BiasMirror->getValue());
+        applyBias();
+    }
     else if (p_ParamName == "magicGrade" && p_Args.reason == OFX::eChangeUserEdit) {
         applyMagicGrade(p_Args.time);
     }
@@ -1917,6 +1975,7 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
         applySeparation();
     }
     else if (p_ParamName == "autoBias" && p_Args.reason == OFX::eChangeUserEdit) {
+        m_BiasMirror->setValue(m_AutoBias->getValue());
         applyBias();
     }
     else if (p_ParamName == "showAnalysis") setEnabledness();
@@ -2281,9 +2340,17 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // applied, and this isn't a pipeline stage, it's a way of setting those stages. It also
     // means the numbering users and the docs already know doesn't shift for a feature that
     // may still change shape. Number it 0 and renumber the rest if it graduates.
+    // Magic Grade gets its own section. It is a different KIND of thing from the other two --
+    // Base and Creative correct and stylise the whole frame, while this one makes a single
+    // opinionated colour decision about one object in it -- and mixing them in one group made
+    // the panel read as four buttons of equal standing.
+    GroupParamDescriptor* gMagic = p_Desc.defineGroupParam("gMagic");
+    gMagic->setLabels("Magic Grade (experimental)", "Magic Grade", "Magic Grade");
+
     GroupParamDescriptor* gAuto = p_Desc.defineGroupParam("gAuto");
     gAuto->setLabels("Auto Grade (experimental)", "Auto Grade", "Auto Grade");
     gAuto->setOpen(true);
+    gMagic->setOpen(true);
     {
         BooleanParamDescriptor* show = p_Desc.defineBooleanParam("showAnalysis");
         show->setLabels("Show analysis", "Show analysis", "Show analysis");
@@ -2329,6 +2396,9 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             };
             anch("biasGain", 1.0); anch("biasLift", 0.0); anch("biasGamma", 1.0);
             anch("biasRoll", 0.0); anch("biasHot", 0.0);
+            // The slider position the anchor was taken at. Without it, a manual edit either
+            // jumps the slider to zero or silently discards the edit on the next drag.
+            anch("biasAt", 0.0);
         }
 
         PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");
@@ -2375,56 +2445,6 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         tune("cleanShoulder","Shoulder","How much Highlight Rolloff to apply per unit of highlight overshoot - how far the channels run past display white before grading. This is the shoulder that stands in for a film stock's, since Lift/Gamma/Gain cannot make an S-curve on its own. Source clipping (pin) sets a floor underneath it. 0 disables the overshoot term and leaves rolloff on source clipping alone, which is what Creative uses.", 0.216, 0.00, 1.50);
         tune("creativeLow","Creative Black","Where Creative Grade places its black point, measured before the print stock. The preset used to stamp a fixed Lift of 0.11, which lands a different black point on every shot depending on where the footage's own floor already sits - and on three hand-graded shots in a row the user pulled it back down, describing it as the shadows being lifted too far. Solving for a target instead makes the result consistent across footage, the same way Base has always placed its floor. To fit this number, grade a shot by hand until it looks right and read the Tone row's graded black value.", 0.050, 0.00, 0.30);
         tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.838, 0.00, 1.00);
-
-        // MAGIC GRADE sits with the other two because it IS the other two plus one step: run
-        // Creative, then make a single colour decision from what the classifier found. Listed
-        // after them because it is the most opinionated of the three and the one most likely to
-        // be cycled or undone.
-        {
-            PushButtonParamDescriptor* mg = p_Desc.definePushButtonParam("magicGrade");
-            mg->setLabels("Magic Grade", "Magic Grade", "Magic Grade");
-            mg->setHint("Applies Creative Grade, then looks at what is actually in the frame - sky, water, foliage, a person - decides which of those the shot is about, and makes ONE colour move to set it off against the rest. The move is chosen, not calculated to a target: which slider depends on whether the subject is the bright or the dark part of the frame, and which direction depends on the way it already leans. Press again to pick a different subject; the readout says which option you are on and how many there are. Some shots have nothing to separate - a flat aerial, a macro of leaves - and on those it simply leaves you with Creative Grade and says so.");
-            mg->setParent(*gAuto);
-            page->addChild(*mg);
-
-            page->addChild(*defineSlider(p_Desc, "separation", "Separation",
-                "How far to push the colour move Magic Grade chose. 1.0 is the move as decided, 0 removes it entirely, and past 1 exaggerates it. It rescales the SAME decision rather than making a new one, so dragging it feels like one control getting stronger rather than like pressing the button again. Negative reverses the move, which is occasionally what you want when the automatic direction reads backwards on a particular shot.",
-                1.0, -2.0, 3.0, 0.01, gAuto));
-
-            StringParamDescriptor* mn = p_Desc.defineStringParam("magicNote");
-            mn->setLabels("Chose", "Chose", "Chose");
-            mn->setStringType(eStringTypeLabel);
-            mn->setDefault("");
-            mn->setHint("Which option you are on, out of how many the frame offers, then the subject it picked and the slider move it made. 'This is Creative Grade' means the frame has no separable regions - one flat surface, or a single subject filling the frame - which is a real answer rather than a failure.");
-            mn->setEnabled(false);
-            mn->setParent(*gAuto);
-            page->addChild(*mn);
-
-            StringParamDescriptor* mw = p_Desc.defineStringParam("magicWhy");
-            mw->setLabels("Why", "Why", "Why");
-            mw->setStringType(eStringTypeLabel);
-            mw->setDefault("");
-            mw->setHint("The reasoning behind the choice above, in a sentence: what it found, why that slider, and why that direction. Which control is picked follows from where the subject sits in the frame's brightness - Offset Temp is an additive move so it has most grip on the dark parts, Gain Temp is multiplicative so it grips the bright parts. The direction follows from the way the subject already leans against everything else, pushed further that way. Worth reading even when the result is wrong, because it says exactly which of those two readings it got wrong.");
-            mw->setEnabled(false);
-            mw->setParent(*gAuto);
-            page->addChild(*mw);
-
-            // Saved with the project so Separation keeps scaling the chosen move after a reload
-            // without needing the frame back. Same reasoning as the Bias anchor.
-            IntParamDescriptor* mc = p_Desc.defineIntParam("magicCycle");
-            mc->setDefault(0); mc->setIsSecret(true); mc->setParent(*gAuto);
-            page->addChild(*mc);
-            IntParamDescriptor* mp = p_Desc.defineIntParam("magicParam");
-            mp->setDefault(-1); mp->setIsSecret(true); mp->setParent(*gAuto);
-            page->addChild(*mp);
-            auto hid = [&](const char* n) {
-                DoubleParamDescriptor* d = p_Desc.defineDoubleParam(n);
-                d->setDefault(0.0); d->setRange(-1e6, 1e6);
-                d->setIsSecret(true); d->setParent(*gAuto);
-                page->addChild(*d);
-            };
-            hid("magicBase"); hid("magicAnchor");
-        }
 
         apply->setLabels("Creative Grade", "Creative Grade", "Creative Grade");
         apply->setHint("Analyses the frame and applies the Cinematic Film Emulation look on top - use this when you want a finished-looking image straight away rather than something to grade from. Sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
@@ -2477,6 +2497,75 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "The separation between the frame's two regions - currently its top and bottom third - as three signed numbers, shown as neutral > graded so you can see what your grade did to each. dL* is TONE separation, da* and db* are HUE separation on the green-magenta and cool-warm axes. Three signed components rather than one distance, because a distance cannot be solved against: it is built from squares, so it cannot express one axis opening while another closes, and on real footage it predicted the wrong direction outright.");
         probeLine("probeResponse", "Response",
                   "What the controls actually DO on this shot, measured rather than assumed: how far b* (cool-to-warm) moves per nudge of each balance control, and how far colourfulness moves per nudge of Density. This is the plugin working out for itself that negative Offset Temp is what adds blue. It is shot-dependent - the same slider does something different to a saturated sunset than to a snowfield - which is why it is measured on every analyse instead of written down once.");
+
+        // MAGIC GRADE, in its own section. It IS Creative plus one step -- run Creative, then
+        // make a single colour decision from what the classifier found in the frame -- but it is
+        // a different KIND of thing from the other two. Base and Creative correct and stylise the
+        // whole picture; this makes one opinionated claim about one object in it. Grouped with
+        // them, the panel read as four buttons of equal standing, which is not what they are.
+        //
+        // Defined last so the section lands after every Auto Grade control: OFX places a group
+        // where its first child appears in page order, and defined in place it wedged itself
+        // between Base Grade's tuning sliders and the Creative button.
+        {
+            PushButtonParamDescriptor* mg = p_Desc.definePushButtonParam("magicGrade");
+            mg->setLabels("Magic Grade", "Magic Grade", "Magic Grade");
+            mg->setHint("Applies Creative Grade, then looks at what is actually in the frame - sky, water, foliage, a person - decides which of those the shot is about, and makes ONE colour move to set it off against the rest. The move is chosen, not calculated to a target: which slider depends on whether the subject is the bright or the dark part of the frame, and which direction depends on the way it already leans. Press again to pick a different subject; the readout says which option you are on and how many there are. Some shots have nothing to separate - a flat aerial, a macro of leaves - and on those it simply leaves you with Creative Grade and says so.");
+            mg->setParent(*gMagic);
+            page->addChild(*mg);
+
+            page->addChild(*defineSlider(p_Desc, "separation", "Separation",
+                "How far to push the colour move Magic Grade chose. 1.0 is the move as decided, 0 removes it entirely, and past 1 exaggerates it. It rescales the SAME decision rather than making a new one, so dragging it feels like one control getting stronger rather than like pressing the button again. Negative reverses the move, which is occasionally what you want when the automatic direction reads backwards on a particular shot.",
+                1.0, -2.0, 3.0, 0.01, gMagic));
+
+            StringParamDescriptor* mn = p_Desc.defineStringParam("magicNote");
+            mn->setLabels("Chose", "Chose", "Chose");
+            mn->setStringType(eStringTypeLabel);
+            mn->setDefault("");
+            mn->setHint("Which option you are on, out of how many the frame offers, then the subject it picked and the slider move it made. 'This is Creative Grade' means the frame has no separable regions - one flat surface, or a single subject filling the frame - which is a real answer rather than a failure.");
+            mn->setEnabled(false);
+            mn->setParent(*gMagic);
+            page->addChild(*mn);
+
+            StringParamDescriptor* mw = p_Desc.defineStringParam("magicWhy");
+            mw->setLabels("Why", "Why", "Why");
+            mw->setStringType(eStringTypeLabel);
+            mw->setDefault("");
+            mw->setHint("The reasoning behind the choice above, in a sentence: what it found, why that slider, and why that direction. Which control is picked follows from where the subject sits in the frame's brightness - Offset Temp is an additive move so it has most grip on the dark parts, Gain Temp is multiplicative so it grips the bright parts. The direction follows from the way the subject already leans against everything else, pushed further that way. Worth reading even when the result is wrong, because it says exactly which of those two readings it got wrong.");
+            mw->setEnabled(false);
+            mw->setParent(*gMagic);
+            page->addChild(*mw);
+
+            // Saved with the project so Separation keeps scaling the chosen move after a reload
+            // without needing the frame back. Same reasoning as the Bias anchor.
+            IntParamDescriptor* mc = p_Desc.defineIntParam("magicCycle");
+            mc->setDefault(0); mc->setIsSecret(true); mc->setParent(*gAuto);
+            page->addChild(*mc);
+            IntParamDescriptor* mp = p_Desc.defineIntParam("magicParam");
+            mp->setDefault(-1); mp->setIsSecret(true); mp->setParent(*gAuto);
+            page->addChild(*mp);
+            auto hid = [&](const char* n) {
+                DoubleParamDescriptor* d = p_Desc.defineDoubleParam(n);
+                d->setDefault(0.0); d->setRange(-1e6, 1e6);
+                d->setIsSecret(true); d->setParent(*gMagic);
+                page->addChild(*d);
+            };
+            hid("magicBase"); hid("magicAnchor"); hid("magicSepAt");
+
+            // A SECOND BIAS SLIDER, MIRRORING THE FIRST. OFX has no way to show one parameter
+            // in two groups, so the choice is a duplicate that is kept in step or sending the
+            // user back up the panel mid-thought. Magic Grade's output is a Creative grade with
+            // one colour move on top, and the first thing anyone reaches for after looking at it
+            // is the tonal lean -- so it belongs here as well.
+            //
+            // Kept in step in changedParam: each writes the other with setValue, which arrives
+            // as eChangePluginEdit rather than eChangeUserEdit, so the handlers ignore it and
+            // there is no loop. Same value, two places, one source of truth.
+            page->addChild(*defineSlider(p_Desc, "autoBiasMirror", "Bias",
+                "The same Bias slider as the one under Base and Creative Grade - the two always hold the same value, and moving either moves both. It is repeated here because Magic Grade produces a Creative grade with a colour move on top, and the tonal lean is the next thing you will want after looking at the result.",
+                0.0, -2.0, 2.0, 0.01, gMagic));
+        }
+
     }
 
     // ---- 0. Role + Preset ----
