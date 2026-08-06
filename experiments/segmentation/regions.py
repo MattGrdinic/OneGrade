@@ -57,15 +57,26 @@ REGIONS = {
     "SKIN":       ("person", "people"),
     "VEGETATION": ("tree", "plant", "grass", "palm", "flower", "field", "bush", "leaves"),
     "TERRAIN":    ("earth", "sand", "dirt", "land", "hill", "mountain", "rock", "snow", "path"),
-    "BUILT":      ("building", "house", "skyscraper", "wall", "ceiling", "floor", "road",
-                   "sidewalk", "bridge", "tower", "fence", "car", "truck", "bus", "windowpane",
-                   "seat", "cushion", "chair", "sofa", "table", "bed", "curtain",
-                   "screen", "door", "signboard", "box", "pole", "streetlight"),
+    # Man-made, split into VERTICAL and HORIZONTAL because a grade treats them differently:
+    # a facade and the street below it are lit by different things, and the one downward city
+    # view in the test set collapsed to a single region without this split -- building 82.7%
+    # and ceiling 13.4% both landing in BUILT, so Magic Grade correctly found nothing to
+    # separate in a frame that visibly has two of everything.
+    "BUILT":      ("building", "house", "skyscraper", "wall", "tower", "fence", "windowpane",
+                   "door", "column", "railing", "curtain", "bookcase", "wardrobe", "shelf",
+                   "car", "truck", "bus", "seat", "cushion", "chair", "sofa", "table", "bed",
+                   "screen", "signboard", "box", "pole", "streetlight"),
+    # "ceiling" sits here rather than with the structures on purpose. On a downward aerial it is
+    # how the model labels flat roofs, and on an interior it groups the two horizontal planes --
+    # either way the split that falls out is horizontal-against-vertical, which is the one that
+    # matters for light.
+    "GROUND":     ("road", "sidewalk", "floor", "path", "runway", "stairs", "stairway",
+                   "ceiling", "bridge", "pier"),
 }
-ORDER = ["SKY", "WATER", "SKIN", "VEGETATION", "TERRAIN", "BUILT", "OTHER"]
+ORDER = ["SKY", "WATER", "SKIN", "VEGETATION", "TERRAIN", "GROUND", "BUILT", "OTHER"]
 SWATCH = {  # for the mask preview, so a wrong mask is obvious at a glance
     "SKY": (90, 160, 235), "WATER": (30, 90, 160), "SKIN": (235, 165, 130),
-    "VEGETATION": (70, 150, 70), "TERRAIN": (170, 140, 95), "BUILT": (140, 140, 150),
+    "VEGETATION": (70, 150, 70), "TERRAIN": (170, 140, 95), "GROUND": (110, 105, 100), "BUILT": (140, 140, 150),
     "OTHER": (60, 60, 60),
 }
 

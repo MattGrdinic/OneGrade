@@ -815,15 +815,24 @@ int main() {
         one[oga::R_BUILT] = { 99.9f, 31.0f, -3.3f, -5.4f };
         ok &= !oga::magic_decide(one, 0).ok;      // aerial city: nothing to separate
 
-        // One region that IS the frame, with a real but tiny second one. A macro shot of
-        // leaves measures 91% foliage against 9% background; pushing those apart is a colour
-        // cast justified by a rounding error, not separation. The offline heuristic vetoed this
-        // from the start and the port dropped the rule -- found by running the same eight
-        // frames through both and seeing C++ act where Python had declined.
+        // One region that IS the frame, with a sliver beside it. The macro-of-leaves frame
+        // measures 98.3% against 1.7%; pushing those apart is a colour cast justified by
+        // speckle, not separation.
         oga::RegionStat macro[oga::kRegionN];
-        macro[oga::R_VEG]   = { 91.4f, 39.4f,  5.5f, 10.0f };
-        macro[oga::R_BUILT] = {  8.6f, 44.0f,  6.6f, 11.4f };
+        macro[oga::R_BUILT] = { 98.3f, 47.3f,  8.7f, 34.5f };
+        macro[oga::R_VEG]   = {  1.7f, 110.9f, 9.0f, 117.2f };
         ok &= !oga::magic_decide(macro, 0).ok;
+
+        // ...but a frame whose second region genuinely clears the coverage floor DOES act, even
+        // when the first is large. The downward city view is 92.9% structure against 7.1% roofs
+        // and streets, and those two halves look visibly different. The floor and the ceiling
+        // used to be independent numbers that disagreed about this exact frame; they are
+        // complementary now, so a region is either big enough to matter or it is not, and the
+        // answer no longer depends on which constant is consulted.
+        oga::RegionStat cityish[oga::kRegionN];
+        cityish[oga::R_BUILT]  = { 92.9f, 59.0f, -3.3f,  -8.7f };
+        cityish[oga::R_GROUND] = {  7.1f, 55.5f, -3.0f, -15.8f };
+        ok &= oga::magic_decide(cityish, 0).ok;
 
         oga::RegionStat none[oga::kRegionN];
         ok &= !oga::magic_decide(none, 0).ok;     // empty: no move, no crash

@@ -229,11 +229,15 @@ struct SampleSet {
 // right when it is water and wrong when it is skin in shadow. That is the whole reason this
 // exists, and the reason the offline experiment in experiments/segmentation/ concluded a
 // classifier earns its place.
-enum Region { R_SKY, R_WATER, R_SKIN, R_VEG, R_TERRAIN, R_BUILT, R_OTHER, kRegionN };
+// GROUND is split out of BUILT because a grade treats a facade and the street below it
+// differently -- they are lit by different things. Without the split a downward city view
+// collapsed to one region (building 82.7% and ceiling 13.4% both landing in BUILT) and Magic
+// Grade correctly reported nothing to separate in a frame that visibly has two of everything.
+enum Region { R_SKY, R_WATER, R_SKIN, R_VEG, R_TERRAIN, R_GROUND, R_BUILT, R_OTHER, kRegionN };
 
 static inline const char* region_name(int r)
 {
-    static const char* n[kRegionN] = { "SKY","WATER","SKIN","FOLIAGE","TERRAIN","BUILT","OTHER" };
+    static const char* n[kRegionN] = { "SKY","WATER","SKIN","FOLIAGE","TERRAIN","GROUND","BUILT","OTHER" };
     return (r >= 0 && r < kRegionN) ? n[r] : "?";
 }
 
@@ -241,7 +245,7 @@ static inline const char* region_name(int r)
 // the user's rule -- but a face is the subject of a shot at 15% and a wall is not at 70%.
 static inline float region_salience(int r)
 {
-    static const float s[kRegionN] = { 0.7f, 1.2f, 3.0f, 1.0f, 0.7f, 0.6f, 0.4f };
+    static const float s[kRegionN] = { 0.7f, 1.2f, 3.0f, 1.0f, 0.7f, 0.6f, 0.6f, 0.4f };
     return (r >= 0 && r < kRegionN) ? s[r] : 0.4f;
 }
 
@@ -631,12 +635,19 @@ struct MagicChoice {
 };
 
 static const int kMagicMinCover = 6;     // below this a region is scenery, not a subject
-// Above this, one region IS the frame and the rest is a sliver. A macro shot of leaves comes
-// back 91% foliage against 9% background, and pushing those apart is not separation, it is a
-// colour cast justified by a rounding error. This was in the offline heuristic from the start
-// and simply never got ported -- caught by running the same eight frames through both and
-// noticing C++ produced a move where Python had correctly declined.
-static const float kMagicDominant = 88.f;
+// Above this, one region IS the frame and the rest is a sliver -- a macro of leaves comes back
+// 98% wall against 2% foliage, and pushing those apart is a colour cast justified by speckle.
+//
+// DERIVED FROM THE FLOOR RATHER THAN PICKED. The two were independent numbers, 6 and 88, and
+// they disagreed: a downward city view measured 92.9% structure against 7.1% roofs and streets,
+// so the 7.1% cleared the floor as a real region while the 92.9% simultaneously tripped the
+// ceiling as "the whole frame". The frame was both separable and not, depending on which
+// constant you asked.
+//
+// Complementary by construction now: two regions must each clear the floor, and nothing else is
+// being asserted. The macro of leaves still declines -- its 1.7% never clears the floor -- and
+// the city now acts, which is what its two visibly different halves deserve.
+static const float kMagicDominant = 100.f - (float)kMagicMinCover;
 
 static inline MagicChoice magic_decide(const RegionStat* st, int click)
 {

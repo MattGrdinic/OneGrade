@@ -63,36 +63,36 @@ namespace seg {
 // there, which is not a detail: substring matching once put a car seat in WATER because "seat"
 // contains "sea", 36% of a frame in the wrong region with entirely plausible numbers.
 using og::analysis::R_SKY;    using og::analysis::R_WATER; using og::analysis::R_SKIN;
-using og::analysis::R_VEG;    using og::analysis::R_TERRAIN;
+using og::analysis::R_VEG;    using og::analysis::R_TERRAIN; using og::analysis::R_GROUND;
 using og::analysis::R_BUILT;  using og::analysis::R_OTHER;
 
-// 150 ADE20K classes -> SKY 1, WATER 7, SKIN 1, VEGETATION 6, TERRAIN 8, BUILT 32, OTHER 95
+// 150 ADE20K classes -> SKY 1, WATER 7, SKIN 1, VEGETATION 6, TERRAIN 8, GROUND 9, BUILT 32, OTHER 86
 static const unsigned char kAde20kToRegion[150] = {
-    R_BUILT, R_BUILT, R_SKY, R_BUILT, R_VEG, R_BUILT,         //   0 wall, building, sky, floor, tree, ceiling
-    R_BUILT, R_BUILT, R_BUILT, R_VEG, R_OTHER, R_BUILT,       //   6 road, bed, windowpane, grass, cabinet, sidewalk
-    R_SKIN, R_TERRAIN, R_BUILT, R_BUILT, R_TERRAIN, R_VEG,    //  12 person, earth, door, table, mountain, plant
-    R_BUILT, R_BUILT, R_BUILT, R_WATER, R_OTHER, R_BUILT,     //  18 curtain, chair, car, water, painting, sofa
-    R_OTHER, R_BUILT, R_WATER, R_OTHER, R_OTHER, R_VEG,       //  24 shelf, house, sea, mirror, rug, field
-    R_OTHER, R_BUILT, R_BUILT, R_OTHER, R_TERRAIN, R_OTHER,   //  30 armchair, seat, fence, desk, rock, wardrobe
-    R_OTHER, R_OTHER, R_OTHER, R_BUILT, R_OTHER, R_BUILT,     //  36 lamp, bathtub, railing, cushion, base, box
-    R_OTHER, R_BUILT, R_OTHER, R_OTHER, R_TERRAIN, R_OTHER,   //  42 column, signboard, chest, counter, sand, sink
-    R_BUILT, R_OTHER, R_OTHER, R_OTHER, R_TERRAIN, R_OTHER,   //  48 skyscraper, fireplace, fridge, grandstand, path, stair
-    R_OTHER, R_OTHER, R_WATER, R_OTHER, R_BUILT, R_OTHER,     //  54 runway, case, pool table, pillow, screen door, stairway
-    R_WATER, R_BUILT, R_OTHER, R_OTHER, R_BUILT, R_OTHER,     //  60 river, bridge, bookcase, blind, coffee table, toilet
-    R_VEG, R_OTHER, R_TERRAIN, R_OTHER, R_OTHER, R_OTHER,     //  66 flower, book, hill, bench, countertop, stove
-    R_VEG, R_OTHER, R_OTHER, R_BUILT, R_OTHER, R_OTHER,       //  72 palm, kitchen island, computer, swivel chair, boat, bar
-    R_OTHER, R_OTHER, R_BUILT, R_OTHER, R_OTHER, R_BUILT,     //  78 arcade, hovel, bus, towel, light, truck
-    R_BUILT, R_OTHER, R_OTHER, R_BUILT, R_OTHER, R_OTHER,     //  84 tower, chandelier, awning, streetlight, booth, tv
-    R_OTHER, R_TERRAIN, R_OTHER, R_BUILT, R_TERRAIN, R_OTHER, //  90 airplane, dirt track, apparel, pole, land, bannister
-    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,     //  96 escalator, ottoman, bottle, buffet, poster, stage
-    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,     // 102 van, ship, fountain, conveyer, canopy, washer
-    R_OTHER, R_WATER, R_OTHER, R_OTHER, R_OTHER, R_WATER,     // 108 plaything, swimming pool, stool, barrel, basket, waterfall
-    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,     // 114 tent, bag, minibike, cradle, oven, ball
-    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,     // 120 food, step, tank, trade name, microwave, pot
-    R_OTHER, R_OTHER, R_WATER, R_OTHER, R_BUILT, R_OTHER,     // 126 animal, bicycle, lake, dishwasher, screen, blanket
-    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,     // 132 sculpture, hood, sconce, vase, traffic light, tray
-    R_OTHER, R_OTHER, R_OTHER, R_BUILT, R_OTHER, R_OTHER,     // 138 ashcan, fan, pier, crt screen, plate, monitor
-    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,     // 144 bulletin board, shower, radiator, glass, clock, flag
+    R_BUILT, R_BUILT, R_SKY, R_GROUND, R_VEG, R_GROUND,           //   0 wall, building, sky, floor, tree, ceiling
+    R_GROUND, R_BUILT, R_BUILT, R_VEG, R_OTHER, R_GROUND,         //   6 road, bed , windowpane, grass, cabinet, sidewalk
+    R_SKIN, R_TERRAIN, R_BUILT, R_BUILT, R_TERRAIN, R_VEG,        //  12 person, earth, door, table, mountain, plant
+    R_BUILT, R_BUILT, R_BUILT, R_WATER, R_OTHER, R_BUILT,         //  18 curtain, chair, car, water, painting, sofa
+    R_BUILT, R_BUILT, R_WATER, R_OTHER, R_OTHER, R_VEG,           //  24 shelf, house, sea, mirror, rug, field
+    R_OTHER, R_BUILT, R_BUILT, R_OTHER, R_TERRAIN, R_BUILT,       //  30 armchair, seat, fence, desk, rock, wardrobe
+    R_OTHER, R_OTHER, R_BUILT, R_BUILT, R_OTHER, R_BUILT,         //  36 lamp, bathtub, railing, cushion, base, box
+    R_BUILT, R_BUILT, R_OTHER, R_OTHER, R_TERRAIN, R_OTHER,       //  42 column, signboard, chest of drawers, counter, sand, 
+    R_BUILT, R_OTHER, R_OTHER, R_OTHER, R_TERRAIN, R_GROUND,      //  48 skyscraper, fireplace, refrigerator, grandstand, pat
+    R_GROUND, R_OTHER, R_WATER, R_OTHER, R_BUILT, R_GROUND,       //  54 runway, case, pool table, pillow, screen door, stair
+    R_WATER, R_GROUND, R_BUILT, R_OTHER, R_BUILT, R_OTHER,        //  60 river, bridge, bookcase, blind, coffee table, toilet
+    R_VEG, R_OTHER, R_TERRAIN, R_OTHER, R_OTHER, R_OTHER,         //  66 flower, book, hill, bench, countertop, stove
+    R_VEG, R_OTHER, R_OTHER, R_BUILT, R_OTHER, R_OTHER,           //  72 palm, kitchen island, computer, swivel chair, boat, 
+    R_OTHER, R_OTHER, R_BUILT, R_OTHER, R_OTHER, R_BUILT,         //  78 arcade machine, hovel, bus, towel, light, truck
+    R_BUILT, R_OTHER, R_OTHER, R_BUILT, R_OTHER, R_OTHER,         //  84 tower, chandelier, awning, streetlight, booth, telev
+    R_OTHER, R_TERRAIN, R_OTHER, R_BUILT, R_TERRAIN, R_OTHER,     //  90 airplane, dirt track, apparel, pole, land, bannister
+    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,         //  96 escalator, ottoman, bottle, buffet, poster, stage
+    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,         // 102 van, ship, fountain, conveyer belt, canopy, washer
+    R_OTHER, R_WATER, R_OTHER, R_OTHER, R_OTHER, R_WATER,         // 108 plaything, swimming pool, stool, barrel, basket, wat
+    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,         // 114 tent, bag, minibike, cradle, oven, ball
+    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,         // 120 food, step, tank, trade name, microwave, pot
+    R_OTHER, R_OTHER, R_WATER, R_OTHER, R_BUILT, R_OTHER,         // 126 animal, bicycle, lake, dishwasher, screen, blanket
+    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,         // 132 sculpture, hood, sconce, vase, traffic light, tray
+    R_OTHER, R_OTHER, R_GROUND, R_BUILT, R_OTHER, R_OTHER,        // 138 ashcan, fan, pier, crt screen, plate, monitor
+    R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER, R_OTHER,         // 144 bulletin board, shower, radiator, glass, clock, flag
 };
 
 // ImageNet normalisation, which is what every ADE20K checkpoint expects. ncnn folds the mean
