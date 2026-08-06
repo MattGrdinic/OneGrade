@@ -18,3 +18,7 @@ experiments/segmentation/seg-env/
 # and the shipping checkpoint is not settled yet
 experiments/segmentation/converted/
 experiments/segmentation/verify
+
+# Magic Grade model: development-only checkpoint, never committed (licence, and it is
+# expected to be replaced by a distilled one). See docs and experiments/segmentation.
+OneGrade.ofx.bundle/Contents/Resources/Model/

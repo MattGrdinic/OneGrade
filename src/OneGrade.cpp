@@ -126,24 +126,42 @@ static int kodak2383Index() { int i = filmLutIndex("kodak 2383 d60"); return i <
 
 // Directory of the LUTs we ship inside the bundle (<bundle>/Contents/Resources/LUTs),
 // resolved from the plugin binary's own path so it works wherever the bundle lives.
-static std::string bundleLutDir()
+static std::string bundleResourceDir()
 {
     std::string bin;
 #ifdef _WIN32
     HMODULE hm = nullptr;
     if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCSTR)&bundleLutDir, &hm)) {
+                           (LPCSTR)&bundleResourceDir, &hm)) {
         char path[MAX_PATH];
         if (GetModuleFileNameA(hm, path, MAX_PATH)) bin = path;
     }
 #else
     Dl_info info;
-    if (dladdr((void*)&bundleLutDir, &info) && info.dli_fname) bin = info.dli_fname;
+    if (dladdr((void*)&bundleResourceDir, &info) && info.dli_fname) bin = info.dli_fname;
 #endif
     if (bin.empty()) return {};
     namespace fs = std::filesystem;
     fs::path contents = fs::path(bin).parent_path().parent_path();   // Contents/<arch>/OneGrade.ofx -> Contents
-    return (contents / "Resources" / "LUTs").string();
+    return (contents / "Resources").string();
+}
+
+// Both resources resolve from the plugin binary's own path, so they work wherever the bundle
+// is installed and on a render node that has never seen this machine. Named functions rather
+// than "the LUT dir plus /../Model": that relative hop was written once and was already wrong,
+// pointing at Contents/Model while the files were in Contents/Resources/Model, and nothing
+// would have reported it -- the model simply would not have loaded and Magic Grade would have
+// quietly run on the heuristic stub forever.
+static std::string bundleLutDir()
+{
+    const std::string r = bundleResourceDir();
+    return r.empty() ? r : (std::filesystem::path(r) / "LUTs").string();
+}
+
+static std::string bundleModelDir()
+{
+    const std::string r = bundleResourceDir();
+    return r.empty() ? r : (std::filesystem::path(r) / "Model").string();
 }
 
 // Find a Look LUT by case-insensitive name fragment across all groups. Fills (group, lut)
@@ -413,6 +431,7 @@ public:
     // fetchImage. ~40k samples is about half a megabyte, the same order as the percentile
     // buffers probeAnalyze already allocates and throws away.
     oga::SampleSet m_LastSamples;
+    std::vector<unsigned char> m_LastThumb;   // 512x512 RGB8, display-referred, top-down
     int         m_LastCam = 0;      // the camera/encode the samples were classified under:
     int         m_LastEnc = 1;      // re-solving in a different space would be meaningless
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
@@ -871,6 +890,10 @@ void OneGrade::probeAnalyze(double p_Time)
                     SS.rgb.push_back(p[0]); SS.rgb.push_back(p[1]); SS.rgb.push_back(p[2]);
                     const int bd = (int)(((long long)(y - b.y1) * 3) / h);
                     SS.band.push_back((uint8_t)std::min(2, std::max(0, bd)));
+                    // Normalised position, OFX origin (bottom-left), so a segmentation mask can
+                    // be read at this sample's location later.
+                    SS.u.push_back((float)x / (float)w);
+                    SS.v.push_back((float)(y - b.y1) / (float)h);
                 }
 
                 // Scene luminance: decode to camera-linear, then XYZ Y. Neutral scene stage, so no
@@ -914,6 +937,36 @@ void OneGrade::probeAnalyze(double p_Time)
                 }
             }
         }
+        // MODEL THUMBNAIL, built here because this is the only place the image exists. Magic
+        // Grade needs a display-referred 8-bit picture at the segmentation model's input size,
+        // and re-fetching later would mean a second fetchImage on a different code path for no
+        // gain. ~100 ms on top of the pass already being made.
+        //
+        // DISPLAY-REFERRED, NOT CAMERA LOG. The model was trained on ordinary photographs, and
+        // log footage is far outside that distribution -- the same trap as measuring
+        // percentiles in Cineon, which produced a flat 0% `hot` on a blown frame.
+        //
+        // Rows are written TOP-DOWN because that is what a picture is; OFX hands them over
+        // bottom-up, so the source row is mirrored.
+        {
+            const int T = 512;
+            m_LastThumb.assign((size_t)T * T * 3, 0);
+            for (int ty = 0; ty < T; ++ty) {
+                const int sy = b.y2 - 1 - (int)(((long long)ty * h) / T);   // flip
+                const float* row = static_cast<const float*>(src->getPixelAddress(b.x1, sy));
+                if (!row) continue;
+                for (int tx = 0; tx < T; ++tx) {
+                    const float* q = row + (size_t)(((long long)tx * w) / T) * 4;
+                    float dr, dg, db;
+                    og::process(camera, dispEnc, neutral, q[0], q[1], q[2], dr, dg, db);
+                    unsigned char* o = &m_LastThumb[((size_t)ty * T + tx) * 3];
+                    o[0] = (unsigned char)(og::clamp01(dr) * 255.f + 0.5f);
+                    o[1] = (unsigned char)(og::clamp01(dg) * 255.f + 0.5f);
+                    o[2] = (unsigned char)(og::clamp01(db) * 255.f + 0.5f);
+                }
+            }
+        }
+
         const size_t n = dispL.size();
         if (n == 0) { m_ProbeStatus->setValue("Bounds ok but no rows readable"); return; }
 
@@ -1566,13 +1619,25 @@ void OneGrade::applyMagicGrade(double p_Time)
     static bool s_segTried = false;
     if (!s_segTried) {
         s_segTried = true;
-        const std::string mdir = bundleLutDir() + "/../Model/";   // same bundle-relative
-        s_seg.load(mdir + "ade20k.param", mdir + "ade20k.bin");   // resolution as the LUTs
+        const std::string mdir = bundleModelDir();
+        if (!mdir.empty())
+            s_seg.load(mdir + "/ade20k.param", mdir + "/ade20k.bin");
     }
-    const char* src = s_seg.ready() ? "model" : "heuristic";
-    // Until the model file ships, and whenever it fails to load, the heuristic stand-in fills
-    // SampleSet::region instead. Everything downstream consumes that field and nothing else.
-    oga::stub_regions(S, m_LastCam, m_LastEnc);
+    const char* src = "heuristic";
+    bool got = false;
+    if (s_seg.ready() && m_LastThumb.size() == (size_t)512 * 512 * 3) {
+        std::vector<unsigned char> mask; int mw = 0, mh = 0;
+        if (s_seg.run(m_LastThumb.data(), 512, 512, mask, mw, mh) &&
+            oga::assign_regions(S, mask, mw, mh)) {
+            got = true;
+            src = "model";
+        }
+    }
+    // The heuristic stand-in when the model is absent or anything about it failed. Everything
+    // downstream consumes SampleSet::region and nothing else, so the two are interchangeable
+    // from here on -- which is what let the whole chain be built and tested before the model
+    // existed.
+    if (!got) oga::stub_regions(S, m_LastCam, m_LastEnc);
 
     // Regions are read at NEUTRAL, like every other measurement here: they describe the footage,
     // not the grade that was just applied on top of it.

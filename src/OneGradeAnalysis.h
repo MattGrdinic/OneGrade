@@ -212,6 +212,11 @@ struct SampleSet {
     std::vector<uint8_t> mid;    // N: 1 if inside the mid-tone window
     std::vector<uint8_t> skin;   // N: 1 if inside the skin mask
     std::vector<uint8_t> region; // N: semantic region — see Region below
+    // Normalised position, 0..1, ORIGIN BOTTOM-LEFT to match OFX. Needed so a segmentation
+    // mask -- which is a picture, and therefore top-down -- can be read at each sample's
+    // location. The flip is the whole reason these are stored rather than recomputed: getting
+    // it wrong turns sky into ground silently, and the numbers would all still look plausible.
+    std::vector<float> u, v;
     size_t size() const { return band.size(); }
 };
 
@@ -283,6 +288,7 @@ static inline SampleSet decimate(const SampleSet& S, size_t target)
         // measures the chosen control's grip on the subject, so a missing copy here makes every
         // move come out at exactly zero — a feature that runs, reports, and does nothing.
         D.region.push_back(S.region.empty() ? (uint8_t)R_OTHER : S.region[i]);
+        if (!S.u.empty()) { D.u.push_back(S.u[i]); D.v.push_back(S.v[i]); }
     }
     return D;
 }
@@ -526,6 +532,33 @@ static inline void stub_regions(SampleSet& S, int cam, int enc)
     }
 }
 
+// Fill SampleSet::region from a segmentation mask.
+//
+// The mask is a picture: row 0 is the TOP of the frame. SampleSet::v is OFX's convention, 0 at
+// the BOTTOM. So the row index is (1 - v), and getting that backwards would put sky underfoot
+// while every downstream number stayed perfectly plausible -- coverage percentages, Lab means,
+// the lot. There is no way to notice it from the statistics, only from the picture.
+//
+// Nearest-neighbour on purpose. The mask is already coarse (128x128 for a 512 input) and its
+// values are labels, not quantities: interpolating between "sky" and "water" would produce
+// "somewhere in between", which is not a thing.
+static inline bool assign_regions(SampleSet& S, const std::vector<uint8_t>& mask,
+                                  int mw, int mh)
+{
+    const size_t n = S.size();
+    if (n == 0 || mw <= 0 || mh <= 0 || mask.size() != (size_t)mw * mh) return false;
+    if (S.u.size() != n || S.v.size() != n) return false;
+    S.region.assign(n, (uint8_t)R_OTHER);
+    for (size_t i = 0; i < n; ++i) {
+        int x = (int)(S.u[i] * (float)mw);
+        int y = (int)((1.0f - S.v[i]) * (float)mh);      // OFX bottom-up -> image top-down
+        x = x < 0 ? 0 : (x >= mw ? mw - 1 : x);
+        y = y < 0 ? 0 : (y >= mh ? mh - 1 : y);
+        S.region[i] = mask[(size_t)y * mw + x];
+    }
+    return true;
+}
+
 // Per-region colour, for a given parameter vector. Same fixed-membership rule as everything
 // else here: regions are decided once from the neutral render and only the STATISTICS move.
 static inline void region_stats(const SampleSet& S, int cam, int enc, const float* P,
@@ -597,7 +630,13 @@ struct MagicChoice {
     float subjB  = 0.f, restB = 0.f;   // warm/cool, likewise — picks the direction
 };
 
-static const int kMagicMinCover = 6;    // below this a region is scenery, not a subject
+static const int kMagicMinCover = 6;     // below this a region is scenery, not a subject
+// Above this, one region IS the frame and the rest is a sliver. A macro shot of leaves comes
+// back 91% foliage against 9% background, and pushing those apart is not separation, it is a
+// colour cast justified by a rounding error. This was in the offline heuristic from the start
+// and simply never got ported -- caught by running the same eight frames through both and
+// noticing C++ produced a move where Python had correctly declined.
+static const float kMagicDominant = 88.f;
 
 static inline MagicChoice magic_decide(const RegionStat* st, int click)
 {
@@ -606,6 +645,9 @@ static inline MagicChoice magic_decide(const RegionStat* st, int click)
     for (int r = 0; r < kRegionN; ++r)
         if (st[r].cover >= (float)kMagicMinCover) idx[nb++] = r;
     if (nb < 2) return out;             // nothing to read a subject against
+    float biggest = 0.f;
+    for (int i = 0; i < nb; ++i) biggest = std::max(biggest, st[idx[i]].cover);
+    if (biggest >= kMagicDominant) return out;   // one region is the whole frame
 
     std::sort(idx, idx + nb, [&](int A, int B) {
         return st[A].cover * region_salience(A) > st[B].cover * region_salience(B);

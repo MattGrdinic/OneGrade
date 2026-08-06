@@ -815,6 +815,16 @@ int main() {
         one[oga::R_BUILT] = { 99.9f, 31.0f, -3.3f, -5.4f };
         ok &= !oga::magic_decide(one, 0).ok;      // aerial city: nothing to separate
 
+        // One region that IS the frame, with a real but tiny second one. A macro shot of
+        // leaves measures 91% foliage against 9% background; pushing those apart is a colour
+        // cast justified by a rounding error, not separation. The offline heuristic vetoed this
+        // from the start and the port dropped the rule -- found by running the same eight
+        // frames through both and seeing C++ act where Python had declined.
+        oga::RegionStat macro[oga::kRegionN];
+        macro[oga::R_VEG]   = { 91.4f, 39.4f,  5.5f, 10.0f };
+        macro[oga::R_BUILT] = {  8.6f, 44.0f,  6.6f, 11.4f };
+        ok &= !oga::magic_decide(macro, 0).ok;
+
         oga::RegionStat none[oga::kRegionN];
         ok &= !oga::magic_decide(none, 0).ok;     // empty: no move, no crash
 
