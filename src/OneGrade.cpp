@@ -487,6 +487,7 @@ private:
     OFX::StringParam* m_ProbeResponse;  // what the controls DO on this shot (Jacobian rows)
     OFX::StringParam* m_ProbeDriveB;    // which controls drove the warm/cool change
     OFX::StringParam* m_ProbeDriveC;    // ...and the colourfulness change
+    OFX::StringParam* m_ProbeDriveS;    // ...and the population separation
 
     // Setup check — see probeSetup().
     OFX::PushButtonParam* m_SetupBtn;
@@ -566,6 +567,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeResponse = fetchStringParam("probeResponse");
     m_ProbeDriveB   = fetchStringParam("probeDriveB");
     m_ProbeDriveC   = fetchStringParam("probeDriveC");
+    m_ProbeDriveS   = fetchStringParam("probeDriveS");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
     m_SetupStatus = fetchStringParam("setupStatus");
     m_SetupStats  = fetchStringParam("setupStats");
@@ -744,6 +746,7 @@ void OneGrade::probeAnalyze(double p_Time)
     m_ProbeResponse->setValue("");
     m_ProbeDriveB->setValue("");
     m_ProbeDriveC->setValue("");
+    m_ProbeDriveS->setValue("");
     m_HaveJac = false;
     if (!m_SrcClip || !m_SrcClip->isConnected()) { m_ProbeStatus->setValue("No source clip connected"); return; }
 
@@ -1057,6 +1060,7 @@ void OneGrade::probeAnalyze(double p_Time)
             };
             driverRow(oga::D_B, m_ProbeDriveB);
             driverRow(oga::D_CHROMA, m_ProbeDriveC);
+            driverRow(oga::D_SEP, m_ProbeDriveS);
 
             // The row that shows its work: per one natural nudge of each control, how far the
             // warm/cool axis actually moves ON THIS SHOT. Reading it is how the fit for a
@@ -1473,6 +1477,7 @@ void OneGrade::setEnabledness()
     m_ProbeResponse->setIsSecret(!debug);
     m_ProbeDriveB->setIsSecret(!debug);
     m_ProbeDriveC->setIsSecret(!debug);
+    m_ProbeDriveS->setIsSecret(!debug);
     // Containment targets are exposed only in the debug panel: they are how the Clean
     // constants get fitted on footage, and a shipping panel should carry the result, not the
     // dials that produced it.
@@ -2132,6 +2137,8 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "Which controls actually produced the warm/cool change between a neutral node and the grade currently on it, biggest contributor first. 'act' is the measured change, 'lin' is what the measured response predicted, and the gap between them says how far outside the linear range your grade sits - a big gap means the sliders are being pushed hard enough that their effect is tailing off. This row exists because naming the obvious control by eye does not work: on a real grade colourfulness rose while Density had actually been LOWERED, with Lift, Gain and Offset Temp pushing it up between them.");
         probeLine("probeDriveC", "Drives C",
                   "The same decomposition for colourfulness. Read it alongside 'Drives b*' when working out what a grade you built by hand actually did - the two together turn a look you tuned by feel into a list of which control contributed how much, which is what a rule has to be fitted to.");
+        probeLine("probeDriveS", "Drives sep",
+                  "The same decomposition for separation between the two dominant colour populations - which controls pushed the frame's subjects apart in colour, and which pulled them together. Watch the gap between 'act' and 'lin' on this row especially: separation is a DISTANCE, so it responds much less linearly than the warm/cool axis does, and a large gap means the numbers here rank the controls correctly but should not be read as exact amounts.");
         probeLine("probeResponse", "Response",
                   "What the controls actually DO on this shot, measured rather than assumed: how far b* (cool-to-warm) moves per nudge of each balance control, and how far colourfulness moves per nudge of Density. This is the plugin working out for itself that negative Offset Temp is what adds blue. It is shot-dependent - the same slider does something different to a saturated sunset than to a snowfield - which is why it is measured on every analyse instead of written down once.");
     }
