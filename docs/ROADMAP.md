@@ -222,3 +222,64 @@ wrong — top/bottom thirds are a stand-in that only holds for landscape-shaped 
 shot where the subjects aren't stacked vertically the slider would push apart two things that
 aren't the subjects. Either ship it with that caveat and let the panel show the regions it
 found, or wait for real region masks.
+
+---
+
+## Region masks for separation (the classifier) — the live blocker, 2026-08-06
+
+**The tonal half is done and validated on footage** — the user's words: *"this work has made the
+tonal look really close to what my hand-grades do."* Exposure comes from measurement, global
+colour from the Jacobian, the black point from a solve. What remains is **colour separation**,
+and it is blocked on one thing only.
+
+### The job is narrow
+
+Not exposure. Not colour. **Region identity** — which pixels belong to which thing, so the
+separation descriptors have real objects to attach to. `docs/AUTO-GRADE.md` §9 has the design;
+the descriptors only ever ask *region A minus region B*, so real masks drop in without changing
+anything else.
+
+### Both cheap region-finders are ruled out, by measurement
+
+| | bands (top/bottom third) | 2-means in (a*, b*) |
+|---|---|---|
+| beach (horizon) | **db\* +43** — found sky over water | two populations *both orange*, h29 / h44 |
+| city (downward) | **db\* −0.6** — found nothing | — |
+| car (centred subject) | **db\* −1** — found nothing | **h−158 / h+95** — genuinely distinct |
+
+**Each fails exactly where the other works.** That is the case for segmentation: not that it
+would be nice, but that nothing cheaper covers the range of shots.
+
+### Derisk it offline before writing any C++
+
+The whole question — *do real masks produce separation numbers that track the user's hand grades
+better than bands do?* — can be answered in Python, on exported frames, with no plugin changes,
+no inference runtime, and no licensing commitment:
+
+1. export the frames we already have measurements for (beach, city, car) plus a few more
+2. run a candidate segmentation model offline
+3. compute the separation triple from the real masks
+4. compare against the band and cluster numbers already recorded
+
+If the masks separate the shots better, build the C++ inference. If not, a day is spent instead
+of two weeks.
+
+### Constraints already established
+
+- **It is a button, not a render** — ~1s budget, CPU, no GPU inference, no kernel work, no
+  golden-rule mirror.
+- **Feed it display-referred pixels**, never camera log — a net trained on sRGB sees garbage
+  otherwise. Same trap as the `dispEnc` fallback in `probeAnalyze`.
+- **Signed components only.** Separation must stay `dL*` / `da*` / `db*`; distances cannot be
+  solved against (see §9).
+- **Licensing is a real gate** on any pretrained weights — code licence ≠ weights licence ≠
+  training-data licence. Does not block the offline experiment; does block shipping.
+- **Runtime, when it comes to that:** hand-rolled inference with weights as a bundle resource
+  (zero deps, ~800 lines) or vendored ncnn (~3MB, BSD-3). ONNX Runtime is too heavy for a 2.4MB
+  plugin.
+
+### Open question worth answering first
+
+**Does every shot even want separation?** The city grade was purely tonal; the beach needed
+colour separation. The classifier's first useful output may be *"are there separable regions
+here at all"* rather than *"push these two apart"*.

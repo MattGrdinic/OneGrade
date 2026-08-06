@@ -108,6 +108,42 @@ shot into mid-gray mush. Refusing to act in that direction handles it without a 
 case. The 0.30 floor exists because the fit is only evidenced out to about −2 EV, and the
 bare line reaches zero near −4 EV.
 
+### The black point is solved, not stamped
+
+The preset writes **Lift 0.11** on every shot, and a fixed lift lands a *different* black point
+depending on where the footage's own floor already sits:
+
+| shot | Creative lift | user's lift | Creative black point |
+|---|---|---|---|
+| beach | 0.050 | −0.011 | 0.229 |
+| city | 0.110 | 0.066 | 0.161 |
+| car | — | *"lifts shadows a bit too much"* | |
+
+Three hand grades, all corrected downward. **Base has always solved its floor to a target;
+Creative stamped a constant, and that difference is the whole defect.** It is now bisected on
+the same monotonic curve, against the `Creative Black` tunable (default 0.050).
+
+Note the beach and city need Lift moved in **opposite directions** — −0.019 and +0.034 — to
+land the same black point. That is exactly what a constant cannot do.
+
+> **To fit `Creative Black`:** grade a shot by hand until it looks right, hit Analyze, and read
+> the **Tone** row's graded `blk`. That number *is* the target.
+
+### The anti-crush floor, and a bug the change created
+
+Bias's −0.06-per-unit lift offset was calibrated against the fixed 0.11, which left room
+underneath. With Creative solving to −0.019 on the beach, **Bias −1 took lift to −0.079 and the
+black point to −0.03 — crushed**, from two individually correct changes.
+
+Fixed as a floor in `applyBias` rather than by retuning the coefficient: the coefficient is
+taste, the floor is a fact. Bias keeps its full range and stops removing shadows once there are
+none left.
+
+Bias also runs **±2** now. Measured black point: 0.050 at 0, ~0.18 at +1, ~0.25 at +1.5, ~0.33
+at +2, against the old stamped 0.229 / 0.161 — so the extra travel is new headroom rather than a
+restoration. The negative half now does much less to shadows (−1 and −2 both land on the floor),
+which is correct but makes the slider asymmetric about zero.
+
 ---
 
 ## 4. Highlight Rolloff, from source clipping
