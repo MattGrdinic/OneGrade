@@ -17,6 +17,22 @@
 // cheaper covers the range of shots.
 //
 // ---------------------------------------------------------------------------------------
+// WHICH MODEL, AND WHY THAT ONE
+//
+// PP-MobileSeg-Base (PaddleSeg, Apache-2.0), converted to ncnn. See models/README.md.
+//
+// CHOSEN ON LICENCE FIRST AND IT TURNED OUT TO BE BETTER ANYWAY. NVIDIA's SegFormer-B0 is the
+// obvious candidate and converts more easily, but its licence restricts use to "research or
+// evaluation purposes only" -- and that lands on the END USER, not the distributor. A colourist
+// grading a paid job is doing neither, so no amount of relicensing OneGrade could have fixed
+// it; the restriction would simply have moved onto the people the plugin exists for.
+//
+// PP-MobileSeg is Apache-2.0 with no commercial restriction, and on measurement it beat the
+// alternative on every axis that matters here: 41.57% mIoU against ~37.4%, 96 ms against 251,
+// 4.77 GFLOPs against 17.2. It also removed the need for a distillation fallback, which would
+// have cost a training set and baked in a teacher's own flaws.
+//
+// ---------------------------------------------------------------------------------------
 // IT IS ALLOWED TO BE ABSENT
 //
 // If the model file is missing or fails to load, ready() stays false and the caller falls back
@@ -29,6 +45,7 @@
 #pragma once
 #include "OneGradeAnalysis.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -126,16 +143,28 @@ public:
         if (ex.extract("out0", out) != 0) return false;
         if (out.w <= 0 || out.h <= 0 || out.c < 2) return false;
 
-        // Channel-wise argmax. ncnn hands back logits as c planes of w*h, so the winning class
-        // for a cell is a stride walk rather than a contiguous read.
-        outW = out.w; outH = out.h;
+        // Channel-wise argmax, SUBSAMPLED. ncnn hands back logits as c planes of w*h, so the
+        // winning class for a cell is a stride walk rather than a contiguous read -- 150 reads
+        // per cell, which at a full 512x512 output is 39 million of them for a mask that then
+        // gets sampled at roughly forty thousand points and reduced to seven percentages.
+        //
+        // PP-MobileSeg upsamples to the input resolution internally, so the fine detail is
+        // interpolated rather than earned; taking every Nth cell discards nothing that was
+        // really there. Capped at 256 on the long side, which is already finer than the 128x128
+        // the previous model produced natively.
+        const int cap = 256;
+        const int step = std::max(1, (out.w > out.h ? out.w : out.h) / cap);
+        outW = (out.w + step - 1) / step;
+        outH = (out.h + step - 1) / step;
         regions.assign((size_t)outW * outH, (unsigned char)R_OTHER);
         const int classes = out.c < 150 ? out.c : 150;
         for (int y = 0; y < outH; ++y) {
+            const int sy = y * step;
             for (int x = 0; x < outW; ++x) {
+                const int sx = x * step;
                 int best = 0; float bv = -1e30f;
                 for (int c = 0; c < classes; ++c) {
-                    const float v = out.channel(c).row(y)[x];
+                    const float v = out.channel(c).row(sy)[sx];
                     if (v > bv) { bv = v; best = c; }
                 }
                 regions[(size_t)y * outW + x] = kAde20kToRegion[best];

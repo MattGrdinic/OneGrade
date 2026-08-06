@@ -55,8 +55,8 @@ endif
 
 BINDIR := $(BUNDLE)/Contents/$(BUNDLE_ARCH)
 
-.PHONY: all install clean test bundle-luts
-all: $(BINDIR)/OneGrade.ofx $(BUNDLE)/Contents/Info.plist bundle-luts
+.PHONY: all install clean test bundle-luts bundle-model
+all: $(BINDIR)/OneGrade.ofx $(BUNDLE)/Contents/Info.plist bundle-luts bundle-model
 
 # Built-in look LUTs ship inside the bundle (regenerate with luts/generate_luts.py).
 bundle-luts:
@@ -64,6 +64,12 @@ bundle-luts:
 	@cp -f luts/*.cube "$(BUNDLE)/Contents/Resources/LUTs/"
 
 # The test binary is header-only too, so it gets the same treatment.
+# Magic Grade's region model, resolved at runtime from the plugin binary's own path so it
+# works on a render machine that has never seen this checkout. See models/README.md.
+bundle-model:
+	@mkdir -p "$(BUNDLE)/Contents/Resources/Model"
+	@cp -f models/ade20k.param models/ade20k.bin "$(BUNDLE)/Contents/Resources/Model/"
+
 test: | $(BUILD)
 	$(CXX) -std=c++17 -O2 -MMD -MP test/pipeline_test.cpp -o $(BUILD)/pipeline_test
 	$(BUILD)/pipeline_test

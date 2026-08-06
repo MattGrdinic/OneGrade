@@ -112,6 +112,14 @@ add_custom_command(TARGET OneGrade POST_BUILD
           "${CMAKE_SOURCE_DIR}/luts/OneGrade Silver Bleach.cube"
           "${CMAKE_SOURCE_DIR}/luts/OneGrade Midnight Blue.cube"
           "${BUNDLE}/Contents/Resources/LUTs/"
+  # Magic Grade's region model, resolved at runtime from the plugin binary's own path so it
+  # works on a render machine that has never seen this checkout. See models/README.md for
+  # provenance -- PP-MobileSeg-Base, Apache-2.0, which is why it and not SegFormer.
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${BUNDLE}/Contents/Resources/Model"
+  COMMAND ${CMAKE_COMMAND} -E copy
+          "${CMAKE_SOURCE_DIR}/models/ade20k.param"
+          "${CMAKE_SOURCE_DIR}/models/ade20k.bin"
+          "${BUNDLE}/Contents/Resources/Model/"
   COMMENT "Assembling OneGrade.ofx.bundle")
 
 # ---- CPU unit tests ----
