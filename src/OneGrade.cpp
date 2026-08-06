@@ -1713,19 +1713,19 @@ void OneGrade::applyMagicGrade(double p_Time)
     // nothing. It also makes a wrong pick legible rather than mysterious, which matters more
     // here than usual: this tool is fallible by design, so it has to show its working or there
     // is no way to tell a bad guess from a bad tool.
-    // Both causal links, inside the ~45-char panel budget: which control and why, then which
-    // direction and why. The full rule lives in this row's hint, which has no width limit --
-    // the row carries the specifics, the hint carries the principle.
+    // Both causal links inside the panel's real width, which is about 50 characters -- measured,
+    // not guessed: the first version came to 55 and was visibly cut off mid-word in Resolve.
+    // The region name is dropped because the row directly above already names it, and the
+    // direction word is dropped because that row also shows the signed value. What is left is
+    // the two things nothing else says: why THAT control, and why THAT direction.
     const char* ctl = (c.param == 6) ? "Offset" : "Gain";
     if (oga::region_protected(c.subject)) {
-        snprintf(msg, sizeof msg, "%s protected; rest %s (L%.0fv%.0f) -> %s, %s",
-                 oga::region_name(c.subject), (c.restL > c.subjL) ? "brighter" : "darker",
-                 c.restL, c.subjL, ctl, (c.sign > 0) ? "warmer" : "cooler");
+        snprintf(msg, sizeof msg, "protected; rest %s (L%.0fv%.0f) -> %s",
+                 (c.restL > c.subjL) ? "brighter" : "darker", c.restL, c.subjL, ctl);
     } else {
-        snprintf(msg, sizeof msg, "%s %s (L%.0fv%.0f) -> %s; %s (b%.0fv%.0f) -> %s",
-                 oga::region_name(c.subject), (c.subjL > c.restL) ? "brighter" : "darker",
-                 c.subjL, c.restL, ctl, (c.sign > 0) ? "warm" : "cool",
-                 c.subjB, c.restB, (c.sign > 0) ? "warmer" : "cooler");
+        snprintf(msg, sizeof msg, "%s (L%.0fv%.0f) -> %s; %s (b%.0fv%.0f)",
+                 (c.subjL > c.restL) ? "brighter" : "darker", c.subjL, c.restL, ctl,
+                 (c.sign > 0) ? "warm" : "cool", c.subjB, c.restB);
     }
     m_MagicWhy->setValue(msg);
     setEnabledness();
