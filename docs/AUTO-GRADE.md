@@ -294,11 +294,48 @@ values rather than pixels.
 
 ### Descriptors
 
-Twelve numbers, in CIELAB rather than HSV — `b*` **is** the warm/cool axis and `a*` **is**
+Thirteen numbers, in CIELAB rather than HSV — `b*` **is** the warm/cool axis and `a*` **is**
 green/magenta, which lines them up one-for-one with the Temp and Tint controls and keeps the
-Jacobian well conditioned instead of smearing one control across several rows. Two dominant
-colour populations are found by PCA-seeded 2-means in `(a*, b*)`, so `sep` says whether the
-frame's subjects are sharing a colour.
+Jacobian well conditioned instead of smearing one control across several rows.
+
+**Signed axes steer. Magnitudes do not.** Measured on the beach sunset, neutral → grade,
+linear prediction against measurement:
+
+| descriptor | kind | error |
+|---|---|---|
+| `b*` | signed axis | **5%** |
+| `C*` | magnitude, `√(a²+b²)` | 37–57% |
+| `sep` | distance between centroids | **wrong sign** (+1.1 predicted, −3.8 measured) |
+
+A distance is a positive quantity built from squares, so a linear model cannot express "apart
+in `a`" cancelling "together in `b`". `C*` and `sep` are therefore **report-only** — they
+measure honestly and only fail as solve targets. `kSteerableDescN` makes that structural, and
+test 24 pins it so a future edit can't let a distance back into a solve.
+
+### The separation triple
+
+The user's definition of what makes a frame dynamic: *"push those objects to be more separated
+from others of a different **hue or tone level**."* Two axes. The original `sep` was a distance
+in `(a*, b*)` — hue and chroma only, with **no tone axis in it at all**.
+
+It is now the three signed components of the Lab difference between the frame's two regions:
+
+- **`dL*`** — tone separation
+- **`da*` / `db*`** — hue separation
+
+Band means are taken in `L*` rather than display luma so all three live in one space and are
+comparable with each other.
+
+**Regions are the top and bottom third, and that is a stand-in.** It works on landscape footage
+because a landscape separates its objects by height — `db*` came back **+43** and found
+sky-over-water cleanly, where PCA-seeded 2-means in `(a*, b*)` returned two populations *both*
+at orange (h29 and h44). It fails the moment the subjects aren't stacked vertically: two people
+side by side, a car against a wall, a face against a window.
+
+**This is the seam where segmentation plugs in.** Supplying real region masks changes nothing
+else in this file, because the descriptors only ever ask for *region A minus region B*. It is
+also the first concrete argument for a classifier in this project — not for exposure, which the
+numbers already handle, but for **region identity**.
 
 **Membership is fixed at neutral, and this is the whole ballgame.** The mid-tone window, the
 skin mask, and which cluster a pixel belongs to are decided **once**, by `classify()`, from

@@ -192,3 +192,33 @@ Carried from `CLAUDE.md`, kept here so there is one place to look:
   approximate values, flagged for on-footage checking.
 - **HDR tone-map** — HLG/PQ input is currently a normalize, not a tone-map, so highlights
   can clip. A real shoulder is future work.
+
+---
+
+## Separation slider (user's idea, 2026-08-06)
+
+A taste knob that adds or reduces **separation** — the thing the user identified as what makes
+a frame read as dynamic: *"not just increasing contrast in the normal sense, but seeing what's
+in the frame and making choices that push those objects to be more separated from others of a
+different hue or tone level."*
+
+**Most of the machinery already exists.** `docs/AUTO-GRADE.md` §9:
+
+- `describe()` measures the separation triple (`dL*`, `da*`, `db*`) — signed, so solvable
+- `jacobian()` measures how each control moves them **on this shot**
+- `solve_intent_iter()` lands a target rather than undershooting it
+
+So the slider is: *raise the triple by N units* → solve → write ordinary slider values. Same
+shape as Bias (a taste knob offsetting from an anchor), but **shot-adaptive** instead of fixed
+coefficients — Bias multiplies constants, this one asks the footage what it takes.
+
+**Its real value is as a fitting tool, which is the user's own point.** Drag it on real footage,
+find where it looks right, and that number becomes the constant — the same loop that produced
+every fit in this project. There is no way to guess the right amount of separation from first
+principles, and no ground truth for it yet beyond a single hand grade.
+
+**Blocked on nothing technical.** The open question is what it should move when the regions are
+wrong — top/bottom thirds are a stand-in that only holds for landscape-shaped frames, so on a
+shot where the subjects aren't stacked vertically the slider would push apart two things that
+aren't the subjects. Either ship it with that caveat and let the panel show the regions it
+found, or wait for real region masks.
