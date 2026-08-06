@@ -431,7 +431,10 @@ public:
     // fetchImage. ~40k samples is about half a megabyte, the same order as the percentile
     // buffers probeAnalyze already allocates and throws away.
     oga::SampleSet m_LastSamples;
-    std::vector<unsigned char> m_LastThumb;   // 512x512 RGB8, display-referred, top-down
+    std::vector<float> m_LastThumbSrc;   // 512x512 RGB, SOURCE values, top-down
+    // Render the stored source thumbnail through a parameter set. The model wants a
+    // normally exposed picture, so callers pass the grade that is actually in effect.
+    void renderThumb(const float* P, std::vector<unsigned char>& out) const;
     int         m_LastCam = 0;      // the camera/encode the samples were classified under:
     int         m_LastEnc = 1;      // re-solving in a different space would be meaningless
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
@@ -948,21 +951,27 @@ void OneGrade::probeAnalyze(double p_Time)
         //
         // Rows are written TOP-DOWN because that is what a picture is; OFX hands them over
         // bottom-up, so the source row is mirrored.
+        //
+        // STORED AS SOURCE, RENDERED LATER. The first version baked a NEUTRAL render in here,
+        // and that is the wrong picture to hand a segmentation model: a flat PQ-decoded log
+        // frame looks nothing like the photographs it was trained on. Magic Grade applies
+        // Creative Grade before it segments, so the model should see THAT -- a normally exposed
+        // image -- which is also what every frame in the offline validation set was.
+        //
+        // Keeping the source and rendering on demand is what makes both possible: this row
+        // stays grade-independent like every other measurement, and the caller renders it
+        // through whatever parameters are actually in effect when it needs a picture.
         {
             const int T = 512;
-            m_LastThumb.assign((size_t)T * T * 3, 0);
+            m_LastThumbSrc.assign((size_t)T * T * 3, 0.f);
             for (int ty = 0; ty < T; ++ty) {
-                const int sy = b.y2 - 1 - (int)(((long long)ty * h) / T);   // flip
+                const int sy = b.y2 - 1 - (int)(((long long)ty * h) / T);   // flip to top-down
                 const float* row = static_cast<const float*>(src->getPixelAddress(b.x1, sy));
                 if (!row) continue;
                 for (int tx = 0; tx < T; ++tx) {
                     const float* q = row + (size_t)(((long long)tx * w) / T) * 4;
-                    float dr, dg, db;
-                    og::process(camera, dispEnc, neutral, q[0], q[1], q[2], dr, dg, db);
-                    unsigned char* o = &m_LastThumb[((size_t)ty * T + tx) * 3];
-                    o[0] = (unsigned char)(og::clamp01(dr) * 255.f + 0.5f);
-                    o[1] = (unsigned char)(og::clamp01(dg) * 255.f + 0.5f);
-                    o[2] = (unsigned char)(og::clamp01(db) * 255.f + 0.5f);
+                    float* o = &m_LastThumbSrc[((size_t)ty * T + tx) * 3];
+                    o[0] = q[0]; o[1] = q[1]; o[2] = q[2];
                 }
             }
         }
@@ -1625,9 +1634,23 @@ void OneGrade::applyMagicGrade(double p_Time)
     }
     const char* src = "heuristic";
     bool got = false;
-    if (s_seg.ready() && m_LastThumb.size() == (size_t)512 * 512 * 3) {
+    if (s_seg.ready() && m_LastThumbSrc.size() == (size_t)512 * 512 * 3) {
+        // Segment the picture as CREATIVE GRADE LEFT IT, not a neutral render. applyAutoGrade
+        // has already run, so these are the parameters actually in effect, and the result is a
+        // normally exposed image -- which is what the model was trained on and what every frame
+        // in the offline validation set was.
+        float Pg[oga::kParamN];
+        Pg[0]  = (float)m_Temp->getValue();     Pg[1]  = (float)m_Tint->getValue();
+        Pg[2]  = (float)m_Density->getValue();  Pg[3]  = (float)m_Lift->getValue();
+        Pg[4]  = (float)m_Gamma->getValue();    Pg[5]  = (float)m_Gain->getValue();
+        Pg[6]  = (float)m_OffTemp->getValue();  Pg[7]  = (float)m_OffTint->getValue();
+        Pg[8]  = (float)m_PostExp->getValue();  Pg[9]  = (float)m_PostCon->getValue();
+        Pg[10] = (float)m_RawExp->getValue();   Pg[11] = (float)m_RawTemp->getValue();
+        Pg[12] = (float)m_Rolloff->getValue();
+        std::vector<unsigned char> thumb;
+        renderThumb(Pg, thumb);
         std::vector<unsigned char> mask; int mw = 0, mh = 0;
-        if (s_seg.run(m_LastThumb.data(), 512, 512, mask, mw, mh) &&
+        if (s_seg.run(thumb.data(), 512, 512, mask, mw, mh) &&
             oga::assign_regions(S, mask, mw, mh)) {
             got = true;
             src = "model";
@@ -1746,6 +1769,24 @@ void OneGrade::applySeparation()
     m_MagicSepAt->getValue(sepAt);
     const double v = std::min(1.0, std::max(-1.0, anchor + base * (sep - sepAt)));
     if (which == 6) m_OffTemp->setValue(v); else m_Temp->setValue(v);
+}
+
+void OneGrade::renderThumb(const float* P, std::vector<unsigned char>& out) const
+{
+    const size_t n = m_LastThumbSrc.size() / 3;
+    out.assign(n * 3, 0);
+    for (size_t i = 0; i < n; ++i) {
+        float r, g, b;
+        og::process(m_LastCam, m_LastEnc, P,
+                    m_LastThumbSrc[i*3], m_LastThumbSrc[i*3+1], m_LastThumbSrc[i*3+2], r, g, b);
+        og::apply_trim(P[8], P[9], r, g, b);
+        if (P[12] > 0.f && m_LastEnc <= 2) {
+            r = og::softclip(r, P[12]); g = og::softclip(g, P[12]); b = og::softclip(b, P[12]);
+        }
+        out[i*3+0] = (unsigned char)(og::clamp01(r) * 255.f + 0.5f);
+        out[i*3+1] = (unsigned char)(og::clamp01(g) * 255.f + 0.5f);
+        out[i*3+2] = (unsigned char)(og::clamp01(b) * 255.f + 0.5f);
+    }
 }
 
 void OneGrade::setEnabledness()
