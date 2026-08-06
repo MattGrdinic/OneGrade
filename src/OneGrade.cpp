@@ -1671,8 +1671,29 @@ void OneGrade::applyMagicGrade(double p_Time)
     int cycle = 0; m_MagicCycle->getValue(cycle);
     const oga::MagicChoice c = oga::magic_decide(st, cycle);
     if (!c.ok) {
+        // SAY WHAT WAS ACTUALLY FOUND. "No subject to separate" is true and useless: it cannot
+        // be argued with, and it gives no way to tell a correct decline on a genuinely flat
+        // frame from a bad segmentation on a frame that plainly has two halves. Both look
+        // identical from the outside, and the difference is the entire question.
+        //
+        // The coverage list makes the decline falsifiable. A frame reading BUILT 96% / GROUND 3%
+        // really is one region and the answer is right; one reading BUILT 52% / OTHER 44% is the
+        // model failing, and that is worth knowing without a debug build.
+        int order[oga::kRegionN];
+        for (int i = 0; i < oga::kRegionN; ++i) order[i] = i;
+        std::sort(order, order + oga::kRegionN,
+                  [&](int a, int b) { return st[a].cover > st[b].cover; });
+        char cov[160]; int off = 0;
+        for (int i = 0; i < 3 && off < (int)sizeof cov - 1; ++i) {
+            if (st[order[i]].cover < 0.5f) break;
+            off += snprintf(cov + off, sizeof cov - off, "%s%s %.0f%%", i ? " " : "",
+                            oga::region_name(order[i]), st[order[i]].cover);
+        }
         m_MagicNote->setValue("No subject to separate - this is Creative Grade");
-        m_MagicWhy->setValue("one flat region, or one subject filling the frame");
+        char why[160];
+        snprintf(why, sizeof why, "%s - need 2 over %d%% [%s]",
+                 off ? cov : "nothing found", oga::kMagicMinCover, src);
+        m_MagicWhy->setValue(why);
         m_MagicParam->setValue(-1);
         m_MagicBase->setValue(0.0);
         return;
