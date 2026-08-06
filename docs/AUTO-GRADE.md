@@ -239,13 +239,17 @@ is *tuning* the thing, not to whoever is using it.
 
 ### Turning the analysis UI back on
 
-The debug surface — the **Show analysis** checkbox, the **Analyze Frame** button, the six
+The debug surface — the **Show analysis** checkbox, the **Analyze Frame** button, the nine
 measurement rows and the **Applied** readout — is hidden behind a compile-time switch in
 `src/OneGrade.cpp`:
 
 ```c
 static const bool kAnalysisDebugUI = false;   // -> true, rebuild
 ```
+
+> **On the `feat/scene-descriptors` branch this is currently `true`**, because the Colour /
+> Regions / Response rows exist to be read on footage. It must go back to `false` before the
+> branch merges into a release.
 
 Flip it, rebuild, and the checkbox reappears and toggles the rest at runtime. The params
 always exist and always work; only their visibility changes, so saved projects and the
@@ -265,7 +269,76 @@ them.
 | **Peak** | p99.9 and how far it runs past p99. |
 | **Shape** | `hot` (above display white), `pin %@ceiling` (clipped at source), mid-tone saturation. |
 | **Subject** | skin coverage %, skin-masked key, skin `R/G` and `B/G`. High coverage means the mask matched the scene, not a face. |
+| **Colour** | mid-tone `a*` / `b*` / `C`, and `sep` — how far apart the two dominant colour populations sit. |
+| **Regions** | the two populations (share + hue, cooler first) and `db*`, how much warmer the top third is than the bottom. |
+| **Response** | measured Jacobian rows: how far `b*` moves per nudge of each balance control on *this* shot. |
 | **Applied** | what Auto Grade last wrote and the measurement behind it. |
 
 **Analyze Frame** only measures and reports; it never changes the picture. Only **Auto
 Grade** writes values.
+
+---
+
+## 9. Scene descriptors and the control Jacobian
+
+Everything above answers *how is this frame exposed*. `src/OneGradeAnalysis.h` answers **what
+colour is it, and what would each control do about that** — the half that was missing when a
+sunset-over-ocean grade reached for **Offset Temp** to separate water from sky and no measured
+number could have asked for it.
+
+It is a separate header in its own namespace (`og::analysis`, aliased `oga`) because **it is
+not part of the golden rule**. `OneGradePipeline.h` is the single source of truth that the
+three GPU kernels mirror; nothing here is mirrored and nothing here may be called from a
+kernel. It runs once per button press, on the CPU, over ~40k samples, and produces parameter
+values rather than pixels.
+
+### Descriptors
+
+Twelve numbers, in CIELAB rather than HSV — `b*` **is** the warm/cool axis and `a*` **is**
+green/magenta, which lines them up one-for-one with the Temp and Tint controls and keeps the
+Jacobian well conditioned instead of smearing one control across several rows. Two dominant
+colour populations are found by PCA-seeded 2-means in `(a*, b*)`, so `sep` says whether the
+frame's subjects are sharing a colour.
+
+**Membership is fixed at neutral, and this is the whole ballgame.** The mid-tone window, the
+skin mask, and which cluster a pixel belongs to are decided **once**, by `classify()`, from
+the ungraded render. `describe()` only ever recomputes statistics over those fixed masks.
+This is the same trap the skin mask already fell into once — a selection rule that constrains
+the quantity being measured describes the filter, not the footage. If the mid-tone window
+were re-selected after every perturbation, "the mids got brighter" would be unmeasurable by
+construction, because the window would slide along with them. Cluster membership is a
+property of the *footage*; the grade is what gets differentiated.
+
+### The Jacobian
+
+**We do not write down what the controls mean.** `jacobian()` perturbs each control by one
+natural step, central-differenced, and measures which descriptors moved. That the system
+knows negative Offset Temp adds blue is a *measurement*, not a table — so it cannot drift when
+the pipeline changes (same reasoning as `og_solve()` using bisection over a closed form), it
+is testable, and it is shot-dependent for free.
+
+`solve_intent()` inverts it by damped least squares. The damping earns its place: twelve
+descriptors against thirteen controls, several nearly redundant (Gain and Post Exposure both
+raise the midtone), so an undamped solve finds an enormous cancelling pair that is correct to
+first order and absurd on the picture. Damping buys the *smallest* move that gets close —
+which is also the one a colourist would make.
+
+Verified in `test/pipeline_test.cpp` (tests 15–21): the error falls ~4× per halving of the
+move, which is the signature of a real derivative rather than a plausible-looking table.
+
+### Two controls are not differentiable at their defaults
+
+Both were found *by* the Jacobian, not looked for, and both are properties of the shipping
+pipeline. `steer_mask()` excludes them.
+
+| Control | What happens |
+|---|---|
+| **Highlight Rolloff** at 0 | `softclip()` early-outs at `amt <= 0` but asymptotes hard at 1.0 for any `amt > 0`. `softclip(1.26)` goes **1.26 → 1.00000** between `amt` 0 and 0.0001; measured mean overshoot goes 0.031 → 0.000 across the same gap. The control has two regimes — *is there a ceiling at all* (a step at 0) and *how far down does the knee reach* (the rest, smooth). |
+| **RAW Temperature** at 6500 K | `white_balance()` forces identity on `6499 < T < 6501`, but the Kim et al. **Planckian** locus at 6500 K is (0.31349, 0.32366) while D65 is (0.31270, 0.32900) — `dy = -0.0053`, because D65 is a *daylight* illuminant and sits above the blackbody locus. The skipped adaptation is therefore not an identity, and stepping 1 K off the default jumps a neutral mid-gray by `a* +2.06`: rgb `0.55397 0.55397 0.55397` → `0.54311 0.55807 0.54535`. A green cast appears out of nowhere on the first nudge. |
+
+The rolloff behaviour may well be intended — it is a soft clip *to* 1.0 by definition. The RAW
+Temp one looks like a plain defect: adapting to `blackbody(6500)` instead of to D65 would make
+the stated "identity at 6500 K" contract true by construction and remove the early-out
+entirely. **That is a colour-math change and therefore a four-file kernel edit**, and it moves
+every saved grade with RAW Temp ≠ 6500, so it is a deliberate decision rather than a fix to
+slip in. Test 20 pins both, so if either is ever changed that test fails first and says so.

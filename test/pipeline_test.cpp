@@ -3,8 +3,10 @@
 // Copyright (C) 2026 Matthew Grdinic
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../src/OneGradePipeline.h"
+#include "../src/OneGradeAnalysis.h"
 #include <cstdio>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <array>
@@ -21,6 +23,46 @@ static bool finite3(float r, float g, float b) { return std::isfinite(r) && std:
 static void neutral(float P[12]) { for (int i=0;i<12;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
 // Full 13-wide vector (adds P[12] rolloff) for tests that chain whole nodes together.
 static void neutral13(float P[13]) { for (int i=0;i<13;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
+
+// ---- synthetic frames for the scene-descriptor / Jacobian tests (OneGradeAnalysis.h) ----
+// Deterministic noise, so percentiles are non-degenerate but every run is identical.
+static uint32_t g_seed = 12345u;
+static float srnd() { g_seed = g_seed*1664525u + 1013904223u; return (float)(g_seed >> 8) / (float)(1u<<24); }
+
+// kind 0: two-tone "sunset over water" — warm bright top third over a cooler bottom.
+// kind 1: achromatic, for the control case where the two populations should collapse.
+// kind 2: two-tone with a skin-hued patch, to exercise the masked descriptors. The patch
+//         value renders to display h 0.051 / s 0.395, mid-window in both.
+static oga::SampleSet make_frame(int kind, int W = 64, int H = 64)
+{
+    oga::SampleSet S; g_seed = 12345u;
+    S.rgb.reserve((size_t)W*H*3); S.band.reserve((size_t)W*H);
+    for (int y = 0; y < H; ++y) {
+        const uint8_t band = (uint8_t)std::min(2, (y * 3) / H);   // OFX is bottom-up: 2 = top
+        for (int x = 0; x < W; ++x) {
+            float r, g, b;
+            const bool face = (kind == 2) && (x > 20 && x < 44 && y > 8 && y < 32);
+            if (face)              { r = 0.460f; g = 0.420f; b = 0.384f; }   // skin
+            else if (kind == 1)    { r = 0.440f; g = 0.440f; b = 0.440f; }   // achromatic
+            else if (band == 2)    { r = 0.560f; g = 0.480f; b = 0.380f; }   // warm sky
+            else                   { r = 0.380f; g = 0.390f; b = 0.430f; }   // cool water
+            const float n = (srnd() - 0.5f) * 0.10f;
+            S.rgb.push_back(r+n); S.rgb.push_back(g+n); S.rgb.push_back(b+n);
+            S.band.push_back(band);
+        }
+    }
+    return S;
+}
+// Each descriptor's natural scale: the largest one-step response in its own row. Judging a
+// prediction against this rather than against the size of the move is what keeps a 0.0003
+// wobble in a quantity whose value is 78 from being reported as a modelling failure.
+static void desc_scales(const oga::Jac& J, float* out) {
+    for (int d = 0; d < oga::kDescN; ++d) {
+        float mx = 0.f;
+        for (int p = 0; p < oga::kParamN; ++p) mx = std::max(mx, std::fabs(J.at(d, p)));
+        out[d] = std::max(mx, 1e-4f);
+    }
+}
 
 int main() {
     printf("OneGrade pipeline tests\n");
@@ -321,6 +363,212 @@ int main() {
             }
         }
         check(ok, "Clean auto grade: lgg_core on a display percentile predicts the render");
+    }
+
+    // =====================================================================================
+    // SCENE DESCRIPTORS + THE CONTROL JACOBIAN (OneGradeAnalysis.h)
+    // =====================================================================================
+
+    // 15. The descriptors describe the FOOTAGE: a warm-over-cool frame separates into two
+    //     populations, an achromatic one does not. If clustering ever silently degenerates to
+    //     one population (or splits noise), every colour heuristic built on `sep` is nonsense
+    //     and nothing else would notice.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+
+        oga::SampleSet two = make_frame(0);
+        oga::Extras e2 = oga::classify(two, cam, enc);
+        oga::Desc d2 = oga::describe(two, cam, enc, P0);
+
+        oga::SampleSet flat = make_frame(1);
+        oga::Extras ef = oga::classify(flat, cam, enc);
+        oga::Desc df = oga::describe(flat, cam, enc, P0);
+
+        const bool ok =
+            d2.v[oga::D_SEP] > 20.f &&        // two genuinely distinct colour populations
+            df.v[oga::D_SEP] < 1.f  &&        // achromatic frame: nothing to separate
+            d2.v[oga::D_DB]  > 10.f &&        // top band is the warm one
+            d2.v[oga::D_DL]  > 0.f  &&        // ...and the brighter one
+            e2.share[0] > 15.f && e2.share[1] > 15.f &&   // neither population is a rounding error
+            ef.share[0] > 15.f && ef.share[1] > 15.f &&
+            std::fabs(df.v[oga::D_DB]) < 1.f;
+        check(ok, "descriptors: two-tone frame splits into two populations, achromatic does not");
+    }
+
+    // 16. The Jacobian recovers what each control MEANS, without anyone writing it down.
+    //     This is the whole point of measuring the controls instead of describing them: the
+    //     system is never told that negative Offset Temp adds blue, it perturbs the control
+    //     and observes b* fall. Signs are checked against the physics, so a sign flip
+    //     anywhere in the pipeline shows up here as a control that now means its opposite.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+
+        const bool ok =
+            J.at(oga::D_B, 6)      > 0.2f &&   // Offset Temp up  -> warmer (b* up)
+            J.at(oga::D_B, 0)      > 0.1f &&   // Balance Temp up -> warmer
+            J.at(oga::D_B, 11)     > 0.1f &&   // RAW Temp up     -> warmer
+            J.at(oga::D_A, 7)      < -0.2f &&  // Offset Tint up  -> greener (a* down)
+            J.at(oga::D_CHROMA, 2) > 0.2f &&   // Density up      -> more colourful
+            J.at(oga::D_MID, 5)    > 0.f &&    // Gain up         -> brighter midtone
+            J.at(oga::D_WHITE, 5)  > J.at(oga::D_MID, 5) &&  // ...and the top moves most (pivots black)
+            J.at(oga::D_BLACK, 3)  > 0.f &&    // Lift up         -> floor rises
+            J.at(oga::D_MID, 8)    > 0.f &&    // Post Exposure up-> brighter
+            J.at(oga::D_WHITE, 12) < 0.f;      // Rolloff up      -> top pulled down
+        check(ok, "Jacobian recovers the meaning of each control from measurement alone");
+    }
+
+    // 17. It is a real derivative, not a plausible-looking table: halve the move and the
+    //     linear prediction error should fall roughly fourfold. A forward difference, a wrong
+    //     step size, or a descriptor whose mask moves with the grade would all break the rate
+    //     while still producing numbers that look reasonable in isolation.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+
+        bool ok = true;
+        for (int p : {2, 5, 6, 9}) {          // density, gain, offset temp, contrast
+            double prev = 0.0;
+            for (float mag : {0.8f, 0.4f, 0.2f}) {
+                float dp[13] = {0}; dp[p] = mag;
+                float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
+                float P1[13]; oga::apply_move(P0, dp, P1);
+                oga::Desc d1 = oga::describe(S, cam, enc, P1);
+                double e = 0.0;
+                for (int d = 0; d < oga::kDescN; ++d)
+                    e = std::max(e, (double)std::fabs(pred[d] - (d1.v[d] - d0.v[d])));
+                if (prev > 1e-5) ok &= (e < prev / 3.0);   // quadratic would give 4x; allow slack
+                prev = e;
+            }
+        }
+        check(ok, "Jacobian converges quadratically (it is a derivative, not a lookup table)");
+    }
+
+    // 18. Prediction accuracy at a realistic move, over the STEERABLE controls only.
+    //     Rolloff and (at its default) RAW Temp are excluded by steer_mask because both are
+    //     discontinuous there — see the header. Test 20 pins that discontinuity separately so
+    //     the exclusion stays honest rather than becoming a way to hide a bad column.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+        float scale[oga::kDescN]; desc_scales(J, scale);
+        bool allow[13]; oga::steer_mask(P0, allow);
+
+        double worst = 0.0;
+        for (int p = 0; p < 13; ++p) {
+            if (!allow[p]) continue;
+            for (float mag : {-0.5f, 0.5f}) {
+                float dp[13] = {0}; dp[p] = mag;
+                float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
+                float P1[13]; oga::apply_move(P0, dp, P1);
+                oga::Desc d1 = oga::describe(S, cam, enc, P1);
+                for (int d = 0; d < oga::kDescN; ++d)
+                    worst = std::max(worst, (double)std::fabs(pred[d] - (d1.v[d]-d0.v[d]))
+                                            / (scale[d] * std::fabs(mag)));
+            }
+        }
+        check(worst < 0.35, "Jacobian predicts a half-step move to within a third of one step");
+    }
+
+    // 19. THE INVERSE — the reason any of this exists. "Make it bluer" is an intent expressed
+    //     in the descriptor the user's own grade moved (b*), and the solver has to come back
+    //     with the slider a colourist would have reached for. Nothing anywhere tells it that
+    //     Offset Temp is the warm/cool control; it falls out of the measured Jacobian.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+
+        // (a) single intent, single control
+        float dd[oga::kDescN] = {0}, w[oga::kDescN] = {0};
+        dd[oga::D_B] = -3.0f; w[oga::D_B] = 1.0f;
+        bool allow[13] = {false}; allow[6] = true;
+        float dp[13]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp);
+        float P1[13]; oga::apply_move(P0, dp, P1);
+        oga::Desc d1 = oga::describe(S, cam, enc, P1);
+        const float got = d1.v[oga::D_B] - d0.v[oga::D_B];
+
+        bool ok = (P1[6] < 0.f)                    // it reached for NEGATIVE Offset Temp
+               && (std::fabs(got - (-3.0f)) < 0.3f);  // and landed within 10% of the ask
+        for (int i = 0; i < 13; ++i) if (!allow[i]) ok &= close(P1[i], P0[i], 1e-6f);
+
+        // (b) two intents, two controls — the case a real Magic Grade rule would produce
+        float dd2[oga::kDescN] = {0}, w2[oga::kDescN] = {0};
+        dd2[oga::D_B] = -3.0f;      w2[oga::D_B] = 1.0f;
+        dd2[oga::D_CHROMA] = 2.0f;  w2[oga::D_CHROMA] = 1.0f;
+        bool allow2[13] = {false}; allow2[6] = true; allow2[2] = true;
+        float dp2[13]; oga::solve_intent(J, dd2, w2, allow2, 1e-4f, dp2);
+        float P2[13]; oga::apply_move(P0, dp2, P2);
+        oga::Desc d2 = oga::describe(S, cam, enc, P2);
+        ok &= std::fabs((d2.v[oga::D_B]      - d0.v[oga::D_B])      - (-3.0f)) < 0.3f;
+        ok &= std::fabs((d2.v[oga::D_CHROMA] - d0.v[oga::D_CHROMA]) - ( 2.0f)) < 0.2f;
+        ok &= (P2[6] < 0.f) && (P2[2] > 0.f);      // cooler balance, more density
+        for (int i = 0; i < 13; ++i) if (!allow2[i]) ok &= close(P2[i], P0[i], 1e-6f);
+
+        check(ok, "intent solve: 'bluer' resolves to negative Offset Temp and lands the target");
+    }
+
+    // 20. The two discontinuities steer_mask() exists to dodge, pinned so they cannot quietly
+    //     change. Both are properties of the shipping pipeline, found by the Jacobian rather
+    //     than looked for. If either is ever fixed, THIS test fails first and says so — at
+    //     which point the control becomes steerable and should be let back into the mask.
+    {
+        // Rolloff: softclip asymptotes hard at 1.0 for any amt > 0, so the first nudge off
+        // zero is a step, not a ramp.
+        const float a = og::softclip(1.26f, 0.0f);
+        const float b = og::softclip(1.26f, 0.0001f);
+        bool ok = close(a, 1.26f, 1e-5f) && close(b, 1.0f, 1e-4f);
+
+        // RAW Temp: white_balance() forces identity on 6499 < T < 6501, but the Planckian
+        // locus at 6500 K is not D65 (dy = -0.0053), so the skipped adaptation is not an
+        // identity and a neutral grey jumps when the slider leaves its default.
+        float P[13]; neutral13(P);
+        float r0,g0,b0, r1,g1,b1;
+        og::process(11, 1, P, 0.45f, 0.45f, 0.45f, r0, g0, b0);
+        P[11] = 6501.f;
+        og::process(11, 1, P, 0.45f, 0.45f, 0.45f, r1, g1, b1);
+        ok &= close(r0, g0, 1e-6f) && close(g0, b0, 1e-6f);   // exactly neutral at 6500
+        ok &= (std::fabs(g1 - r1) > 0.008f);                  // ...and not at 6501
+        check(ok, "known discontinuities pinned: Rolloff at 0, RAW Temp at 6500 K");
+    }
+
+    // 21. The masked descriptors are gated on coverage. A skin number taken off forty pixels
+    //     is noise, and a solver that weighted it would be steering on nothing — so they read
+    //     exactly zero until the mask finds enough to trust, which is also how a caller knows
+    //     not to weight them.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+
+        oga::SampleSet withSkin = make_frame(2);
+        oga::Extras es = oga::classify(withSkin, cam, enc);
+        oga::Desc ds = oga::describe(withSkin, cam, enc, P0);
+
+        oga::SampleSet noSkin = make_frame(1);
+        oga::Extras en = oga::classify(noSkin, cam, enc);
+        oga::Desc dn = oga::describe(noSkin, cam, enc, P0);
+
+        const bool ok =
+            es.skinOk && es.skinPct > 5.f &&
+            ds.v[oga::D_SKINL] > 0.f && std::fabs(ds.v[oga::D_SKINB]) > 1.f &&
+            !en.skinOk && en.skinPct < 1.f &&
+            close(dn.v[oga::D_SKINL], 0.f, 1e-6f) && close(dn.v[oga::D_SKINB], 0.f, 1e-6f);
+        check(ok, "skin descriptors activate on coverage and read zero without it");
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");

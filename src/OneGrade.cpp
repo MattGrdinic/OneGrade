@@ -5,6 +5,7 @@
 #include "OneGrade.h"
 #include "ofxColour.h"   // OFX 1.5 colour management properties (read-only probe)
 #include "OneGradePipeline.h"
+#include "OneGradeAnalysis.h"   // CPU-only scene descriptors + control Jacobian (NOT mirrored)
 #include "CubeLUT.h"
 
 #include <cstdio>
@@ -45,16 +46,18 @@
 #define kSupportsMultipleClipPARs   false
 
 // Master switch for the Auto Grade analysis UI. While false the whole debug surface is
-// hidden — the "Show analysis" checkbox, the Analyze Frame button, the six measurement rows
+// hidden — the "Show analysis" checkbox, the Analyze Frame button, the nine measurement rows
 // and the Applied readout — leaving just Auto Grade and Bias, which is all a colorist needs.
 // The params still exist and still work; only their visibility is off, so nothing about
 // saved projects or the measurement itself depends on this.
 //
-// FUTURE WORK: flip this to true and rebuild to get the debug panel back. The checkbox
-// reappears and toggles the rest at runtime, which is the mode to be in when fitting new
-// constants or working out why a shot analysed oddly — the numbers are how every one of the
-// current fits was found. See docs/AUTO-GRADE.md.
-static const bool kAnalysisDebugUI = false;
+// *** CURRENTLY TRUE, AND MUST GO BACK TO FALSE BEFORE THIS SHIPS. ***
+// Flipped on the scene-descriptor branch because that work exists to be READ on footage: the
+// Colour / Regions / Response rows are how a colour rule for Magic Grade gets fitted, the same
+// way the Gain and Rolloff rows produced their fits, and a measurement nobody can see is worth
+// nothing. Revert to false when merging into the release branch. One character, no other
+// consequence — the params are unaffected either way. See docs/AUTO-GRADE.md.
+static const bool kAnalysisDebugUI = true;
 
 #define kParamCount 13 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff
 
@@ -394,6 +397,15 @@ public:
     double m_LastD50 = 0.0;
     double m_LastD99 = 0.0;
     bool   m_HaveKey = false;
+    // Scene descriptors and the control Jacobian from the last analyse. Cached for the same
+    // reason the percentiles are: a colour heuristic has to ask "how much Offset Temp buys me
+    // 3 units of b* ON THIS SHOT", and re-measuring per question would make it unusable.
+    // Instance state, so it goes inert after a project reload exactly like the Bias anchor did
+    // before it was made persistent — deliberately inert rather than acting on a stale frame.
+    oga::Desc   m_LastDesc{};
+    oga::Jac    m_LastJac{};
+    oga::Extras m_LastExtras{};
+    bool        m_HaveJac = false;
     void populateLookLut();     // repopulate the Look LUT dropdown for the current group
     void applyPreset(int p);    // set the look params (density/LGG/LUT/trim) to a starting point
     void setupAndProcess(OneGradeProcessor& p_Proc, const OFX::RenderArguments& p_Args);
@@ -469,6 +481,9 @@ private:
     OFX::DoubleParam* m_CleanMaxExp;   // ceiling on how far Base may brighten, in stops
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
+    OFX::StringParam* m_ProbeColour;    // a*/b*/chroma/separation
+    OFX::StringParam* m_ProbeRegions;   // the two colour populations + the vertical split
+    OFX::StringParam* m_ProbeResponse;  // what the controls DO on this shot (Jacobian rows)
 
     // Setup check — see probeSetup().
     OFX::PushButtonParam* m_SetupBtn;
@@ -542,6 +557,9 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_CleanMaxExp   = fetchDoubleParam("cleanMaxExp");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
+    m_ProbeColour   = fetchStringParam("probeColour");
+    m_ProbeRegions  = fetchStringParam("probeRegions");
+    m_ProbeResponse = fetchStringParam("probeResponse");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
     m_SetupStatus = fetchStringParam("setupStatus");
     m_SetupStats  = fetchStringParam("setupStats");
@@ -714,6 +732,10 @@ void OneGrade::probeAnalyze(double p_Time)
     m_ProbeShape->setValue("");
     m_ProbeSubject->setValue("");
     m_ProbePeak->setValue("");
+    m_ProbeColour->setValue("");
+    m_ProbeRegions->setValue("");
+    m_ProbeResponse->setValue("");
+    m_HaveJac = false;
     if (!m_SrcClip || !m_SrcClip->isConnected()) { m_ProbeStatus->setValue("No source clip connected"); return; }
 
     try {
@@ -771,6 +793,17 @@ void OneGrade::probeAnalyze(double p_Time)
         double satSum = 0.0; long long satN = 0;
         bool anyNonZero = false;
 
+        // Scene-descriptor set (OneGradeAnalysis.h). Thinner than the percentile pass because
+        // describe() gets run 27 times to build the Jacobian and the colour statistics are
+        // means and cluster centroids, which converge far faster than a 0.1st percentile does.
+        // Source values only — describe() re-renders them itself for whatever parameters it is
+        // asked about, which is exactly what makes it a function of P rather than a snapshot.
+        oga::SampleSet SS;
+        const long long expect = (long long)((w + step - 1)/step) * (long long)((h + step - 1)/step);
+        const int descStride = (int)std::max(1LL, expect / 40000);
+        long long kept = 0;
+        SS.rgb.reserve(120000); SS.band.reserve(40000);
+
         for (int y = b.y1; y < b.y2; y += step) {
             const float* row = static_cast<const float*>(src->getPixelAddress(b.x1, y));
             if (!row) continue;
@@ -778,6 +811,14 @@ void OneGrade::probeAnalyze(double p_Time)
                 const float* p = row + (size_t)x * 4;
                 if (p[0] != 0.f || p[1] != 0.f || p[2] != 0.f) anyNonZero = true;
                 srcTop.push_back(std::max(p[0], std::max(p[1], p[2])));
+
+                // Vertical band, the one piece of geometry the descriptors need. OFX hands over
+                // bottom-up rows, so the HIGHEST y is the top of the frame and band 2 is sky.
+                if ((kept++ % descStride) == 0) {
+                    SS.rgb.push_back(p[0]); SS.rgb.push_back(p[1]); SS.rgb.push_back(p[2]);
+                    const int bd = (int)(((long long)(y - b.y1) * 3) / h);
+                    SS.band.push_back((uint8_t)std::min(2, std::max(0, bd)));
+                }
 
                 // Scene luminance: decode to camera-linear, then XYZ Y. Neutral scene stage, so no
                 // exposure gain and white_balance() at 6500 is identity — skipped, not
@@ -909,6 +950,44 @@ void OneGrade::probeAnalyze(double p_Time)
             snprintf(m2, sizeof m2, "skin %.1f%% - too few to trust", skinFrac);
         }
         m_ProbeSubject->setValue(m2);
+
+        // ---- SCENE DESCRIPTORS + CONTROL JACOBIAN ----------------------------------------
+        // Everything above answers "how is this frame exposed". This answers "what colour is
+        // it, and what would each control do about that" — the half that was missing when the
+        // user's own sunset grade reached for Offset Temp and no measurement could have asked
+        // for it. Costs 27 more passes over a 40k set on top of the 200k already walked, all
+        // arithmetic, no I/O.
+        if (SS.size() >= 512) {
+            m_LastExtras = oga::classify(SS, camera, dispEnc);
+            float Pn[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+            m_LastDesc = oga::describe(SS, camera, dispEnc, Pn);
+            // The Jacobian runs on a thinned copy that KEEPS the memberships classify() just
+            // assigned — a derivative has to be taken around the same masks the operating
+            // point was measured with.
+            oga::SampleSet J = oga::decimate(SS, 12000);
+            m_LastJac = oga::jacobian(J, camera, dispEnc, Pn);
+            m_HaveJac = true;
+
+            snprintf(m2, sizeof m2, "a*%+.1f b*%+.1f C%.1f sep%.1f",
+                     m_LastDesc.v[oga::D_A], m_LastDesc.v[oga::D_B],
+                     m_LastDesc.v[oga::D_CHROMA], m_LastDesc.v[oga::D_SEP]);
+            m_ProbeColour->setValue(m2);
+
+            snprintf(m2, sizeof m2, "cool %.0f%% h%.0f | warm %.0f%% h%.0f | db*%+.0f",
+                     m_LastExtras.share[0], m_LastExtras.hue[0],
+                     m_LastExtras.share[1], m_LastExtras.hue[1], m_LastDesc.v[oga::D_DB]);
+            m_ProbeRegions->setValue(m2);
+
+            // The row that shows its work: per one natural nudge of each control, how far the
+            // warm/cool axis actually moves ON THIS SHOT. Reading it is how the fit for a
+            // colour rule gets found, the same way the gain/rolloff rows produced theirs.
+            snprintf(m2, sizeof m2, "b*/step oTmp%+.2f tmp%+.2f raw%+.2f C/dens%+.2f",
+                     m_LastJac.at(oga::D_B, 6), m_LastJac.at(oga::D_B, 0),
+                     m_LastJac.at(oga::D_B, 11), m_LastJac.at(oga::D_CHROMA, 2));
+            m_ProbeResponse->setValue(m2);
+        } else {
+            m_ProbeColour->setValue("too few samples for colour analysis");
+        }
     }
     catch (std::exception& e) {
         char m2[96]; snprintf(m2, sizeof m2, "threw: %.60s", e.what());
@@ -1308,6 +1387,9 @@ void OneGrade::setEnabledness()
     m_ProbeShape->setIsSecret(!debug);
     m_ProbeSubject->setIsSecret(!debug);
     m_ProbeStatus->setIsSecret(!debug);
+    m_ProbeColour->setIsSecret(!debug);
+    m_ProbeRegions->setIsSecret(!debug);
+    m_ProbeResponse->setIsSecret(!debug);
     // Containment targets are exposed only in the debug panel: they are how the Clean
     // constants get fitted on footage, and a shipping panel should carry the result, not the
     // dials that produced it.
@@ -1957,6 +2039,12 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
         probeLine("probeApplied", "Applied",
                   "What the Auto Grade button last wrote, and the measurement it came from. Blank until you press it. Analyze Frame never changes anything; only Auto Grade does.");
+        probeLine("probeColour", "Colour",
+                  "The frame's colour, in CIELAB over the mid-tones: a* is green-to-magenta, b* is cool-to-warm, C is overall colourfulness. 'sep' is how far apart the two dominant colour populations sit - a low number on a frame that visibly has two subjects (sky over water, say) means they are sharing a colour and would separate if pushed apart. Lab rather than HSV because b* lines up one-for-one with the Temp controls and a* with the Tint ones, which is what makes the Response row below readable.");
+        probeLine("probeRegions", "Regions",
+                  "The two dominant colour populations found by clustering the frame, cooler one first: what share of the frame each holds and its hue angle in degrees. Then 'db*', how much warmer the top third of the frame is than the bottom third - a large positive number is the signature of a warm sky over a cooler foreground. Membership is decided once, from the ungraded picture, so these describe the footage rather than the grade currently on it.");
+        probeLine("probeResponse", "Response",
+                  "What the controls actually DO on this shot, measured rather than assumed: how far b* (cool-to-warm) moves per nudge of each balance control, and how far colourfulness moves per nudge of Density. This is the plugin working out for itself that negative Offset Temp is what adds blue. It is shot-dependent - the same slider does something different to a saturated sunset than to a snowfield - which is why it is measured on every analyse instead of written down once.");
     }
 
     // ---- 0. Role + Preset ----
