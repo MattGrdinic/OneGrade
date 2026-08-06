@@ -9,3 +9,7 @@ build-cuda/
 
 local
 __pycache__/
+
+# region-mask experiment: model cache and mask previews
+experiments/segmentation/out/
+experiments/segmentation/seg-env/
