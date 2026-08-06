@@ -721,6 +721,48 @@ int main() {
         check(ok, "separation triple registers tone and hue, and vanishes on a flat frame");
     }
 
+    // 26. CREATIVE'S BLACK POINT: solving it is consistent across footage, stamping a fixed
+    //     Lift is not. This is the defect three hand grades kept correcting by hand — the
+    //     preset wrote Lift 0.11 on every shot, which lands wherever the footage's own floor
+    //     happens to put it. Measured: the beach came out ~0.15 and the city 0.161, and both
+    //     were pulled down manually, the user's words for the city and car being that the
+    //     shadows were lifted too far.
+    //
+    //     The claim under test is not "the new number is better" — that is a taste question
+    //     settled on footage. It is that the RESULT no longer depends on the footage.
+    {
+        const double target = 0.050, postExp = 0.55, gamma = 1.0, gain = 0.80;
+        const double ex = std::exp2(postExp);
+
+        // Four plausible measured floors, spanning what real cameras hand over: a clip that
+        // reaches zero, and ones sitting progressively further off it.
+        const double floors[4] = { 0.000, 0.030, 0.067, 0.120 };
+
+        double stampedLo = 1e9, stampedHi = -1e9, worstSolved = 0.0;
+        for (double d01 : floors) {
+            // What the preset used to do: one Lift for everybody.
+            const double stamped = (double)og::lgg_core((float)d01, 0.11f, (float)gamma, (float)gain) * ex;
+            stampedLo = std::min(stampedLo, stamped);
+            stampedHi = std::max(stampedHi, stamped);
+
+            // What it does now: bisect Lift until the black point lands on the target. Same
+            // monotonic curve and same 1-D solve Base has always used for its floor.
+            double lo = -0.5, hi = 0.5;
+            for (int i = 0; i < 40; ++i) {
+                const double mid = 0.5*(lo + hi);
+                const double v = (double)og::lgg_core((float)d01, (float)mid, (float)gamma, (float)gain) * ex;
+                if (v < target) lo = mid; else hi = mid;
+            }
+            const double lift = 0.5*(lo + hi);
+            const double got = (double)og::lgg_core((float)d01, (float)lift, (float)gamma, (float)gain) * ex;
+            worstSolved = std::max(worstSolved, std::fabs(got - target));
+        }
+
+        const bool ok = (stampedHi - stampedLo > 0.05)   // a fixed lift really does scatter
+                     && (worstSolved < 1e-3);            // solving lands every one of them
+        check(ok, "Creative places its black point by solving, so footage no longer decides it");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }
