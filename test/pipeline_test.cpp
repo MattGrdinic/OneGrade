@@ -763,6 +763,110 @@ int main() {
         check(ok, "Creative places its black point by solving, so footage no longer decides it");
     }
 
+    // 27. MAGIC GRADE picks its control from the pipeline's own arithmetic, not from a table.
+    //     Offset is additive, so it is a large RELATIVE shift on a dark region; Gain is
+    //     multiplicative, so it grips the bright end. A dark subject therefore resolves to
+    //     Offset Temp and a bright one to Gain Temp. On the beach that yields Offset Temp
+    //     negative for the water — the control and direction the user reached for by hand.
+    {
+        oga::RegionStat st[oga::kRegionN];
+        // The measured beach: water dark and near-neutral, sky bright and very warm.
+        st[oga::R_WATER] = { 51.3f, 40.5f, 12.9f,  4.1f };
+        st[oga::R_SKY]   = { 35.7f, 61.1f, 41.2f, 58.3f };
+        st[oga::R_TERRAIN] = { 12.0f, 27.6f, 17.7f, 13.1f };
+
+        const oga::MagicChoice c0 = oga::magic_decide(st, 0);
+        bool ok = c0.ok && c0.subject == oga::R_WATER && c0.param == 6 && c0.sign < 0;
+
+        // Second press must offer a genuinely different move, and the cycle must wrap rather
+        // than run off the end.
+        const oga::MagicChoice c1 = oga::magic_decide(st, 1);
+        ok &= c1.ok && !(c1.param == c0.param && c1.sign == c0.sign);
+        const oga::MagicChoice cw = oga::magic_decide(st, c0.options);
+        ok &= cw.ok && cw.param == c0.param && cw.sign == c0.sign;
+        ok &= (c0.options >= 2) && (c0.option == 0);
+        check(ok, "Magic Grade: dark subject -> Offset Temp, and presses cycle distinctly");
+    }
+
+    // 28. A PROTECTED SUBJECT INVERTS THE RULE. Skin is never pushed, so when it is the subject
+    //     the move is spent on the surround instead: grip whatever the surround is, and push
+    //     away from skin's hue. Cool the room, let the face come forward — which is the same
+    //     operation a colourist does, addressed from the other side.
+    //
+    //     Also checks the veto: a frame with one region has nothing to read a subject against,
+    //     and must produce no move rather than an arbitrary one.
+    {
+        oga::RegionStat st[oga::kRegionN];
+        // The measured car portrait: a dark face against a brighter, slightly cooler interior.
+        st[oga::R_BUILT] = { 77.7f, 41.0f, -5.5f, -3.7f };
+        st[oga::R_SKIN]  = { 22.3f, 14.4f, -2.1f, -1.4f };
+
+        const oga::MagicChoice c = oga::magic_decide(st, 0);
+        // Salience puts the face first despite covering a fifth of the frame.
+        bool ok = c.ok && c.subject == oga::R_SKIN;
+        // Surround is the brighter half, so Gain Temp has the grip on it; skin is the warmer of
+        // the two, so the surround goes cooler.
+        ok &= (c.param == 0) && (c.sign < 0);
+        // Both candidates here resolve to the same move, so the frame offers exactly one and
+        // pressing again must not pretend otherwise.
+        ok &= (c.options == 1);
+
+        oga::RegionStat one[oga::kRegionN];
+        one[oga::R_BUILT] = { 99.9f, 31.0f, -3.3f, -5.4f };
+        ok &= !oga::magic_decide(one, 0).ok;      // aerial city: nothing to separate
+
+        oga::RegionStat none[oga::kRegionN];
+        ok &= !oga::magic_decide(none, 0).ok;     // empty: no move, no crash
+
+        check(ok, "Magic Grade: skin is protected, the surround moves, single-region vetoes");
+    }
+
+    // 29. Region statistics respect the fixed-membership rule the whole file depends on: regions
+    //     are assigned once and only the STATISTICS move with the grade. If assignment drifted
+    //     with the parameters, "this region got cooler" would be unmeasurable by construction.
+    {
+        const int cam = 11, enc = 1;
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::stub_regions(S, cam, enc);
+        std::vector<uint8_t> before = S.region;
+
+        float P0[13]; neutral13(P0);
+        float P1[13]; neutral13(P1); P1[6] = -0.20f;      // a firm Offset Temp move
+
+        oga::RegionStat a[oga::kRegionN], b[oga::kRegionN];
+        oga::region_stats(S, cam, enc, P0, a);
+        oga::region_stats(S, cam, enc, P1, b);
+
+        bool ok = (S.region == before);                   // assignment untouched by the grade
+        float cover = 0.f; int live = 0;
+        for (int r = 0; r < oga::kRegionN; ++r) {
+            cover += a[r].cover;
+            ok &= close(a[r].cover, b[r].cover, 1e-6f);    // coverage cannot move either
+            if (a[r].cover > 1.f) ++live;
+        }
+        ok &= close(cover, 100.f, 0.01f);                 // every sample lands in exactly one
+        ok &= (live >= 2);                                 // the stub finds structure at all
+        bool moved = false;
+        for (int r = 0; r < oga::kRegionN; ++r)
+            if (a[r].cover > 1.f && std::fabs(a[r].b - b[r].b) > 0.05f) moved = true;
+        ok &= moved;                                       // ...and the statistics DO move
+
+        // DECIMATION MUST CARRY THE REGION LABELS. It did not, and the failure was silent in the
+        // worst way: region_stats() bails when region.size() != size(), so a decimated set
+        // returned all-zero coverage. Magic Grade measures its move's magnitude that way, so
+        // every move came out at exactly zero — a feature that runs, reports what it chose, and
+        // changes nothing on screen. Nothing in the decision tests would have caught it.
+        oga::SampleSet D = oga::decimate(S, 4000);
+        ok &= (D.region.size() == D.size());
+        oga::RegionStat d[oga::kRegionN];
+        oga::region_stats(D, cam, enc, P0, d);
+        float dcover = 0.f;
+        for (int r = 0; r < oga::kRegionN; ++r) dcover += d[r].cover;
+        ok &= close(dcover, 100.f, 0.01f);
+        check(ok, "region stats: membership fixed, coverage sums to 100, survives decimation");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

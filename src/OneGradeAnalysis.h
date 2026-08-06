@@ -211,8 +211,41 @@ struct SampleSet {
     std::vector<uint8_t> group;  // N: 0 cooler population, 1 warmer, 2 excluded
     std::vector<uint8_t> mid;    // N: 1 if inside the mid-tone window
     std::vector<uint8_t> skin;   // N: 1 if inside the skin mask
+    std::vector<uint8_t> region; // N: semantic region — see Region below
     size_t size() const { return band.size(); }
 };
+
+// ---------------------------------------------------------------------------------------
+// SEMANTIC REGIONS — what the frame is made of, which is the one thing measurement cannot
+// recover on its own.
+//
+// A luminance or chroma split can say WHERE a frame divides. It cannot say which way to push,
+// because direction and permission are properties of what a thing IS: cooling the dark half is
+// right when it is water and wrong when it is skin in shadow. That is the whole reason this
+// exists, and the reason the offline experiment in experiments/segmentation/ concluded a
+// classifier earns its place.
+enum Region { R_SKY, R_WATER, R_SKIN, R_VEG, R_TERRAIN, R_BUILT, R_OTHER, kRegionN };
+
+static inline const char* region_name(int r)
+{
+    static const char* n[kRegionN] = { "SKY","WATER","SKIN","FOLIAGE","TERRAIN","BUILT","OTHER" };
+    return (r >= 0 && r < kRegionN) ? n[r] : "?";
+}
+
+// How much a region matters beyond its share of the frame. Coverage is most of importance --
+// the user's rule -- but a face is the subject of a shot at 15% and a wall is not at 70%.
+static inline float region_salience(int r)
+{
+    static const float s[kRegionN] = { 0.7f, 1.2f, 3.0f, 1.0f, 0.7f, 0.6f, 0.4f };
+    return (r >= 0 && r < kRegionN) ? s[r] : 0.4f;
+}
+
+// Skin is never pushed. A move that cools the shadows also cools skin sitting in shadow, which
+// is the most visible way to wreck a frame, so when skin is the subject the SURROUND moves
+// instead. See magic_decide().
+static inline bool region_protected(int r) { return r == R_SKIN; }
+
+struct RegionStat { float cover = 0.f, L = 0.f, a = 0.f, b = 0.f; };
 
 // Is the skin mask worth believing on this frame? A FLOOR ALONE IS NOT ENOUGH, which the
 // first real frame proved: a 4K beach at 230k samples returned 46% coverage and sailed past a
@@ -245,6 +278,11 @@ static inline SampleSet decimate(const SampleSet& S, size_t target)
         D.group.push_back(S.group.empty() ? 2 : S.group[i]);
         D.mid.push_back(S.mid.empty() ? 0 : S.mid[i]);
         D.skin.push_back(S.skin.empty() ? 0 : S.skin[i]);
+        // `region` too, or region_stats() on a decimated set silently returns nothing: it
+        // requires region.size() == size() and bails otherwise. That path is how Magic Grade
+        // measures the chosen control's grip on the subject, so a missing copy here makes every
+        // move come out at exactly zero — a feature that runs, reports, and does nothing.
+        D.region.push_back(S.region.empty() ? (uint8_t)R_OTHER : S.region[i]);
     }
     return D;
 }
@@ -436,6 +474,177 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
         d.v[D_SKINB] = (float)(skB / (double)skN);
     }
     return d;
+}
+
+// ---------------------------------------------------------------------------------------
+// REGION ASSIGNMENT — THIS IS A STAND-IN AND MUST BE REPLACED.
+//
+// Everything downstream consumes SampleSet::region and nothing else, so a real segmentation
+// model swaps in HERE and changes nothing else in this file or in the plugin. That isolation is
+// the entire point of doing it this way round: prove the chain end to end in Resolve first,
+// then drop the model into a slot that is already known to work.
+//
+// What this does is crude on purpose — position, lightness and hue, no understanding at all. It
+// will call a beige wall TERRAIN and a blue car WATER. It exists so the button, the cycle, the
+// magnitude solve and the readout can be exercised on real footage, NOT because it is good.
+//
+// Measured against the real thing (experiments/segmentation, SegFormer-B0 on ADE20K), on a 4K
+// beach: the model returned sea 51% / sky 36% / mountain 8% / person 1%, following the horizon
+// and separating the headland from both. Nothing below will do that. The offline harness also
+// showed the semantic mask reading 0.7% skin where the plugin's chromaticity mask reads 46% --
+// the sand-versus-skin failure this cannot fix either.
+//
+// DO NOT FIT ANY CONSTANT TO THIS CLASSIFIER'S OUTPUT. Its numbers are plumbing, not evidence.
+static inline void stub_regions(SampleSet& S, int cam, int enc)
+{
+    const size_t n = S.size();
+    S.region.assign(n, (uint8_t)R_OTHER);
+    if (n == 0) return;
+
+    float P[kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    std::vector<float> vL(n), va(n), vb(n);
+    double sumL = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        float r, g, b;
+        render_sample(cam, enc, P, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+        display_to_Lab(enc, r, g, b, vL[i], va[i], vb[i]);
+        sumL += vL[i];
+    }
+    const float meanL = (float)(sumL / (double)n);
+
+    for (size_t i = 0; i < n; ++i) {
+        const float L = vL[i], a = va[i], b = vb[i];
+        uint8_t r;
+        if (!S.skin.empty() && S.skin[i])            r = R_SKIN;      // reuses the existing mask,
+                                                                      // with all its known faults
+        else if (S.band[i] == 2 && L > meanL)        r = R_SKY;       // bright and up top
+        else if (b < -6.f && L < meanL)              r = R_WATER;     // dark and blue-leaning
+        else if (a < -5.f && b > 0.f)                r = R_VEG;       // green-leaning
+        else if (L < meanL)                          r = R_TERRAIN;   // the darker remainder
+        else                                         r = R_BUILT;     // the brighter remainder
+        S.region[i] = r;
+    }
+}
+
+// Per-region colour, for a given parameter vector. Same fixed-membership rule as everything
+// else here: regions are decided once from the neutral render and only the STATISTICS move.
+static inline void region_stats(const SampleSet& S, int cam, int enc, const float* P,
+                                RegionStat* out)
+{
+    for (int r = 0; r < kRegionN; ++r) out[r] = RegionStat();
+    const size_t n = S.size();
+    if (n == 0 || S.region.size() != n) return;
+
+    double sL[kRegionN] = {0}, sa[kRegionN] = {0}, sb[kRegionN] = {0};
+    long long cnt[kRegionN] = {0};
+    for (size_t i = 0; i < n; ++i) {
+        float r, g, b;
+        render_sample(cam, enc, P, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+        float L, a, bb; display_to_Lab(enc, r, g, b, L, a, bb);
+        const int k = S.region[i];
+        sL[k] += L; sa[k] += a; sb[k] += bb; ++cnt[k];
+    }
+    for (int k = 0; k < kRegionN; ++k) {
+        if (!cnt[k]) continue;
+        out[k].cover = 100.0f * (float)cnt[k] / (float)n;
+        out[k].L = (float)(sL[k] / cnt[k]);
+        out[k].a = (float)(sa[k] / cnt[k]);
+        out[k].b = (float)(sb[k] / cnt[k]);
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// THE MAGIC GRADE DECISION: one subject, one slider, one direction.
+//
+// The user's design. Identify the objects, rank them by how present they are, pick a subject,
+// read it against the rest of the scene, choose Offset Temp or Gain Temp, choose a direction.
+// The Separation slider then scales that one decision; pressing the button again picks a
+// different subject and runs the same process.
+//
+// IT DELIBERATELY HAS NO METRIC TO MAXIMISE. An earlier design maximised a separation number
+// and was falsified against four of the user's own hand grades: two of three NARROWED region
+// separation rather than widening it, by 2-11%, riding on common-mode global moves several
+// times larger. This makes a choice and lets the user accept it, tune it, or cycle past it, so
+// the rule only ever has to be reasonable -- being wrong costs one more press instead of
+// failing silently.
+//
+// CHOOSING THE CONTROL IS NOT A GUESS. It falls out of og::process():
+//
+//     offset:  w[0] += offTemp*0.10       additive -- a large RELATIVE shift on a dark region,
+//                                         a small one on a bright region
+//     gain:    w[0] *= (1 + temp*0.20)    multiplicative -- scales with value, grips the top
+//
+// so a dark subject is reached with Offset Temp and a bright one with Gain Temp. On the beach
+// that yields Offset Temp negative, which is exactly the control and direction the user reached
+// for by hand (-0.167) -- from the pipeline's own arithmetic, with nothing fitted.
+struct MagicChoice {
+    int  subject = -1;      // Region
+    int  param   = -1;      // index into P[]: 6 = Offset Temp, 0 = Gain Temp
+    int  sign    = 0;       // +1 warmer, -1 cooler
+    int  option  = 0;       // which press produced this
+    int  options = 0;       // how many distinct moves the frame offers
+    bool ok      = false;
+};
+
+static const int kMagicMinCover = 6;    // below this a region is scenery, not a subject
+
+static inline MagicChoice magic_decide(const RegionStat* st, int click)
+{
+    MagicChoice out;
+    int idx[kRegionN], nb = 0;
+    for (int r = 0; r < kRegionN; ++r)
+        if (st[r].cover >= (float)kMagicMinCover) idx[nb++] = r;
+    if (nb < 2) return out;             // nothing to read a subject against
+
+    std::sort(idx, idx + nb, [&](int A, int B) {
+        return st[A].cover * region_salience(A) > st[B].cover * region_salience(B);
+    });
+
+    // DEDUPED BY THE MOVE, NOT BY THE SUBJECT. Two subjects can resolve to the same control and
+    // the same sign -- on a car portrait "protect the face" and "push the interior" both give
+    // Gain Temp negative -- and offering that twice makes the second press do nothing visible.
+    // A button whose whole affordance is "press again for a different answer" has to give one.
+    MagicChoice cand[kRegionN]; int nc = 0;
+    for (int i = 0; i < nb; ++i) {
+        const int s = idx[i];
+        // The scene the subject is read AGAINST, which excludes the subject itself.
+        double wsum = 0.0, wL = 0.0, wb = 0.0;
+        for (int j = 0; j < nb; ++j) {
+            if (idx[j] == s) continue;
+            const double w = st[idx[j]].cover;
+            wsum += w; wL += w * st[idx[j]].L; wb += w * st[idx[j]].b;
+        }
+        if (wsum <= 0.0) continue;
+        const float restL = (float)(wL / wsum), restB = (float)(wb / wsum);
+
+        float db = st[s].b - restB;
+        // No lean to enhance: push away from wherever the scene sits, so the press still does
+        // something rather than resolving to zero.
+        if (std::fabs(db) < 0.5f) db = (std::fabs(restB) > 0.5f) ? -restB : 1.0f;
+
+        MagicChoice c;
+        c.subject = s;
+        if (region_protected(s)) {
+            // Never push the subject; move the surround. Grip whatever the surround is, and
+            // push away from the subject's hue -- cool the room, let the face come forward.
+            c.param = (restL > st[s].L) ? 0 : 6;
+            c.sign  = (db > 0.f) ? -1 : +1;
+        } else {
+            c.param = (st[s].L > restL) ? 0 : 6;
+            c.sign  = (db > 0.f) ? +1 : -1;
+        }
+        bool dup = false;
+        for (int k = 0; k < nc; ++k) dup |= (cand[k].param == c.param && cand[k].sign == c.sign);
+        if (!dup) cand[nc++] = c;
+    }
+    if (nc == 0) return out;
+
+    const int pick = ((click % nc) + nc) % nc;
+    out = cand[pick];
+    out.option = pick;
+    out.options = nc;
+    out.ok = true;
+    return out;
 }
 
 // ---------------------------------------------------------------------------------------

@@ -384,6 +384,8 @@ public:
     void applyAutoGrade(double p_Time);      // measure, then set the film look + Gain from key
     void applyAutoGradeClean(double p_Time); // measure, then contain the range with no LUT
     void applyBias();                   // offset the grade by Bias, relative to the anchor
+    void applyMagicGrade(double p_Time); // Creative, then one classifier-chosen colour move
+    void applySeparation();             // rescale the stored magic move without re-deciding
     void armBias();                     // store the current grade as Bias's zero point
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
     double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
@@ -475,6 +477,15 @@ private:
     OFX::DoubleParam*  m_BiasGamma;
     OFX::DoubleParam*  m_BiasRoll;
     OFX::DoubleParam*  m_BiasHot;
+    // Magic Grade: the chosen move, saved with the project so the Separation slider keeps
+    // scaling it after a reload without needing the frame back.
+    OFX::PushButtonParam* m_MagicBtn;
+    OFX::DoubleParam*  m_Separation;
+    OFX::IntParam*     m_MagicCycle;   // which option the next press should offer
+    OFX::IntParam*     m_MagicParam;   // index into P[]: 6 Offset Temp, 0 Gain Temp, -1 none
+    OFX::DoubleParam*  m_MagicBase;    // the move at Separation 1.0
+    OFX::DoubleParam*  m_MagicAnchor;  // the control's value before the move
+    OFX::StringParam*  m_MagicNote;
     OFX::BooleanParam* m_ShowAnalysis;
     OFX::PushButtonParam* m_ProbeBtn;
     OFX::PushButtonParam* m_CleanBtn;
@@ -552,6 +563,13 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeShape   = fetchStringParam("probeShape");
     m_ProbeSubject = fetchStringParam("probeSubject");
     m_AutoBias     = fetchDoubleParam("autoBias");
+    m_MagicBtn     = fetchPushButtonParam("magicGrade");
+    m_Separation   = fetchDoubleParam("separation");
+    m_MagicCycle   = fetchIntParam("magicCycle");
+    m_MagicParam   = fetchIntParam("magicParam");
+    m_MagicBase    = fetchDoubleParam("magicBase");
+    m_MagicAnchor  = fetchDoubleParam("magicAnchor");
+    m_MagicNote    = fetchStringParam("magicNote");
     m_BiasArmed    = fetchBooleanParam("biasArmed");
     m_BiasGain     = fetchDoubleParam("biasGain");
     m_BiasLift     = fetchDoubleParam("biasLift");
@@ -1486,6 +1504,114 @@ void OneGrade::applyBias()
     m_Gain->setValue(gain);
 }
 
+// MAGIC GRADE — Creative Grade, then one colour move chosen from what is in the frame.
+//
+// The chain is the user's: apply Creative, run the classifier, pick a subject, pick a slider
+// and a direction, render it. The Separation slider then scales that decision. Press the button
+// again and a DIFFERENT subject is chosen, and the same process runs.
+//
+// NOT EVERY SHOT HAS A MOVE AND THAT IS FINE. A downward city view comes back as one
+// undifferentiated region and correctly produces nothing; Magic Grade is then just Creative
+// Grade, and says so in the readout. The user's own grade of that shot was purely tonal, so
+// human and machine agree. Silence is the failure mode to avoid, not the absence of a move.
+//
+// THE REGION MASKS ARE A STAND-IN (see stub_regions). Everything here consumes SampleSet::region
+// and nothing else, so a real segmentation model swaps into that one function. This exists to
+// prove the chain end to end in Resolve BEFORE the model goes in, so the model lands in a slot
+// already known to work.
+void OneGrade::applyMagicGrade(double p_Time)
+{
+    applyAutoGrade(p_Time);            // Creative Grade first: exposure, black point, the look.
+    if (!m_HaveKey || m_LastSamples.size() < 512) {
+        m_MagicNote->setValue("No frame to analyse");
+        m_MagicParam->setValue(-1);
+        return;
+    }
+
+    oga::SampleSet& S = m_LastSamples;
+    oga::stub_regions(S, m_LastCam, m_LastEnc);
+
+    // Regions are read at NEUTRAL, like every other measurement here: they describe the footage,
+    // not the grade that was just applied on top of it.
+    float Pn[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    oga::RegionStat st[oga::kRegionN];
+    oga::region_stats(S, m_LastCam, m_LastEnc, Pn, st);
+
+    int cycle = 0; m_MagicCycle->getValue(cycle);
+    const oga::MagicChoice c = oga::magic_decide(st, cycle);
+    if (!c.ok) {
+        m_MagicNote->setValue("No subject to separate - this is Creative Grade");
+        m_MagicParam->setValue(-1);
+        m_MagicBase->setValue(0.0);
+        return;
+    }
+    m_MagicCycle->setValue(cycle + 1);          // next press offers the next distinct move
+
+    // MAGNITUDE COMES FROM MEASURING, NOT FROM A CONSTANT. Nudge the chosen control and see how
+    // far the SUBJECT's b* actually travels on this shot, then scale to the target. Same idea as
+    // the Jacobian, restricted to one control and one region, so it costs two passes.
+    //
+    // Measured rather than fitted because the response is wildly shot-dependent -- Offset Temp
+    // moved b* by 2.63 per step on the beach and 3.96 on the car -- so any fixed slider value
+    // would be a different move on every piece of footage, which is the exact defect that made
+    // Creative's stamped Lift wrong.
+    oga::SampleSet D = oga::decimate(S, 8000);
+    const float step = oga::param_steps()[c.param];
+    float Pp[oga::kParamN]; for (int i = 0; i < oga::kParamN; ++i) Pp[i] = Pn[i];
+    Pp[c.param] += step;
+    oga::RegionStat sp[oga::kRegionN];
+    oga::region_stats(D, m_LastCam, m_LastEnc, Pp, sp);
+    oga::RegionStat s0[oga::kRegionN];
+    oga::region_stats(D, m_LastCam, m_LastEnc, Pn, s0);
+
+    // For a protected subject the move is spent on the SURROUND, so measure the grip there --
+    // measuring the response of a region we have decided not to move would size the move by how
+    // hard it is to do the thing we are not doing.
+    int measured = c.subject;
+    if (oga::region_protected(c.subject)) {
+        float best = -1.f;
+        for (int r = 0; r < oga::kRegionN; ++r)
+            if (r != c.subject && st[r].cover > best) { best = st[r].cover; measured = r; }
+    }
+    const float grip = sp[measured].b - s0[measured].b;      // b* per one step of the control
+
+    double sep = 1.0; m_Separation->getValue(sep);
+    // One unit of Separation aims for this much b* movement on the measured region. Six Lab
+    // units is a firm but not transformative push; it is the one constant here and it is a
+    // starting point, to be read off footage like every other number in this file.
+    const double kUnit = 6.0;
+    double base = 0.0;
+    if (std::fabs(grip) > 1e-4) base = c.sign * kUnit * (double)step / std::fabs((double)grip);
+    base = std::min(0.35, std::max(-0.35, base));            // a colour cast, not a transform
+
+    const double anchor = (c.param == 6) ? m_OffTemp->getValue() : m_Temp->getValue();
+    m_MagicParam->setValue(c.param);
+    m_MagicBase->setValue(base);
+    m_MagicAnchor->setValue(anchor);
+    applySeparation();
+
+    char msg[160];
+    snprintf(msg, sizeof msg, "%d/%d %s -> %s %+.3f",
+             c.option + 1, c.options, oga::region_name(c.subject),
+             (c.param == 6) ? "Offset Temp" : "Gain Temp", base * sep);
+    m_MagicNote->setValue(msg);
+    setEnabledness();
+}
+
+// Rescale the stored move. Deliberately does NOT re-decide: dragging Separation has to feel like
+// one control getting stronger, not like the button being pressed again with a different answer.
+void OneGrade::applySeparation()
+{
+    int which = -1; m_MagicParam->getValue(which);
+    if (which != 0 && which != 6) return;          // nothing chosen yet
+    double base = 0.0, anchor = 0.0, sep = 1.0;
+    m_MagicBase->getValue(base);
+    m_MagicAnchor->getValue(anchor);
+    m_Separation->getValue(sep);
+    const double v = std::min(1.0, std::max(-1.0, anchor + base * sep));
+    if (which == 6) m_OffTemp->setValue(v); else m_Temp->setValue(v);
+}
+
 void OneGrade::setEnabledness()
 {
     int role = 0, mode = 0;
@@ -1743,6 +1869,12 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
         applyAutoGrade(p_Args.time);
     }
     // Live: re-derive Rolloff/Lift as the slider moves. No re-analysis, so it keeps up.
+    else if (p_ParamName == "magicGrade" && p_Args.reason == OFX::eChangeUserEdit) {
+        applyMagicGrade(p_Args.time);
+    }
+    else if (p_ParamName == "separation" && p_Args.reason == OFX::eChangeUserEdit) {
+        applySeparation();
+    }
     else if (p_ParamName == "autoBias" && p_Args.reason == OFX::eChangeUserEdit) {
         applyBias();
     }
@@ -2202,6 +2334,47 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         tune("cleanShoulder","Shoulder","How much Highlight Rolloff to apply per unit of highlight overshoot - how far the channels run past display white before grading. This is the shoulder that stands in for a film stock's, since Lift/Gamma/Gain cannot make an S-curve on its own. Source clipping (pin) sets a floor underneath it. 0 disables the overshoot term and leaves rolloff on source clipping alone, which is what Creative uses.", 0.216, 0.00, 1.50);
         tune("creativeLow","Creative Black","Where Creative Grade places its black point, measured before the print stock. The preset used to stamp a fixed Lift of 0.11, which lands a different black point on every shot depending on where the footage's own floor already sits - and on three hand-graded shots in a row the user pulled it back down, describing it as the shadows being lifted too far. Solving for a target instead makes the result consistent across footage, the same way Base has always placed its floor. To fit this number, grade a shot by hand until it looks right and read the Tone row's graded black value.", 0.050, 0.00, 0.30);
         tune("cleanMidStr","Mid Strength","How much of the midtone solve to apply. 0 leaves Gamma at 1.0 and only the two ends are corrected; 1.0 drives every shot's median to Target Mid, which flattens deliberately dark shots into mid-gray. The default is halfway: containment at the ends is objective, the midtone is intent.", 0.838, 0.00, 1.00);
+
+        // MAGIC GRADE sits with the other two because it IS the other two plus one step: run
+        // Creative, then make a single colour decision from what the classifier found. Listed
+        // after them because it is the most opinionated of the three and the one most likely to
+        // be cycled or undone.
+        {
+            PushButtonParamDescriptor* mg = p_Desc.definePushButtonParam("magicGrade");
+            mg->setLabels("Magic Grade", "Magic Grade", "Magic Grade");
+            mg->setHint("Applies Creative Grade, then looks at what is actually in the frame - sky, water, foliage, a person - decides which of those the shot is about, and makes ONE colour move to set it off against the rest. The move is chosen, not calculated to a target: which slider depends on whether the subject is the bright or the dark part of the frame, and which direction depends on the way it already leans. Press again to pick a different subject; the readout says which option you are on and how many there are. Some shots have nothing to separate - a flat aerial, a macro of leaves - and on those it simply leaves you with Creative Grade and says so.");
+            mg->setParent(*gAuto);
+            page->addChild(*mg);
+
+            page->addChild(*defineSlider(p_Desc, "separation", "Separation",
+                "How far to push the colour move Magic Grade chose. 1.0 is the move as decided, 0 removes it entirely, and past 1 exaggerates it. It rescales the SAME decision rather than making a new one, so dragging it feels like one control getting stronger rather than like pressing the button again. Negative reverses the move, which is occasionally what you want when the automatic direction reads backwards on a particular shot.",
+                1.0, -2.0, 3.0, 0.01, gAuto));
+
+            StringParamDescriptor* mn = p_Desc.defineStringParam("magicNote");
+            mn->setLabels("Chose", "Chose", "Chose");
+            mn->setStringType(eStringTypeLabel);
+            mn->setDefault("");
+            mn->setHint("Which option you are on, out of how many the frame offers, then the subject it picked and the slider move it made. 'This is Creative Grade' means the frame has no separable regions - one flat surface, or a single subject filling the frame - which is a real answer rather than a failure.");
+            mn->setEnabled(false);
+            mn->setParent(*gAuto);
+            page->addChild(*mn);
+
+            // Saved with the project so Separation keeps scaling the chosen move after a reload
+            // without needing the frame back. Same reasoning as the Bias anchor.
+            IntParamDescriptor* mc = p_Desc.defineIntParam("magicCycle");
+            mc->setDefault(0); mc->setIsSecret(true); mc->setParent(*gAuto);
+            page->addChild(*mc);
+            IntParamDescriptor* mp = p_Desc.defineIntParam("magicParam");
+            mp->setDefault(-1); mp->setIsSecret(true); mp->setParent(*gAuto);
+            page->addChild(*mp);
+            auto hid = [&](const char* n) {
+                DoubleParamDescriptor* d = p_Desc.defineDoubleParam(n);
+                d->setDefault(0.0); d->setRange(-1e6, 1e6);
+                d->setIsSecret(true); d->setParent(*gAuto);
+                page->addChild(*d);
+            };
+            hid("magicBase"); hid("magicAnchor");
+        }
 
         apply->setLabels("Creative Grade", "Creative Grade", "Creative Grade");
         apply->setHint("Analyses the frame and applies the Cinematic Film Emulation look on top - use this when you want a finished-looking image straight away rather than something to grade from. Sets Gain from the measured key. Fitted to hand-graded shots rather than to a textbook target: a bright shot gets Gain pulled down, a dark one is left at the preset - deliberately, since a low-key shot is meant to sit low. Everything it writes is an ordinary slider value you can drag afterwards.");
