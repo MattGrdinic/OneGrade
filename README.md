@@ -80,6 +80,31 @@ they're applied.
 > carry over**; the installers remove the old bundle so you don't end up with a dead
 > duplicate in the Effects list.
 
+## About the model in Magic Grade
+
+**Magic Grade** looks at the frame and works out roughly what is in it — sky, water, foliage, a
+person, ground, buildings — then uses that to pick which slider to move and in which direction.
+That recognition is done by a small neural network bundled with the plugin, and it is worth
+being straight about what that means.
+
+- **It never touches the network.** Nothing is uploaded, nothing phones home, no account, no
+  key. It works on a render node that has never been online.
+- **It runs on a button press only.** Not during playback, not during render. Press the button,
+  it thinks for about a tenth of a second on one CPU thread, and writes ordinary slider values
+  you can then drag.
+- **It is 12 MB.** [PP-MobileSeg-Base](models/README.md), Apache-2.0 licensed, running on the
+  CPU. No GPU is involved and none is needed.
+- **It is not required.** If the model is missing the rest of the plugin works exactly as
+  before, and Magic Grade says so rather than pretending.
+
+It is also **not a fail-safe tool and is not meant to be.** It offers one opinionated move,
+tells you in plain words why it chose it, and gives you a slider to push it further or take it
+back. Press the button again and it picks a different subject. On some shots — a flat aerial, a
+macro of leaves — it will correctly tell you there is nothing to separate and leave you with
+Creative Grade.
+
+---
+
 ## This plugin is opinionated
 
 Worth knowing before you compare it to anything: **OneGrade is a look-first tool, not a
@@ -481,6 +506,20 @@ BSD-3-Clause. That grant is perpetual and cannot be withdrawn, so anyone who obt
 code under those terms keeps them for those versions. The GPL applies from **v1.3.0**
 onward.
 
-**Third-party code:** the vendored OpenFX SDK under `third_party/openfx/` is BSD-3-Clause
-and retains its own license (see `third_party/openfx/LICENSE.md`); it is compatible with
-the GPL and is not relicensed by this project.
+**Third-party code and the bundled model** — all GPL-compatible, each keeping its own
+licence, none relicensed by this project. Full detail in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), which is also copied into the installed
+bundle, since that is what most people actually receive:
+
+| component | licence | what it is |
+|---|---|---|
+| [OpenFX SDK](third_party/openfx/LICENSE.md) | BSD-3-Clause | the plugin API and support library |
+| [ncnn](third_party/ncnn/LICENSE.txt) | BSD-3-Clause | the neural-network runtime Magic Grade's model runs on |
+| [PP-MobileSeg-Base](models/README.md) | Apache-2.0 | the region model itself — 12 MB of weights |
+
+The model was **chosen on licence and turned out to be better anyway.** The obvious
+alternative, NVIDIA's SegFormer, restricts use to "research or evaluation purposes only", and
+that restriction lands on *the user*, not on this project — grading a paid job is neither
+research nor evaluation, so shipping it would have quietly made OneGrade unusable for the work
+most of its users do. PP-MobileSeg is Apache-2.0 with no such restriction, and measured faster
+and more accurate besides.

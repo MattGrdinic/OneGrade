@@ -69,6 +69,9 @@ bundle-luts:
 bundle-model:
 	@mkdir -p "$(BUNDLE)/Contents/Resources/Model"
 	@cp -f models/ade20k.param models/ade20k.bin "$(BUNDLE)/Contents/Resources/Model/"
+	@cp -f THIRD-PARTY-NOTICES.md "$(BUNDLE)/Contents/Resources/"
+	@cp -f models/LICENSE-Apache-2.0.txt "$(BUNDLE)/Contents/Resources/"
+	@cp -f third_party/ncnn/LICENSE.txt "$(BUNDLE)/Contents/Resources/LICENSE-ncnn.txt"
 
 test: | $(BUILD)
 	$(CXX) -std=c++17 -O2 -MMD -MP test/pipeline_test.cpp -o $(BUILD)/pipeline_test
