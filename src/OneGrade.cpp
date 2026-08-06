@@ -487,7 +487,8 @@ private:
     OFX::StringParam* m_ProbeResponse;  // what the controls DO on this shot (Jacobian rows)
     OFX::StringParam* m_ProbeDriveB;    // which controls drove the warm/cool change
     OFX::StringParam* m_ProbeDriveC;    // ...and the colourfulness change
-    OFX::StringParam* m_ProbeDriveS;    // ...and the population separation
+    OFX::StringParam* m_ProbeDriveS;    // ...and the warm/cool hue separation
+    OFX::StringParam* m_ProbeSepTriple; // the separation triple, neutral -> graded
 
     // Setup check — see probeSetup().
     OFX::PushButtonParam* m_SetupBtn;
@@ -568,6 +569,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeDriveB   = fetchStringParam("probeDriveB");
     m_ProbeDriveC   = fetchStringParam("probeDriveC");
     m_ProbeDriveS   = fetchStringParam("probeDriveS");
+    m_ProbeSepTriple = fetchStringParam("probeSepTriple");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
     m_SetupStatus = fetchStringParam("setupStatus");
     m_SetupStats  = fetchStringParam("setupStats");
@@ -747,6 +749,7 @@ void OneGrade::probeAnalyze(double p_Time)
     m_ProbeDriveB->setValue("");
     m_ProbeDriveC->setValue("");
     m_ProbeDriveS->setValue("");
+    m_ProbeSepTriple->setValue("");
     m_HaveJac = false;
     if (!m_SrcClip || !m_SrcClip->isConnected()) { m_ProbeStatus->setValue("No source clip connected"); return; }
 
@@ -1058,9 +1061,15 @@ void OneGrade::probeAnalyze(double p_Time)
                                     oga::param_name(drv[i]), A.at(d, drv[i]));
                 out->setValue(row);
             };
+            snprintf(m2, sizeof m2, "dL* %.1f>%.1f  da* %.1f>%.1f  db* %.1f>%.1f",
+                     m_LastDesc.v[oga::D_DL], dg.v[oga::D_DL],
+                     m_LastDesc.v[oga::D_DA], dg.v[oga::D_DA],
+                     m_LastDesc.v[oga::D_DB], dg.v[oga::D_DB]);
+            m_ProbeSepTriple->setValue(m2);
+
             driverRow(oga::D_B, m_ProbeDriveB);
-            driverRow(oga::D_CHROMA, m_ProbeDriveC);
-            driverRow(oga::D_SEP, m_ProbeDriveS);
+            driverRow(oga::D_DL,  m_ProbeDriveC);   // tone separation
+            driverRow(oga::D_DB,  m_ProbeDriveS);   // hue separation, warm/cool
 
             // The row that shows its work: per one natural nudge of each control, how far the
             // warm/cool axis actually moves ON THIS SHOT. Reading it is how the fit for a
@@ -1478,6 +1487,7 @@ void OneGrade::setEnabledness()
     m_ProbeDriveB->setIsSecret(!debug);
     m_ProbeDriveC->setIsSecret(!debug);
     m_ProbeDriveS->setIsSecret(!debug);
+    m_ProbeSepTriple->setIsSecret(!debug);
     // Containment targets are exposed only in the debug panel: they are how the Clean
     // constants get fitted on footage, and a shipping panel should carry the result, not the
     // dials that produced it.
@@ -2135,10 +2145,12 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "The two dominant colour populations found by clustering the frame, cooler one first: what share of the frame each holds and its hue angle in degrees. Then 'db*', how much warmer the top third of the frame is than the bottom third - a large positive number is the signature of a warm sky over a cooler foreground. Membership is decided once, from the ungraded picture, so these describe the footage rather than the grade currently on it.");
         probeLine("probeDriveB", "Drives b*",
                   "Which controls actually produced the warm/cool change between a neutral node and the grade currently on it, biggest contributor first. 'act' is the measured change, 'lin' is what the measured response predicted, and the gap between them says how far outside the linear range your grade sits - a big gap means the sliders are being pushed hard enough that their effect is tailing off. This row exists because naming the obvious control by eye does not work: on a real grade colourfulness rose while Density had actually been LOWERED, with Lift, Gain and Offset Temp pushing it up between them.");
-        probeLine("probeDriveC", "Drives C",
-                  "The same decomposition for colourfulness. Read it alongside 'Drives b*' when working out what a grade you built by hand actually did - the two together turn a look you tuned by feel into a list of which control contributed how much, which is what a rule has to be fitted to.");
-        probeLine("probeDriveS", "Drives sep",
-                  "The same decomposition for separation between the two dominant colour populations - which controls pushed the frame's subjects apart in colour, and which pulled them together. Watch the gap between 'act' and 'lin' on this row especially: separation is a DISTANCE, so it responds much less linearly than the warm/cool axis does, and a large gap means the numbers here rank the controls correctly but should not be read as exact amounts.");
+        probeLine("probeDriveC", "Drives dL*",
+                  "Which controls pushed the frame's two regions apart in LIGHTNESS, and which flattened them together. Tone separation is half of what makes a frame read as dynamic - the other half is hue, on the row below - and it was the axis missing from the first version of this measurement entirely.");
+        probeLine("probeDriveS", "Drives db*",
+                  "Which controls pushed the two regions apart on the warm/cool axis - the move that lets a cool ocean separate from a warm sky. Read with 'Drives dL*' above: together they are the two axes of separation, and a grade can gain one while losing the other.");
+        probeLine("probeSepTriple", "Separation",
+                  "The separation between the frame's two regions - currently its top and bottom third - as three signed numbers, shown as neutral > graded so you can see what your grade did to each. dL* is TONE separation, da* and db* are HUE separation on the green-magenta and cool-warm axes. Three signed components rather than one distance, because a distance cannot be solved against: it is built from squares, so it cannot express one axis opening while another closes, and on real footage it predicted the wrong direction outright.");
         probeLine("probeResponse", "Response",
                   "What the controls actually DO on this shot, measured rather than assumed: how far b* (cool-to-warm) moves per nudge of each balance control, and how far colourfulness moves per nudge of Density. This is the plugin working out for itself that negative Offset Temp is what adds blue. It is shot-dependent - the same slider does something different to a saturated sunset than to a snowfield - which is why it is measured on every analyse instead of written down once.");
     }

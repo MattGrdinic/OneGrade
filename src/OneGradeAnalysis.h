@@ -132,6 +132,34 @@ static inline void render_sample(int cam, int enc, const float* P,
 // second constraint is why D_OVER is mean overshoot rather than the `hot` percentage the
 // panel reports: a share-above-threshold is a step function, so its derivative is counting
 // noise, while the amount by which the channels run past white is continuous.
+// ---------------------------------------------------------------------------------------
+// SIGNED AXES STEER. MAGNITUDES DO NOT. Measured on the beach sunset, neutral -> grade,
+// linear prediction against measurement:
+//
+//     b*      signed axis                     5%   error
+//     C*      magnitude sqrt(a^2 + b^2)     37-57%  error
+//     sep     distance between centroids    WRONG SIGN on one of the two grades
+//
+// A distance cannot be linearised over a whole grade: it is a positive quantity built from
+// squares, so the model has no way to express "these moved apart in a" cancelling "they moved
+// together in b". `sep` predicted +1.1 where the measurement was -3.8.
+//
+// So the steerable set is signed components only. C and sep survive as REPORT-ONLY
+// diagnostics — they measure fine, they just cannot be solved against.
+//
+// THE SEPARATION TRIPLE is the user's own definition of what makes a frame dynamic:
+//   "push those objects to be more separated from others of a different hue OR TONE LEVEL"
+// Two axes, not one. The original sep was a distance in (a*, b*) — hue and chroma only, with
+// no tone axis in it at all. It is now the three signed components of the Lab difference
+// between the frame's two regions: dL* is tone separation, da*/db* are hue separation.
+//
+// REGIONS ARE THE TOP AND BOTTOM THIRD, and that is a stand-in. It works on this footage —
+// db* came back +43 and cleanly found sky-over-water where colour clustering returned two
+// populations both at orange (h29 and h44) — because a landscape separates its objects by
+// height. It fails the moment they do not: two people side by side, a car against a wall, a
+// face against a window. THIS IS THE SEAM WHERE SEGMENTATION PLUGS IN — supplying real region
+// masks changes nothing else in this file, because the descriptors only ever ask "region A
+// minus region B".
 enum {
     D_BLACK,    // per-channel 0.1st percentile — where the floor sits (what Base places)
     D_MID,      // luma median — the midtone
@@ -139,19 +167,25 @@ enum {
     D_OVER,     // mean per-sample overshoot above 1.0 — smooth clipping pressure
     D_A,        // mean a* over mid-tones — green/magenta cast
     D_B,        // mean b* over mid-tones — warm/cool cast. THE one the sunset move needed.
-    D_CHROMA,   // mean C* over mid-tones — overall colourfulness, what Density acts on
-    D_SEP,      // ab distance between the two dominant colour populations — separation
-    D_DL,       // top-band minus bottom-band luma — sky-vs-ground balance
-    D_DB,       // top-band minus bottom-band b* — is the frame split warm-over-cool?
+    D_DL,       // TONE separation: region A minus region B in L*
+    D_DA,       // HUE separation, green/magenta axis
+    D_DB,       // HUE separation, warm/cool axis
     D_SKINL,    // luma median over the skin mask (0 when coverage is too low to trust)
     D_SKINB,    // b* over the skin mask (0 when coverage is too low to trust)
+    // --- report-only below: measured honestly, but NOT steerable. See the note above. ---
+    D_CHROMA,   // mean C* over mid-tones — overall colourfulness, what Density acts on
+    D_SEP,      // ab distance between the two dominant colour populations
     kDescN
 };
+
+// Everything from here up is a signed axis and safe to put in a solve. Callers should weight
+// D_CHROMA and D_SEP at zero — they are diagnostics.
+static const int kSteerableDescN = D_SKINB + 1;
 
 static inline const char* desc_name(int i)
 {
     static const char* n[kDescN] = { "black","mid","white","over","a*","b*",
-                                     "chroma","sep","dL","db*","skinL","skinb*" };
+                                     "dL*","da*","db*","skinL","skinb*","chroma","sep" };
     return (i >= 0 && i < kDescN) ? n[i] : "?";
 }
 
@@ -345,7 +379,10 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
     double over = 0.0;
     double sA = 0, sB = 0, sC = 0; long long midN = 0;
     double gA[2] = {0,0}, gB[2] = {0,0}; long long gN[2] = {0,0};
-    double bandL[3] = {0,0,0}, bandB[3] = {0,0,0}; long long bandN[3] = {0,0,0};
+    // Band means in LAB, not in display luma. L* puts tone on the same perceptual footing as
+    // a*/b*, so the separation triple is one coherent Lab difference between two regions
+    // rather than a tone number and two colour numbers that cannot be compared with each other.
+    double bandL[3] = {0,0,0}, bandA[3] = {0,0,0}, bandB[3] = {0,0,0}; long long bandN[3] = {0,0,0};
     double skB = 0; long long skN = 0;
 
     for (size_t i = 0; i < n; ++i) {
@@ -365,7 +402,7 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
         const uint8_t gp = S.group[i];
         if (gp < 2) { gA[gp] += a; gB[gp] += bb; ++gN[gp]; }
         const uint8_t bd = S.band[i];
-        if (bd < 3) { bandL[bd] += Y; bandB[bd] += bb; ++bandN[bd]; }
+        if (bd < 3) { bandL[bd] += L; bandA[bd] += a; bandB[bd] += bb; ++bandN[bd]; }
         if (S.skin[i]) { skinLum.push_back(Y); skB += bb; ++skN; }
     }
 
@@ -384,8 +421,11 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
         const double db = gB[0]/gN[0] - gB[1]/gN[1];
         d.v[D_SEP] = (float)std::sqrt(da*da + db*db);
     }
+    // The separation triple: region A (top third) minus region B (bottom third), as the three
+    // signed components of their Lab difference. Signed on purpose -- see the enum note.
     if (bandN[0] > 0 && bandN[2] > 0) {
         d.v[D_DL] = (float)(bandL[2]/bandN[2] - bandL[0]/bandN[0]);
+        d.v[D_DA] = (float)(bandA[2]/bandN[2] - bandA[0]/bandN[0]);
         d.v[D_DB] = (float)(bandB[2]/bandN[2] - bandB[0]/bandN[0]);
     }
     // Zeroed rather than reported unless the mask is believable — too few pixels is noise, too

@@ -652,6 +652,75 @@ int main() {
         check(ok, "attribution decomposes a grade into per-control contributions");
     }
 
+    // 24. SIGNED AXES STEER, MAGNITUDES DO NOT — the finding that reshaped the descriptor set.
+    //     Measured on the beach sunset, neutral -> grade: b* predicted to 5%, C* to 37-57%, and
+    //     `sep` came back +1.1 against a measurement of -3.8, i.e. the wrong SIGN. A distance is
+    //     a positive quantity built from squares, so a linear model cannot express "apart in a,
+    //     together in b" cancelling. The separation triple exists because of that: three signed
+    //     Lab components instead of one distance, which also gives the TONE axis the user named
+    //     ("a different hue or tone level") and the original sep did not have at all.
+    //
+    //     This checks the property the whole steerable set depends on, over a multi-control move
+    //     of the kind a real grade makes.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+        float scale[oga::kDescN]; desc_scales(J, scale);
+
+        // Several controls at once, in the proportions a look actually uses.
+        float dp[13] = {0};
+        dp[2] = 0.5f; dp[3] = -0.5f; dp[5] = 0.5f; dp[6] = -0.5f;
+        float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
+        float P1[13]; oga::apply_move(P0, dp, P1);
+        oga::Desc d1 = oga::describe(S, cam, enc, P1);
+
+        double worstSigned = 0.0; int wd = 0;
+        for (int d = 0; d < oga::kSteerableDescN; ++d) {
+            const double e = std::fabs(pred[d] - (d1.v[d]-d0.v[d])) / scale[d];
+            if (e > worstSigned) { worstSigned = e; wd = d; }
+        }
+        // The separation triple is inside the steerable range and the two magnitudes are not —
+        // structural, so a future edit cannot quietly let a distance back into a solve.
+        bool ok = (oga::D_DL < oga::kSteerableDescN)
+               && (oga::D_DA < oga::kSteerableDescN)
+               && (oga::D_DB < oga::kSteerableDescN)
+               && (oga::D_CHROMA >= oga::kSteerableDescN)
+               && (oga::D_SEP    >= oga::kSteerableDescN);
+        ok &= (worstSigned < 0.30);
+        if (!ok) printf("      (worst signed descriptor: %s at %.3f of scale)\n",
+                        oga::desc_name(wd), worstSigned);
+        check(ok, "signed descriptors steer; magnitudes are excluded from the steerable set");
+    }
+
+    // 25. The separation triple carries TONE as well as hue, which is the half the original
+    //     distance was missing. On a frame that is brighter AND warmer up top, all three
+    //     components have to register it — and on a flat frame all three must vanish, or a rule
+    //     targeting separation would chase noise on footage that has none.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+
+        oga::SampleSet two = make_frame(0);
+        oga::classify(two, cam, enc);
+        oga::Desc d2 = oga::describe(two, cam, enc, P0);
+
+        oga::SampleSet flat = make_frame(1);
+        oga::classify(flat, cam, enc);
+        oga::Desc df = oga::describe(flat, cam, enc, P0);
+
+        const bool ok =
+            d2.v[oga::D_DL] > 2.f  &&        // top band genuinely lighter, in L*
+            d2.v[oga::D_DB] > 10.f &&        // ...and warmer
+            std::fabs(df.v[oga::D_DL]) < 1.f &&   // flat frame: no tone separation
+            std::fabs(df.v[oga::D_DA]) < 1.f &&   // ...no hue separation either
+            std::fabs(df.v[oga::D_DB]) < 1.f;
+        check(ok, "separation triple registers tone and hue, and vanishes on a flat frame");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }
