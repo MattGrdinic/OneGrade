@@ -20,7 +20,8 @@ sampling, built-ins) · `FILM-EMULATION.md` (Cineon → print-stock path + prese
 `CREATING-LUTS.md` (authoring new built-in looks) · `GROUPS.md` (Node Role, the
 pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed) ·
 `AUTO-GRADE.md` (frame measurement, the Gain/Rolloff fits and the footage behind them,
-what is deliberately not set, and the traps found on the way). ·
+what is deliberately not set, the traps found on the way, and §9 the scene descriptors +
+control Jacobian). ·
 `ROADMAP.md` (deferred work with the reasoning kept: Match Clip and why adjacent
 clips aren't reachable, gamut compression for exact LUT export, declaring OFX 1.5 colour
 management).
@@ -348,6 +349,29 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
   real toolkit); do NOT expand it from `CMAKE_CUDA_ARCHITECTURES_ALL_MAJOR`, which is baked
   into CMake and lags it (3.31 still lists CUDA 13's removed `compute_50`, stops at 90).
   Separable compilation must stay OFF or the `-dlink` strips the fatbinary's PTX.
+- **SIGNED AXES STEER, MAGNITUDES DO NOT** (2026-08-06, measured on the beach sunset — the rule
+  that reshaped the descriptor set; `docs/AUTO-GRADE.md` §9, pinned by test 24). Linear
+  prediction vs measurement, neutral → grade: `b*` (signed axis) **5%**, `C*` (magnitude
+  √(a²+b²)) **37–57%**, `sep` (distance between centroids) **the wrong sign** — +1.1 predicted
+  against −3.8 measured. A distance is built from squares, so a linear model cannot express
+  "apart in a" cancelling "together in b". Anything intended as a *solve target* must be a
+  signed component; magnitudes are fine as diagnostics. `kSteerableDescN` enforces it
+  structurally. Separation is consequently three signed Lab components between two regions
+  (`dL*` tone, `da*`/`db*` hue), not one distance — which also gave it the TONE axis the user's
+  own definition named and the first version lacked entirely.
+- **Two controls are discontinuous at their own defaults** (found 2026-08-06 by the descriptor
+  Jacobian, not looked for; both pinned by test 20, both explained in `docs/AUTO-GRADE.md` §9).
+  **Rolloff at 0**: `softclip()` early-outs at `amt<=0` but asymptotes hard at 1.0 for any
+  `amt>0`, so `softclip(1.26)` goes 1.26 → 1.00000 between 0 and 0.0001 — the slider's first
+  nudge is a step, not a ramp (same shape as the LUT-encode dead end). Probably intended; it
+  IS a soft clip to 1.0. **RAW Temp at 6500 K**: `white_balance()` forces identity on
+  6499<T<6501, but the Kim Planckian locus at 6500 K is (0.31349, 0.32366) vs D65's
+  (0.31270, 0.32900) — D65 is a *daylight* illuminant and sits above the blackbody locus, so
+  the skipped adaptation isn't an identity and 1 K off default jumps neutral grey by a* +2.06
+  (visible green cast from nowhere). Looks like a plain defect; the fix is to adapt to
+  blackbody(6500) rather than D65, which makes "identity at 6500" true by construction — but
+  it's a **4-file colour-math edit** and it moves every saved grade with RAW Temp ≠ 6500, so
+  it's the user's call, not a drive-by.
 - **Camera matrices** other than Blackmagic are published/approx — flagged for on-footage validation.
 - **Resolve's LUT folder is per-platform** (`filmLutDir()`): Windows adds a `Support` level
   (`%PROGRAMDATA%\Blackmagic Design\DaVinci Resolve\Support\LUT`), macOS doesn't

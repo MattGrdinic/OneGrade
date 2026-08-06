@@ -108,6 +108,42 @@ shot into mid-gray mush. Refusing to act in that direction handles it without a 
 case. The 0.30 floor exists because the fit is only evidenced out to about −2 EV, and the
 bare line reaches zero near −4 EV.
 
+### The black point is solved, not stamped
+
+The preset writes **Lift 0.11** on every shot, and a fixed lift lands a *different* black point
+depending on where the footage's own floor already sits:
+
+| shot | Creative lift | user's lift | Creative black point |
+|---|---|---|---|
+| beach | 0.050 | −0.011 | 0.229 |
+| city | 0.110 | 0.066 | 0.161 |
+| car | — | *"lifts shadows a bit too much"* | |
+
+Three hand grades, all corrected downward. **Base has always solved its floor to a target;
+Creative stamped a constant, and that difference is the whole defect.** It is now bisected on
+the same monotonic curve, against the `Creative Black` tunable (default 0.050).
+
+Note the beach and city need Lift moved in **opposite directions** — −0.019 and +0.034 — to
+land the same black point. That is exactly what a constant cannot do.
+
+> **To fit `Creative Black`:** grade a shot by hand until it looks right, hit Analyze, and read
+> the **Tone** row's graded `blk`. That number *is* the target.
+
+### The anti-crush floor, and a bug the change created
+
+Bias's −0.06-per-unit lift offset was calibrated against the fixed 0.11, which left room
+underneath. With Creative solving to −0.019 on the beach, **Bias −1 took lift to −0.079 and the
+black point to −0.03 — crushed**, from two individually correct changes.
+
+Fixed as a floor in `applyBias` rather than by retuning the coefficient: the coefficient is
+taste, the floor is a fact. Bias keeps its full range and stops removing shadows once there are
+none left.
+
+Bias also runs **±2** now. Measured black point: 0.050 at 0, ~0.18 at +1, ~0.25 at +1.5, ~0.33
+at +2, against the old stamped 0.229 / 0.161 — so the extra travel is new headroom rather than a
+restoration. The negative half now does much less to shadows (−1 and −2 both land on the floor),
+which is correct but makes the slider asymmetric about zero.
+
 ---
 
 ## 4. Highlight Rolloff, from source clipping
@@ -239,13 +275,17 @@ is *tuning* the thing, not to whoever is using it.
 
 ### Turning the analysis UI back on
 
-The debug surface — the **Show analysis** checkbox, the **Analyze Frame** button, the six
+The debug surface — the **Show analysis** checkbox, the **Analyze Frame** button, the nine
 measurement rows and the **Applied** readout — is hidden behind a compile-time switch in
 `src/OneGrade.cpp`:
 
 ```c
 static const bool kAnalysisDebugUI = false;   // -> true, rebuild
 ```
+
+> **On the `feat/scene-descriptors` branch this is currently `true`**, because the Colour /
+> Regions / Response rows exist to be read on footage. It must go back to `false` before the
+> branch merges into a release.
 
 Flip it, rebuild, and the checkbox reappears and toggles the rest at runtime. The params
 always exist and always work; only their visibility changes, so saved projects and the
@@ -265,7 +305,116 @@ them.
 | **Peak** | p99.9 and how far it runs past p99. |
 | **Shape** | `hot` (above display white), `pin %@ceiling` (clipped at source), mid-tone saturation. |
 | **Subject** | skin coverage %, skin-masked key, skin `R/G` and `B/G`. High coverage means the mask matched the scene, not a face. |
+| **Colour** | mid-tone `a*` / `b*` / `C` / `sep`, at NEUTRAL — describes the footage, not the grade on it. |
+| **Graded** | the same, for the grade actually on the node. The one that moves. Measured pre-LUT. |
+| **Regions** | the two colour populations (share + hue, cooler first) and `db*`. |
+| **Separation** | the triple, neutral → graded: `dL*` tone, `da*` / `db*` hue. |
+| **Drives b\*** · **Drives dL\*** · **Drives db\*** | which controls produced each change: measured, linear-predicted, and the top three contributors. A large act/lin gap means the grade sits outside the linear range. |
+| **Response** | measured Jacobian rows: how far `b*` moves per nudge of each balance control on *this* shot. |
 | **Applied** | what Auto Grade last wrote and the measurement behind it. |
 
 **Analyze Frame** only measures and reports; it never changes the picture. Only **Auto
 Grade** writes values.
+
+---
+
+## 9. Scene descriptors and the control Jacobian
+
+Everything above answers *how is this frame exposed*. `src/OneGradeAnalysis.h` answers **what
+colour is it, and what would each control do about that** — the half that was missing when a
+sunset-over-ocean grade reached for **Offset Temp** to separate water from sky and no measured
+number could have asked for it.
+
+It is a separate header in its own namespace (`og::analysis`, aliased `oga`) because **it is
+not part of the golden rule**. `OneGradePipeline.h` is the single source of truth that the
+three GPU kernels mirror; nothing here is mirrored and nothing here may be called from a
+kernel. It runs once per button press, on the CPU, over ~40k samples, and produces parameter
+values rather than pixels.
+
+### Descriptors
+
+Thirteen numbers, in CIELAB rather than HSV — `b*` **is** the warm/cool axis and `a*` **is**
+green/magenta, which lines them up one-for-one with the Temp and Tint controls and keeps the
+Jacobian well conditioned instead of smearing one control across several rows.
+
+**Signed axes steer. Magnitudes do not.** Measured on the beach sunset, neutral → grade,
+linear prediction against measurement:
+
+| descriptor | kind | error |
+|---|---|---|
+| `b*` | signed axis | **5%** |
+| `C*` | magnitude, `√(a²+b²)` | 37–57% |
+| `sep` | distance between centroids | **wrong sign** (+1.1 predicted, −3.8 measured) |
+
+A distance is a positive quantity built from squares, so a linear model cannot express "apart
+in `a`" cancelling "together in `b`". `C*` and `sep` are therefore **report-only** — they
+measure honestly and only fail as solve targets. `kSteerableDescN` makes that structural, and
+test 24 pins it so a future edit can't let a distance back into a solve.
+
+### The separation triple
+
+The user's definition of what makes a frame dynamic: *"push those objects to be more separated
+from others of a different **hue or tone level**."* Two axes. The original `sep` was a distance
+in `(a*, b*)` — hue and chroma only, with **no tone axis in it at all**.
+
+It is now the three signed components of the Lab difference between the frame's two regions:
+
+- **`dL*`** — tone separation
+- **`da*` / `db*`** — hue separation
+
+Band means are taken in `L*` rather than display luma so all three live in one space and are
+comparable with each other.
+
+**Regions are the top and bottom third, and that is a stand-in.** It works on landscape footage
+because a landscape separates its objects by height — `db*` came back **+43** and found
+sky-over-water cleanly, where PCA-seeded 2-means in `(a*, b*)` returned two populations *both*
+at orange (h29 and h44). It fails the moment the subjects aren't stacked vertically: two people
+side by side, a car against a wall, a face against a window.
+
+**This is the seam where segmentation plugs in.** Supplying real region masks changes nothing
+else in this file, because the descriptors only ever ask for *region A minus region B*. It is
+also the first concrete argument for a classifier in this project — not for exposure, which the
+numbers already handle, but for **region identity**.
+
+**Membership is fixed at neutral, and this is the whole ballgame.** The mid-tone window, the
+skin mask, and which cluster a pixel belongs to are decided **once**, by `classify()`, from
+the ungraded render. `describe()` only ever recomputes statistics over those fixed masks.
+This is the same trap the skin mask already fell into once — a selection rule that constrains
+the quantity being measured describes the filter, not the footage. If the mid-tone window
+were re-selected after every perturbation, "the mids got brighter" would be unmeasurable by
+construction, because the window would slide along with them. Cluster membership is a
+property of the *footage*; the grade is what gets differentiated.
+
+### The Jacobian
+
+**We do not write down what the controls mean.** `jacobian()` perturbs each control by one
+natural step, central-differenced, and measures which descriptors moved. That the system
+knows negative Offset Temp adds blue is a *measurement*, not a table — so it cannot drift when
+the pipeline changes (same reasoning as `og_solve()` using bisection over a closed form), it
+is testable, and it is shot-dependent for free.
+
+`solve_intent()` inverts it by damped least squares. The damping earns its place: twelve
+descriptors against thirteen controls, several nearly redundant (Gain and Post Exposure both
+raise the midtone), so an undamped solve finds an enormous cancelling pair that is correct to
+first order and absurd on the picture. Damping buys the *smallest* move that gets close —
+which is also the one a colourist would make.
+
+Verified in `test/pipeline_test.cpp` (tests 15–21): the error falls ~4× per halving of the
+move, which is the signature of a real derivative rather than a plausible-looking table.
+
+### Two controls are not differentiable at their defaults
+
+Both were found *by* the Jacobian, not looked for, and both are properties of the shipping
+pipeline. `steer_mask()` excludes them.
+
+| Control | What happens |
+|---|---|
+| **Highlight Rolloff** at 0 | `softclip()` early-outs at `amt <= 0` but asymptotes hard at 1.0 for any `amt > 0`. `softclip(1.26)` goes **1.26 → 1.00000** between `amt` 0 and 0.0001; measured mean overshoot goes 0.031 → 0.000 across the same gap. The control has two regimes — *is there a ceiling at all* (a step at 0) and *how far down does the knee reach* (the rest, smooth). |
+| **RAW Temperature** at 6500 K | `white_balance()` forces identity on `6499 < T < 6501`, but the Kim et al. **Planckian** locus at 6500 K is (0.31349, 0.32366) while D65 is (0.31270, 0.32900) — `dy = -0.0053`, because D65 is a *daylight* illuminant and sits above the blackbody locus. The skipped adaptation is therefore not an identity, and stepping 1 K off the default jumps a neutral mid-gray by `a* +2.06`: rgb `0.55397 0.55397 0.55397` → `0.54311 0.55807 0.54535`. A green cast appears out of nowhere on the first nudge. |
+
+The rolloff behaviour may well be intended — it is a soft clip *to* 1.0 by definition. The RAW
+Temp one looks like a plain defect: adapting to `blackbody(6500)` instead of to D65 would make
+the stated "identity at 6500 K" contract true by construction and remove the early-out
+entirely. **That is a colour-math change and therefore a four-file kernel edit**, and it moves
+every saved grade with RAW Temp ≠ 6500, so it is a deliberate decision rather than a fix to
+slip in. Test 20 pins both, so if either is ever changed that test fails first and says so.
