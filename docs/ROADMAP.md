@@ -283,3 +283,76 @@ of two weeks.
 **Does every shot even want separation?** The city grade was purely tonal; the beach needed
 colour separation. The classifier's first useful output may be *"are there separable regions
 here at all"* rather than *"push these two apart"*.
+
+---
+
+## "White balance first" for Magic Grade (user's idea, 2026-08-06)
+
+An optional checkbox: balance the frame before running the Magic Grade chain.
+
+### The observation
+
+Magic Grade on a slightly cool interior produced a dramatic result — usable, but a long way from
+where the user would start. Resetting, warming Scene White Balance to 8301 by hand, and running
+Magic Grade again produced "a much nicer starting place" from the same button.
+
+### Why it works, which is the part worth keeping
+
+**A global cast contaminates the comparison that picks the direction.** `magic_decide()` chooses
+by asking whether the subject leans warm or cool *relative to the rest of the scene*. If the
+whole frame is cool because the white balance is wrong, the algorithm reads a camera error as
+scene content and pushes further along it. Correct the balance first and every remaining
+difference is the room rather than the sensor.
+
+That also explains why the effect is largest on interiors and mixed lighting, and smallest on a
+sunset — where the cast IS the content.
+
+### Grey-world is the obvious approach and it is wrong here
+
+Averaging the frame to neutral would "correct" a beach sunset to grey, which is the opposite of
+what anyone wants. The classic fixes (white-patch, neutral-pixel detection) all fail the same
+way: they cannot tell a colour that is a mistake from a colour that is the point.
+
+**The classifier already answers that.** Balance on the regions with a defensible neutral
+expectation — BUILT, GROUND, TERRAIN, the man-made and underfoot surfaces — and ignore the ones
+that are legitimately coloured: SKY, WATER, VEGETATION. SKIN is a strong secondary reference,
+since skin chromaticity is far more consistent across people than intuition suggests.
+
+On a frame with no trustworthy neutral reference, decline and say so, exactly like the rest of
+the feature. A sunset over water has no neutral surface in it, and guessing one is how you get a
+grey sunset.
+
+### Shape
+
+- Checkbox, default state to be decided on footage. Optional either way — some shots want the
+  cast kept.
+- Runs before the Creative Grade step, so everything downstream sees the balanced frame,
+  including the segmentation itself.
+- Writes an ordinary Scene White Balance value the user can drag, like everything else here.
+
+### Explicitly out of scope
+
+The user's own next moves from that starting point — reducing the contrast ratio on the face,
+pushing further warm — are **not** something the plugin should chase. Their words: "this is
+nothing our plugin should be concerned with... it's very easy to adjust via the Separation
+slider, which is what we want."
+
+---
+
+## Deferred: axis confidence for Magic Grade (2026-08-06)
+
+`magic_decide()` picks a direction from the subject's lean against the rest of the scene, with no
+regard for how large that lean is. On a downward city view it chose from `L34 v 34` and
+`b2 v 2` — differences that round to zero — and applied a full-strength move. The same logic on a
+similar frame could go the other way and look wrong.
+
+`experiments/segmentation/intent.py` already solves this, scaling the push by `gap / AXIS_FULL`
+so a weak axis gets a weak move; it was never ported to C++. Two options when it is:
+
+1. scale magnitude by confidence, so a weak axis produces a small move
+2. as above, plus decline below a floor (~2 Lab units) with the Why row saying the two regions
+   look the same
+
+**Deferred deliberately.** The user liked the result on the frame where the reasoning was
+weakest, and one shot is not enough to know how often the axis is that thin. Worth living with
+first and seeing whether arbitrary directions actually bite.
