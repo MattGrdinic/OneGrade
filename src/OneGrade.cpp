@@ -481,7 +481,8 @@ private:
     OFX::DoubleParam* m_CleanMaxExp;   // ceiling on how far Base may brighten, in stops
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
-    OFX::StringParam* m_ProbeColour;    // a*/b*/chroma/separation
+    OFX::StringParam* m_ProbeColour;    // a*/b*/chroma/separation, at NEUTRAL
+    OFX::StringParam* m_ProbeGraded;    // the same, for the grade actually on the node
     OFX::StringParam* m_ProbeRegions;   // the two colour populations + the vertical split
     OFX::StringParam* m_ProbeResponse;  // what the controls DO on this shot (Jacobian rows)
 
@@ -558,6 +559,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
     m_ProbeColour   = fetchStringParam("probeColour");
+    m_ProbeGraded   = fetchStringParam("probeGraded");
     m_ProbeRegions  = fetchStringParam("probeRegions");
     m_ProbeResponse = fetchStringParam("probeResponse");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
@@ -733,6 +735,7 @@ void OneGrade::probeAnalyze(double p_Time)
     m_ProbeSubject->setValue("");
     m_ProbePeak->setValue("");
     m_ProbeColour->setValue("");
+    m_ProbeGraded->setValue("");
     m_ProbeRegions->setValue("");
     m_ProbeResponse->setValue("");
     m_HaveJac = false;
@@ -972,6 +975,42 @@ void OneGrade::probeAnalyze(double p_Time)
                      m_LastDesc.v[oga::D_A], m_LastDesc.v[oga::D_B],
                      m_LastDesc.v[oga::D_CHROMA], m_LastDesc.v[oga::D_SEP]);
             m_ProbeColour->setValue(m2);
+
+            // THE SAME SAMPLES, THE SAME SPACE, THE GRADE THAT IS ACTUALLY ON THE NODE.
+            //
+            // Every other row here measures the neutral node on purpose, so that clicking
+            // twice cannot chase its own tail — which also means they are identical whatever
+            // the grade is, and therefore useless for the one question worth asking of two
+            // grades: did this move do what I think it did? This row answers that, and it is
+            // cheap because describe() is a pure function of the parameter vector.
+            //
+            // Camera and encode are held at the neutral row's, so the ONLY difference between
+            // the two lines is the parameters. Comparing across two spaces would be measuring
+            // the encode, not the grade.
+            //
+            // Read from the sliders rather than resolveConfig() for two reasons: no file I/O
+            // in a param callback (resolveConfig loads the LUT), and for a diagnostic the
+            // honest thing to show is what the panel says. It is PRE-LUT — with a film stock
+            // selected the picture on screen is not this — so the row says so.
+            float Pg[oga::kParamN];
+            Pg[0]  = (float)m_Temp->getValueAtTime(p_Time);
+            Pg[1]  = (float)m_Tint->getValueAtTime(p_Time);
+            Pg[2]  = (float)m_Density->getValueAtTime(p_Time);
+            Pg[3]  = (float)m_Lift->getValueAtTime(p_Time);
+            Pg[4]  = (float)m_Gamma->getValueAtTime(p_Time);
+            Pg[5]  = (float)m_Gain->getValueAtTime(p_Time);
+            Pg[6]  = (float)m_OffTemp->getValueAtTime(p_Time);
+            Pg[7]  = (float)m_OffTint->getValueAtTime(p_Time);
+            Pg[8]  = (float)m_PostExp->getValueAtTime(p_Time);
+            Pg[9]  = (float)m_PostCon->getValueAtTime(p_Time);
+            Pg[10] = (float)m_RawExp->getValueAtTime(p_Time);
+            Pg[11] = (float)m_RawTemp->getValueAtTime(p_Time);
+            Pg[12] = (float)m_Rolloff->getValueAtTime(p_Time);
+            const oga::Desc dg = oga::describe(SS, camera, dispEnc, Pg);
+            snprintf(m2, sizeof m2, "a*%+.1f b*%+.1f C%.1f sep%.1f%s",
+                     dg.v[oga::D_A], dg.v[oga::D_B], dg.v[oga::D_CHROMA], dg.v[oga::D_SEP],
+                     lutSelected() ? " pre-LUT" : "");
+            m_ProbeGraded->setValue(m2);
 
             snprintf(m2, sizeof m2, "cool %.0f%% h%.0f | warm %.0f%% h%.0f | db*%+.0f",
                      m_LastExtras.share[0], m_LastExtras.hue[0],
@@ -1388,6 +1427,7 @@ void OneGrade::setEnabledness()
     m_ProbeSubject->setIsSecret(!debug);
     m_ProbeStatus->setIsSecret(!debug);
     m_ProbeColour->setIsSecret(!debug);
+    m_ProbeGraded->setIsSecret(!debug);
     m_ProbeRegions->setIsSecret(!debug);
     m_ProbeResponse->setIsSecret(!debug);
     // Containment targets are exposed only in the debug panel: they are how the Clean
@@ -2041,6 +2081,8 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "What the Auto Grade button last wrote, and the measurement it came from. Blank until you press it. Analyze Frame never changes anything; only Auto Grade does.");
         probeLine("probeColour", "Colour",
                   "The frame's colour, in CIELAB over the mid-tones: a* is green-to-magenta, b* is cool-to-warm, C is overall colourfulness. 'sep' is how far apart the two dominant colour populations sit - a low number on a frame that visibly has two subjects (sky over water, say) means they are sharing a colour and would separate if pushed apart. Lab rather than HSV because b* lines up one-for-one with the Temp controls and a* with the Tint ones, which is what makes the Response row below readable.");
+        probeLine("probeGraded", "Graded",
+                  "The same colour measurements as the row above, but for the grade currently on this node instead of a neutral one - so the two lines together say what your grade DID. Every other row here deliberately measures the ungraded footage, which makes them identical no matter what you set; this is the one that moves. Camera and Output Encode are held the same as the neutral row so the only difference is the sliders. It is measured before the LUT, so with a film stock selected this is the grade underneath the stock rather than the picture on screen - the row says 'pre-LUT' when that is the case.");
         probeLine("probeRegions", "Regions",
                   "The two dominant colour populations found by clustering the frame, cooler one first: what share of the frame each holds and its hue angle in degrees. Then 'db*', how much warmer the top third of the frame is than the bottom third - a large positive number is the signature of a warm sky over a cooler foreground. Membership is decided once, from the ungraded picture, so these describe the footage rather than the grade currently on it.");
         probeLine("probeResponse", "Response",

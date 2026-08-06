@@ -180,6 +180,21 @@ struct SampleSet {
     size_t size() const { return band.size(); }
 };
 
+// Is the skin mask worth believing on this frame? A FLOOR ALONE IS NOT ENOUGH, which the
+// first real frame proved: a 4K beach at 230k samples returned 46% coverage and sailed past a
+// `count >= 200` gate, so descriptors describing sand and sky would have been handed to a
+// solver marked trustworthy. The panel has always printed coverage precisely because a HIGH
+// number means the mask failed — that lesson needs applying to the machine-readable path too,
+// not just the human-readable one.
+//
+// The 25% ceiling separates every case measured so far: real faces came in at 3.4% and 10.3%,
+// false positives at 39.7% (desert sand), 46.5% (cactus), 46% (this beach) and 72.2%. It is
+// fitted to those six observations, so widen it if a genuine tight close-up ever lands above.
+static inline bool skin_trustworthy(long long skinN, size_t n)
+{
+    return skinN >= 200 && (double)skinN <= 0.25 * (double)n;
+}
+
 // Thin the set for the Jacobian, which pays 2 x kParamN describe() passes and does not need
 // the full percentile resolution. MEMBERSHIPS ARE COPIED, NEVER RE-DERIVED: the derivative has
 // to be taken around the same masks the operating point was measured with, or the two are not
@@ -241,7 +256,7 @@ static inline Extras classify(SampleSet& S, int cam, int enc)
     }
     ex.hotPct  = 100.0f * (float)hot   / (float)n;
     ex.skinPct = 100.0f * (float)skinN / (float)n;
-    ex.skinOk  = (skinN >= 200);
+    ex.skinOk  = skin_trustworthy(skinN, n);
 
     if (pool.size() < 64) return ex;   // too little chromatic information to split
 
@@ -373,9 +388,10 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
         d.v[D_DL] = (float)(bandL[2]/bandN[2] - bandL[0]/bandN[0]);
         d.v[D_DB] = (float)(bandB[2]/bandN[2] - bandB[0]/bandN[0]);
     }
-    // Zeroed rather than reported when coverage is too low: a skin number off 40 pixels is
-    // noise, and a caller that weights it would be steering on nothing.
-    if (skN >= 200) {
+    // Zeroed rather than reported unless the mask is believable — too few pixels is noise, too
+    // many means it matched the scene rather than a face. Same gate classify() reports through
+    // Extras::skinOk, shared so the two cannot drift. See skin_trustworthy().
+    if (skin_trustworthy(skN, n)) {
         d.v[D_SKINL] = pct_of(skinLum, 0.50);
         d.v[D_SKINB] = (float)(skB / (double)skN);
     }
