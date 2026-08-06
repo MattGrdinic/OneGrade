@@ -57,6 +57,23 @@ if(BUILD_CUDA)
   list(APPEND PLUGIN_SRCS src/CudaKernel.cu)
 endif()
 
+# ncnn: the inference runtime for Magic Grade's region masks. Vendored and built from source
+# (third_party/ncnn/VENDORED.md) so CI needs no package manager, no vcpkg entry and no network
+# step beyond the checkout itself.
+#
+# Vulkan and OpenMP are both OFF on purpose. Vulkan because inference here is a button press on
+# the CPU rather than part of a render, and OpenMP because it would put a libomp dependency
+# inside a plugin bundle that has to load on machines we do not control.
+set(NCNN_VULKAN         OFF CACHE BOOL "" FORCE)
+set(NCNN_OPENMP         OFF CACHE BOOL "" FORCE)
+set(NCNN_SHARED_LIB     OFF CACHE BOOL "" FORCE)
+set(NCNN_SIMPLEOCV      OFF CACHE BOOL "" FORCE)
+set(NCNN_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
+set(NCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(NCNN_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+set(NCNN_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/ncnn EXCLUDE_FROM_ALL)
+
 add_library(OneGrade MODULE ${PLUGIN_SRCS} ${SUPPORT_SRCS})
 target_include_directories(OneGrade PRIVATE
   ${SDK}/include ${SDK}/Support/include ${SDK}/Support/Plugins/include src)
@@ -66,7 +83,7 @@ target_include_directories(OneGrade PRIVATE
 # an empty function while the plugin still advertises OpenCL support.
 # OpenCLKernel.cpp and OpenCL::OpenCL are always built, so this is unconditional.
 target_compile_definitions(OneGrade PRIVATE OFX_SUPPORTS_OPENGLRENDER OFX_SUPPORTS_OPENCLRENDER)
-target_link_libraries(OneGrade PRIVATE OpenCL::OpenCL)
+target_link_libraries(OneGrade PRIVATE OpenCL::OpenCL ncnn)
 
 set_target_properties(OneGrade PROPERTIES PREFIX "" SUFFIX ".ofx" OUTPUT_NAME "OneGrade")
 

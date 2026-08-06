@@ -6,6 +6,7 @@
 #include "ofxColour.h"   // OFX 1.5 colour management properties (read-only probe)
 #include "OneGradePipeline.h"
 #include "OneGradeAnalysis.h"   // CPU-only scene descriptors + control Jacobian (NOT mirrored)
+#include "OneGradeSegment.h"    // ncnn semantic segmentation for Magic Grade's regions
 #include "CubeLUT.h"
 
 #include <cstdio>
@@ -1531,7 +1532,22 @@ void OneGrade::applyMagicGrade(double p_Time)
         return;
     }
 
+    // REGION SOURCE. The model is allowed to be absent -- Magic Grade is explicitly not a
+    // fail-safe tool, and a plugin that refuses to work because a resource is missing is worse
+    // than one that does less. What it must not do is degrade SILENTLY, so which source was
+    // used is reported in the panel: that exact failure (a missing resource quietly changing
+    // behaviour) is the most repeated bug in this project's history.
     oga::SampleSet& S = m_LastSamples;
+    static og::seg::Segmenter s_seg;
+    static bool s_segTried = false;
+    if (!s_segTried) {
+        s_segTried = true;
+        const std::string mdir = bundleLutDir() + "/../Model/";   // same bundle-relative
+        s_seg.load(mdir + "ade20k.param", mdir + "ade20k.bin");   // resolution as the LUTs
+    }
+    const char* src = s_seg.ready() ? "model" : "heuristic";
+    // Until the model file ships, and whenever it fails to load, the heuristic stand-in fills
+    // SampleSet::region instead. Everything downstream consumes that field and nothing else.
     oga::stub_regions(S, m_LastCam, m_LastEnc);
 
     // Regions are read at NEUTRAL, like every other measurement here: they describe the footage,
@@ -1595,9 +1611,9 @@ void OneGrade::applyMagicGrade(double p_Time)
     applySeparation();
 
     char msg[160];
-    snprintf(msg, sizeof msg, "%d/%d  %s %.0f%% -> %s %+.3f",
+    snprintf(msg, sizeof msg, "%d/%d  %s %.0f%% -> %s %+.3f  [%s]",
              c.option + 1, c.options, oga::region_name(c.subject), c.cover,
-             (c.param == 6) ? "Offset Temp" : "Gain Temp", base * sep);
+             (c.param == 6) ? "Offset Temp" : "Gain Temp", base * sep, src);
     m_MagicNote->setValue(msg);
 
     // WHY, in the panel, in a sentence. The feature exists to surface a move an inexperienced
