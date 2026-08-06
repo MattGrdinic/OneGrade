@@ -485,6 +485,8 @@ private:
     OFX::StringParam* m_ProbeGraded;    // the same, for the grade actually on the node
     OFX::StringParam* m_ProbeRegions;   // the two colour populations + the vertical split
     OFX::StringParam* m_ProbeResponse;  // what the controls DO on this shot (Jacobian rows)
+    OFX::StringParam* m_ProbeDriveB;    // which controls drove the warm/cool change
+    OFX::StringParam* m_ProbeDriveC;    // ...and the colourfulness change
 
     // Setup check — see probeSetup().
     OFX::PushButtonParam* m_SetupBtn;
@@ -562,6 +564,8 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ProbeGraded   = fetchStringParam("probeGraded");
     m_ProbeRegions  = fetchStringParam("probeRegions");
     m_ProbeResponse = fetchStringParam("probeResponse");
+    m_ProbeDriveB   = fetchStringParam("probeDriveB");
+    m_ProbeDriveC   = fetchStringParam("probeDriveC");
     m_SetupBtn    = fetchPushButtonParam("setupCheck");
     m_SetupStatus = fetchStringParam("setupStatus");
     m_SetupStats  = fetchStringParam("setupStats");
@@ -738,6 +742,8 @@ void OneGrade::probeAnalyze(double p_Time)
     m_ProbeGraded->setValue("");
     m_ProbeRegions->setValue("");
     m_ProbeResponse->setValue("");
+    m_ProbeDriveB->setValue("");
+    m_ProbeDriveC->setValue("");
     m_HaveJac = false;
     if (!m_SrcClip || !m_SrcClip->isConnected()) { m_ProbeStatus->setValue("No source clip connected"); return; }
 
@@ -1016,6 +1022,41 @@ void OneGrade::probeAnalyze(double p_Time)
                      m_LastExtras.share[0], m_LastExtras.hue[0],
                      m_LastExtras.share[1], m_LastExtras.hue[1], m_LastDesc.v[oga::D_DB]);
             m_ProbeRegions->setValue(m2);
+
+            // WHICH CONTROL DID IT. Decompose the neutral -> current-grade move through the
+            // Jacobian, per descriptor, per control. This row exists because reading a
+            // descriptor and naming the obvious control is wrong: on this very footage chroma
+            // rose 1.2 between Creative and the hand grade and the honest answer was that
+            // Density had gone DOWN while Lift, Gain and Offset Temp pushed it up. The
+            // controls overlap far too much to attribute a change by eye.
+            //
+            // `act` is measured, `lin` is what the linear model expected. The GAP between them
+            // is itself the signal — it says how far outside the linear regime the grade sits,
+            // which is exactly when a single-shot solve would undershoot.
+            // Linearised at the MIDPOINT of the move, not at either end. Decomposing a finite
+            // move with the Jacobian taken at its start is a one-sided estimate and drifts
+            // exactly as far as the move is long — which on a real grade is several natural
+            // steps, the regime where the responses are already measurably saturating. The
+            // midpoint is the mean-value point per component, so `lin` tracks `act` closely
+            // enough that the gap means something. m_LastJac stays at neutral, because the
+            // Response row is about the FOOTAGE's response, not this grade's.
+            float Pmid[oga::kParamN];
+            for (int i = 0; i < oga::kParamN; ++i) Pmid[i] = 0.5f * (Pn[i] + Pg[i]);
+            const oga::Jac Jmid = oga::jacobian(oga::decimate(SS, 12000), camera, dispEnc, Pmid);
+            const oga::Attribution A = oga::attribute(SS, camera, dispEnc, Jmid, Pn, Pg);
+            auto driverRow = [&](int d, OFX::StringParam* out) {
+                int drv[oga::kParamN];
+                const int k = oga::top_drivers(A, d, 3, drv);
+                char row[128];
+                int off = snprintf(row, sizeof row, "%+.1f act %+.1f lin", A.actual[d], A.linear[d]);
+                if (k == 0) snprintf(row + off, sizeof row - off, "  (nothing moved)");
+                for (int i = 0; i < k && off < (int)sizeof row - 1; ++i)
+                    off += snprintf(row + off, sizeof row - off, " %s%+.1f",
+                                    oga::param_name(drv[i]), A.at(d, drv[i]));
+                out->setValue(row);
+            };
+            driverRow(oga::D_B, m_ProbeDriveB);
+            driverRow(oga::D_CHROMA, m_ProbeDriveC);
 
             // The row that shows its work: per one natural nudge of each control, how far the
             // warm/cool axis actually moves ON THIS SHOT. Reading it is how the fit for a
@@ -1430,6 +1471,8 @@ void OneGrade::setEnabledness()
     m_ProbeGraded->setIsSecret(!debug);
     m_ProbeRegions->setIsSecret(!debug);
     m_ProbeResponse->setIsSecret(!debug);
+    m_ProbeDriveB->setIsSecret(!debug);
+    m_ProbeDriveC->setIsSecret(!debug);
     // Containment targets are exposed only in the debug panel: they are how the Clean
     // constants get fitted on footage, and a shipping panel should carry the result, not the
     // dials that produced it.
@@ -2085,6 +2128,10 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "The same colour measurements as the row above, but for the grade currently on this node instead of a neutral one - so the two lines together say what your grade DID. Every other row here deliberately measures the ungraded footage, which makes them identical no matter what you set; this is the one that moves. Camera and Output Encode are held the same as the neutral row so the only difference is the sliders. It is measured before the LUT, so with a film stock selected this is the grade underneath the stock rather than the picture on screen - the row says 'pre-LUT' when that is the case.");
         probeLine("probeRegions", "Regions",
                   "The two dominant colour populations found by clustering the frame, cooler one first: what share of the frame each holds and its hue angle in degrees. Then 'db*', how much warmer the top third of the frame is than the bottom third - a large positive number is the signature of a warm sky over a cooler foreground. Membership is decided once, from the ungraded picture, so these describe the footage rather than the grade currently on it.");
+        probeLine("probeDriveB", "Drives b*",
+                  "Which controls actually produced the warm/cool change between a neutral node and the grade currently on it, biggest contributor first. 'act' is the measured change, 'lin' is what the measured response predicted, and the gap between them says how far outside the linear range your grade sits - a big gap means the sliders are being pushed hard enough that their effect is tailing off. This row exists because naming the obvious control by eye does not work: on a real grade colourfulness rose while Density had actually been LOWERED, with Lift, Gain and Offset Temp pushing it up between them.");
+        probeLine("probeDriveC", "Drives C",
+                  "The same decomposition for colourfulness. Read it alongside 'Drives b*' when working out what a grade you built by hand actually did - the two together turn a look you tuned by feel into a list of which control contributed how much, which is what a rule has to be fitted to.");
         probeLine("probeResponse", "Response",
                   "What the controls actually DO on this shot, measured rather than assumed: how far b* (cool-to-warm) moves per nudge of each balance control, and how far colourfulness moves per nudge of Density. This is the plugin working out for itself that negative Offset Temp is what adds blue. It is shot-dependent - the same slider does something different to a saturated sunset than to a snowfield - which is why it is measured on every analyse instead of written down once.");
     }

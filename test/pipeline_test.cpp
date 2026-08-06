@@ -571,6 +571,87 @@ int main() {
         check(ok, "skin descriptors activate on coverage and read zero without it");
     }
 
+    // 22. ITERATING BEATS ONE LINEAR SHOT ON A BIG MOVE, which is the whole reason it exists.
+    //     Measured on the user's own hand grade: Offset Temp -0.167 is 3.3 natural steps, the
+    //     linear model said that buys b* -8.8, and it delivered -7.0 — 84% of linear, so a
+    //     single solve asked for b* -7.0 comes back a quarter short. This asks for a move well
+    //     outside the half-step range test 18 validates and checks that re-measuring closes the
+    //     gap rather than merely pointing the right way.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+
+        float dd[oga::kDescN] = {0}, w[oga::kDescN] = {0};
+        dd[oga::D_B] = -8.0f; w[oga::D_B] = 1.0f;          // a big ask, ~3 steps of Offset Temp
+        bool allow[13] = {false}; allow[6] = true;
+
+        float dp1[13]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp1);
+        float Pone[13]; oga::apply_move(P0, dp1, Pone);
+        const float errOne = std::fabs((oga::describe(S, cam, enc, Pone).v[oga::D_B]
+                                        - d0.v[oga::D_B]) - (-8.0f));
+
+        float Pit[13];
+        oga::solve_intent_iter(S, cam, enc, P0, dd, w, allow, 1e-4f, 3, Pit);
+        const float errIt = std::fabs((oga::describe(S, cam, enc, Pit).v[oga::D_B]
+                                       - d0.v[oga::D_B]) - (-8.0f));
+
+        const bool ok = (errOne > 0.15f)        // the single shot really does miss, as measured
+                     && (errIt < errOne / 4.f)  // and iterating closes most of the gap
+                     && (errIt < 0.05f)         // landing the value, not just the direction
+                     && (Pit[6] < Pone[6]);     // by reaching FURTHER, since the response saturates
+        check(ok, "iterative solve lands a large move that one linear shot undershoots");
+    }
+
+    // 23. ATTRIBUTION — which control actually caused which descriptor change.
+    //     Exists because I got this wrong on real data: chroma rose 1.2 between the Creative
+    //     grade and the hand grade, I called it "more density", and density had in fact gone
+    //     DOWN 0.053 while Lift, Gain and Offset Temp pushed chroma up. Reading a descriptor
+    //     and naming the obvious control does not work; the controls overlap too much.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+
+        // The shape of the real case: chroma pulled DOWN by density while other controls push
+        // it up, so the net can move opposite to the control a human would blame.
+        float P1[13]; neutral13(P1);
+        P1[2] = -0.05f;    // density down
+        P1[5] =  1.10f;    // gain up
+        P1[6] = -0.05f;    // offset temp down
+        oga::Attribution A = oga::attribute(S, cam, enc, J, P0, P1);
+
+        bool ok = true;
+        // Parts sum to the linear total, for every descriptor — the decomposition is complete,
+        // not a selection of the interesting terms.
+        for (int d = 0; d < oga::kDescN; ++d) {
+            float s = 0.f;
+            for (int p = 0; p < oga::kParamN; ++p) s += A.at(d, p);
+            ok &= close(s, A.linear[d], 1e-3f);
+        }
+        // Over a move this size the linear estimate should still track the measurement.
+        ok &= std::fabs(A.linear[oga::D_B] - A.actual[oga::D_B]) < 0.35f;
+
+        // Offset Temp is the top driver of b*, and it is named without anyone saying so.
+        int drv[oga::kParamN];
+        const int nd = oga::top_drivers(A, oga::D_B, 3, drv);
+        ok &= (nd >= 1) && (drv[0] == 6);
+
+        // And the point of the whole test: density's contribution to chroma is NEGATIVE while
+        // other controls are positive, so the net sign does not identify the control.
+        ok &= (A.at(oga::D_CHROMA, 2) < 0.f);
+        ok &= (A.at(oga::D_CHROMA, 5) > 0.f);
+
+        // Untouched controls contribute exactly nothing.
+        ok &= close(A.at(oga::D_B, 3), 0.f, 1e-9f) && close(A.at(oga::D_B, 9), 0.f, 1e-9f);
+        check(ok, "attribution decomposes a grade into per-control contributions");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

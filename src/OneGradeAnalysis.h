@@ -460,11 +460,23 @@ struct Jac {
     float at(int d, int p) const { return m[d*kParamN + p]; }
 };
 
-static inline Jac jacobian(const SampleSet& S, int cam, int enc, const float* P0)
+static inline const char* param_name(int p)
+{
+    static const char* n[kParamN] = { "tmp","tnt","dns","lft","gam","gan",
+                                      "oTm","oTn","pEx","pCn","rEx","rTm","rol" };
+    return (p >= 0 && p < kParamN) ? n[p] : "?";
+}
+
+// `allow` (optional) restricts which columns are measured at all. Excluded columns stay zero
+// and cost nothing — with three controls allowed that is 6 describe() passes instead of 26,
+// which is what makes solve_intent_iter() below affordable enough to run inside a button.
+static inline Jac jacobian(const SampleSet& S, int cam, int enc, const float* P0,
+                           const bool* allow = nullptr)
 {
     Jac J; for (int i = 0; i < kDescN*kParamN; ++i) J.m[i] = 0.f;
     const float* st = param_steps();
     for (int p = 0; p < kParamN; ++p) {
+        if (allow && !allow[p]) continue;
         float Pp[kParamN], Pm[kParamN];
         for (int i = 0; i < kParamN; ++i) { Pp[i] = P0[i]; Pm[i] = P0[i]; }
         Pp[p] += st[p]; Pm[p] -= st[p];
@@ -566,6 +578,104 @@ static inline void apply_move(const float* P0, const float* dpNorm, float* Pout)
         float v = P0[i] + dpNorm[i]*st[i];
         Pout[i] = std::min(hi[i], std::max(lo[i], v));
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// ITERATIVE SOLVE — because one linear shot always undershoots a large move.
+//
+// Measured on the beach sunset, against the user's own hand grade. Their move was Offset Temp
+// -0.167, which is 3.3 natural steps; the linear model says that buys b* -8.8 and it actually
+// delivered -7.0, i.e. **84% of linear**. The response saturates as you push it, so a solver
+// asked for b* -7.0 comes back with -0.13 when the honest answer is -0.167 — right control,
+// right direction, a quarter short. Test 18 only ever validated the model to within a third of
+// a step at a HALF-step move; three steps is extrapolation and behaves like it.
+//
+// So: solve, apply, RE-MEASURE, solve for what is left. Each round starts closer, so the
+// linearisation is being used where it is accurate instead of where it is convenient. Cheap
+// because the Jacobian is restricted to the controls the caller actually allows — three
+// controls over three rounds is ~24 describe() passes, well inside a button press.
+//
+// Returns the final parameter vector, already range-clamped by apply_move().
+static inline void solve_intent_iter(const SampleSet& S, int cam, int enc,
+                                     const float* P0, const float* ddTarget, const float* w,
+                                     const bool* allow, float lambda, int rounds,
+                                     float* Pout)
+{
+    for (int i = 0; i < kParamN; ++i) Pout[i] = P0[i];
+    const Desc d0 = describe(S, cam, enc, P0);
+    for (int r = 0; r < rounds; ++r) {
+        const Desc dc = describe(S, cam, enc, Pout);
+        // What is still owed, not what was originally asked for. This is the whole difference
+        // from a single shot: round 2 solves the residual of round 1.
+        float remain[kDescN];
+        for (int d = 0; d < kDescN; ++d) remain[d] = ddTarget[d] - (dc.v[d] - d0.v[d]);
+        const Jac Jr = jacobian(S, cam, enc, Pout, allow);
+        float dp[kParamN];
+        solve_intent(Jr, remain, w, allow, lambda, dp);
+        // apply_move() clamps to the panel ranges, so a target that cannot be reached pins the
+        // slider and the next round sees no further progress rather than diverging.
+        float Pn[kParamN]; apply_move(Pout, dp, Pn);
+        for (int i = 0; i < kParamN; ++i) Pout[i] = Pn[i];
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// ATTRIBUTION — which control actually caused which descriptor change.
+//
+// Exists because reading a descriptor and naming the obvious control is WRONG, and I proved it
+// on this project's own data: chroma rose 1.2 between the Creative grade and the hand grade, I
+// said "more density", and the user had in fact LOWERED density by 0.053. Lift, Gain and
+// Offset Temp were all pushing chroma up while Density pulled it down. The controls overlap far
+// too much to attribute a change by inspection — which is the argument for the Jacobian, made
+// by my own mistake.
+//
+// `linear` will not equal `actual` on a large move (see solve_intent_iter above); the gap is
+// itself the useful signal, because it says how far outside the linear regime the grade sits.
+struct Attribution {
+    float actual[kDescN];            // measured: describe(P1) - describe(P0)
+    float linear[kDescN];            // what the Jacobian predicted, = sum of `part` over p
+    float part[kDescN * kParamN];    // per-control contribution
+    float at(int d, int p) const { return part[d*kParamN + p]; }
+};
+
+static inline Attribution attribute(const SampleSet& S, int cam, int enc, const Jac& J,
+                                    const float* P0, const float* P1)
+{
+    Attribution A;
+    const float* st = param_steps();
+    float dpNorm[kParamN];
+    for (int p = 0; p < kParamN; ++p) dpNorm[p] = (st[p] > 0.f) ? (P1[p] - P0[p]) / st[p] : 0.f;
+
+    const Desc d0 = describe(S, cam, enc, P0);
+    const Desc d1 = describe(S, cam, enc, P1);
+    for (int d = 0; d < kDescN; ++d) {
+        A.actual[d] = d1.v[d] - d0.v[d];
+        float sum = 0.f;
+        for (int p = 0; p < kParamN; ++p) {
+            const float c = J.at(d, p) * dpNorm[p];
+            A.part[d*kParamN + p] = c;
+            sum += c;
+        }
+        A.linear[d] = sum;
+    }
+    return A;
+}
+
+// Rank controls by |contribution| to descriptor d, biggest first. Returns how many were
+// written (never more than `n`, and never any whose contribution rounds to nothing).
+static inline int top_drivers(const Attribution& A, int d, int n, int* out)
+{
+    int idx[kParamN];
+    for (int p = 0; p < kParamN; ++p) idx[p] = p;
+    std::sort(idx, idx + kParamN, [&](int a, int b) {
+        return std::fabs(A.at(d, a)) > std::fabs(A.at(d, b));
+    });
+    int k = 0;
+    for (int i = 0; i < kParamN && k < n; ++i) {
+        if (std::fabs(A.at(d, idx[i])) < 1e-4f) break;
+        out[k++] = idx[i];
+    }
+    return k;
 }
 
 } // namespace analysis
