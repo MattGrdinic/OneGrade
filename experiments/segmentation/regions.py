@@ -33,6 +33,7 @@ USAGE
 """
 import argparse
 import os
+import re
 import sys
 
 import numpy as np
@@ -48,7 +49,8 @@ from PIL import Image
 #   VEGETATION      has a memory colour of its own, pushes green rather than cyan
 #   TERRAIN / BUILT the rest of the frame; usually what everything else separates FROM
 #
-# Matched on substrings of the model's own label names so the map survives a model swap.
+# Matched on whole words of the model's own label names, so the map survives a model swap.
+# Whole words and not substrings -- see region_of() for the 36%-of-frame bug that cost.
 REGIONS = {
     "SKY":        ("sky",),
     "WATER":      ("water", "sea", "river", "lake", "waterfall", "swimming pool", "pool"),
@@ -56,7 +58,9 @@ REGIONS = {
     "VEGETATION": ("tree", "plant", "grass", "palm", "flower", "field", "bush", "leaves"),
     "TERRAIN":    ("earth", "sand", "dirt", "land", "hill", "mountain", "rock", "snow", "path"),
     "BUILT":      ("building", "house", "skyscraper", "wall", "ceiling", "floor", "road",
-                   "sidewalk", "bridge", "tower", "fence", "car", "truck", "bus", "windowpane"),
+                   "sidewalk", "bridge", "tower", "fence", "car", "truck", "bus", "windowpane",
+                   "seat", "cushion", "chair", "sofa", "table", "bed", "curtain",
+                   "screen", "door", "signboard", "box", "pole", "streetlight"),
 }
 ORDER = ["SKY", "WATER", "SKIN", "VEGETATION", "TERRAIN", "BUILT", "OTHER"]
 SWATCH = {  # for the mask preview, so a wrong mask is obvious at a glance
@@ -67,10 +71,24 @@ SWATCH = {  # for the mask preview, so a wrong mask is obvious at a glance
 
 
 def region_of(label: str) -> str:
+    """Label -> grading region, matched on WHOLE WORDS.
+
+    Substring matching looks fine and is quietly wrong. The first run of this mapped the car
+    interior of a portrait shot to WATER, because "seat" contains "sea" — 36% of the frame in
+    the wrong region, with numbers that looked perfectly plausible in the table. Two more were
+    waiting: "street" contains "tree", and "carpet" contains "car".
+
+    The mask preview is what caught it, which is why every run writes one.
+    """
     l = label.lower()
+    toks = {t for t in re.split(r"[^a-z]+", l) if t}
     for name, keys in REGIONS.items():
-        if any(k in l for k in keys):
-            return name
+        for k in keys:
+            if " " in k:
+                if k in l:          # multi-word key, e.g. "swimming pool"
+                    return name
+            elif k in toks:
+                return name
     return "OTHER"
 
 
