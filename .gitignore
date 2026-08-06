@@ -13,3 +13,8 @@ __pycache__/
 # region-mask experiment: model cache and mask previews
 experiments/segmentation/out/
 experiments/segmentation/seg-env/
+
+# converted model artefacts: large, regenerable via experiments/segmentation/convert.py,
+# and the shipping checkpoint is not settled yet
+experiments/segmentation/converted/
+experiments/segmentation/verify
