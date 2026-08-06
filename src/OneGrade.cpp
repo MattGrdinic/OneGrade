@@ -486,6 +486,7 @@ private:
     OFX::DoubleParam*  m_MagicBase;    // the move at Separation 1.0
     OFX::DoubleParam*  m_MagicAnchor;  // the control's value before the move
     OFX::StringParam*  m_MagicNote;
+    OFX::StringParam*  m_MagicWhy;    // the reasoning, in a sentence
     OFX::BooleanParam* m_ShowAnalysis;
     OFX::PushButtonParam* m_ProbeBtn;
     OFX::PushButtonParam* m_CleanBtn;
@@ -570,6 +571,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_MagicBase    = fetchDoubleParam("magicBase");
     m_MagicAnchor  = fetchDoubleParam("magicAnchor");
     m_MagicNote    = fetchStringParam("magicNote");
+    m_MagicWhy     = fetchStringParam("magicWhy");
     m_BiasArmed    = fetchBooleanParam("biasArmed");
     m_BiasGain     = fetchDoubleParam("biasGain");
     m_BiasLift     = fetchDoubleParam("biasLift");
@@ -1524,6 +1526,7 @@ void OneGrade::applyMagicGrade(double p_Time)
     applyAutoGrade(p_Time);            // Creative Grade first: exposure, black point, the look.
     if (!m_HaveKey || m_LastSamples.size() < 512) {
         m_MagicNote->setValue("No frame to analyse");
+        m_MagicWhy->setValue("");
         m_MagicParam->setValue(-1);
         return;
     }
@@ -1541,6 +1544,7 @@ void OneGrade::applyMagicGrade(double p_Time)
     const oga::MagicChoice c = oga::magic_decide(st, cycle);
     if (!c.ok) {
         m_MagicNote->setValue("No subject to separate - this is Creative Grade");
+        m_MagicWhy->setValue("one flat region, or one subject filling the frame");
         m_MagicParam->setValue(-1);
         m_MagicBase->setValue(0.0);
         return;
@@ -1591,10 +1595,31 @@ void OneGrade::applyMagicGrade(double p_Time)
     applySeparation();
 
     char msg[160];
-    snprintf(msg, sizeof msg, "%d/%d %s -> %s %+.3f",
-             c.option + 1, c.options, oga::region_name(c.subject),
+    snprintf(msg, sizeof msg, "%d/%d  %s %.0f%% -> %s %+.3f",
+             c.option + 1, c.options, oga::region_name(c.subject), c.cover,
              (c.param == 6) ? "Offset Temp" : "Gain Temp", base * sep);
     m_MagicNote->setValue(msg);
+
+    // WHY, in the panel, in a sentence. The feature exists to surface a move an inexperienced
+    // colourist would not have considered, and a suggestion with no visible reasoning teaches
+    // nothing. It also makes a wrong pick legible rather than mysterious, which matters more
+    // here than usual: this tool is fallible by design, so it has to show its working or there
+    // is no way to tell a bad guess from a bad tool.
+    // Both causal links, inside the ~45-char panel budget: which control and why, then which
+    // direction and why. The full rule lives in this row's hint, which has no width limit --
+    // the row carries the specifics, the hint carries the principle.
+    const char* ctl = (c.param == 6) ? "Offset" : "Gain";
+    if (oga::region_protected(c.subject)) {
+        snprintf(msg, sizeof msg, "%s protected; rest %s (L%.0fv%.0f) -> %s, %s",
+                 oga::region_name(c.subject), (c.restL > c.subjL) ? "brighter" : "darker",
+                 c.restL, c.subjL, ctl, (c.sign > 0) ? "warmer" : "cooler");
+    } else {
+        snprintf(msg, sizeof msg, "%s %s (L%.0fv%.0f) -> %s; %s (b%.0fv%.0f) -> %s",
+                 oga::region_name(c.subject), (c.subjL > c.restL) ? "brighter" : "darker",
+                 c.subjL, c.restL, ctl, (c.sign > 0) ? "warm" : "cool",
+                 c.subjB, c.restB, (c.sign > 0) ? "warmer" : "cooler");
+    }
+    m_MagicWhy->setValue(msg);
     setEnabledness();
 }
 
@@ -2358,6 +2383,15 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             mn->setEnabled(false);
             mn->setParent(*gAuto);
             page->addChild(*mn);
+
+            StringParamDescriptor* mw = p_Desc.defineStringParam("magicWhy");
+            mw->setLabels("Why", "Why", "Why");
+            mw->setStringType(eStringTypeLabel);
+            mw->setDefault("");
+            mw->setHint("The reasoning behind the choice above, in a sentence: what it found, why that slider, and why that direction. Which control is picked follows from where the subject sits in the frame's brightness - Offset Temp is an additive move so it has most grip on the dark parts, Gain Temp is multiplicative so it grips the bright parts. The direction follows from the way the subject already leans against everything else, pushed further that way. Worth reading even when the result is wrong, because it says exactly which of those two readings it got wrong.");
+            mw->setEnabled(false);
+            mw->setParent(*gAuto);
+            page->addChild(*mw);
 
             // Saved with the project so Separation keeps scaling the chosen move after a reload
             // without needing the frame back. Same reasoning as the Bias anchor.

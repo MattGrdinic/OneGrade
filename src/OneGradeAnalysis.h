@@ -584,6 +584,17 @@ struct MagicChoice {
     int  option  = 0;       // which press produced this
     int  options = 0;       // how many distinct moves the frame offers
     bool ok      = false;
+    // THE NUMBERS THE DECISION WAS MADE FROM, carried out so the panel can explain itself.
+    //
+    // This is not diagnostics. The feature's stated job is to surface a move an inexperienced
+    // colourist would not have considered -- "there is water in this shot, cool it and see" --
+    // and a suggestion nobody can see the reasoning behind teaches nothing and cannot be argued
+    // with. It also makes a WRONG pick legible instead of mysterious, which matters more here
+    // than usual: the tool is admittedly fallible by design, so every call it makes has to show
+    // its working or the user has no way to tell a bad guess from a bad tool.
+    float cover  = 0.f;     // how much of the frame the subject holds
+    float subjL  = 0.f, restL = 0.f;   // lightness, subject against the rest — picks the control
+    float subjB  = 0.f, restB = 0.f;   // warm/cool, likewise — picks the direction
 };
 
 static const int kMagicMinCover = 6;    // below this a region is scenery, not a subject
@@ -624,6 +635,9 @@ static inline MagicChoice magic_decide(const RegionStat* st, int click)
 
         MagicChoice c;
         c.subject = s;
+        c.cover = st[s].cover;
+        c.subjL = st[s].L; c.restL = restL;
+        c.subjB = st[s].b; c.restB = restB;
         if (region_protected(s)) {
             // Never push the subject; move the surround. Grip whatever the surround is, and
             // push away from the subject's hue -- cool the room, let the face come forward.
