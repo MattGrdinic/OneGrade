@@ -77,6 +77,40 @@ to 1.6%, with no change to the picture at all.
 
 > **Percentile and hue thresholds are only meaningful in the space they were chosen for.**
 
+### ...but the *solves* need the render's encode, and getting this wrong crushed every grade
+
+The rule above is right, and applying it to everything was a bug that shipped.
+
+Lift/Gamma/Gain run in whatever curve the output encode selects. So "place p0.1 at 0.050"
+is not a measurement — it is a **solve**, and a solve has a space: it means pushing p0.1
+through `og_lgg` *in that curve*. Creative Grade always selects the film LUT, which forces
+Cineon, while the fallback above put the measurement in Gamma 2.2. The solve then ran in
+Cineon on a number from somewhere else and was exact about the wrong question:
+
+| | Lift | achieved black | shadow separation |
+|---|---|---|---|
+| measured in the render's encode | **+0.034** | 0.050 | **0.070** |
+| measured in the 2.2 fallback | **−0.025** | 0.000 | **0.024** |
+
+Every Creative and Magic grade crushed its blacks, and the panel reported `(blk 0.050)`
+while doing it — truthfully, because the solve *had* hit the target it was given.
+
+The distinction the code was missing is not display-vs-log:
+
+> **A number compared against a constant needs the space that constant was chosen in. A
+> number pushed through the pipeline needs the space the pipeline runs in.** The same
+> percentile on the same frame has two legitimate values, so measure both.
+
+`hot`, saturation and the skin mask are thresholds and keep the 2.2 fallback. The three
+consumers that call `og_lgg` — Creative's black point, Base Grade's lift, and `applyBias`'s
+anti-crush floor — take a p0.1 measured in the render encode (`m_LastR01`).
+
+**Found by the bench disagreeing with Resolve on one frame**, and only because it does: the
+bench had the identical defect from the identical cause, passing one encode to both roles,
+so it scored the frame healthy while Resolve visibly crushed it. Both were internally
+consistent and both were wrong. This is the fifth bug on this feature caught by comparing
+two implementations of one thing, and the first the bench made visible.
+
 ---
 
 ## 3. Gain, from exposure

@@ -627,6 +627,22 @@ is to split the clip, which the user reached independently. **Frame-based is a f
 here, not a defect** — the user picks which moment it optimises for by parking the
 playhead. Say that rather than trying to engineer around it.
 
+**A SOLVE HAS A SPACE — the bug that crushed every Creative/Magic grade (2026-08-07).**
+`probeAnalyze` measures the Display row in a display-referred encode, falling back to Gamma 2.2
+when the effective encode isn't one (a film LUT forces Cineon). Correct for `hot`/saturation/skin,
+which are **thresholds**. Wrong for the black point, which is **solved**: LGG runs in whatever
+curve the output encode selects, so "place p0.1 at 0.050" means pushing p0.1 through `og_lgg`
+*in that curve*. Creative always forces Cineon, so the solve ran in Cineon on a 2.2 number —
+Lift -0.025 where the render's own space wanted +0.034, achieved black 0.000 against a 0.050
+target, shadow separation 0.024 vs 0.070. **The panel reported "(blk 0.050)" the whole time**,
+truthfully, because the solve had hit the target it was given. Fix: `m_LastR01`, the same p0.1 in
+the render encode, consumed by the three solves that call `og_lgg` (Creative black point, Base
+lift, `applyBias` floor); `m_LastD01` stays for thresholds. **The rule: a number compared against
+a constant needs the space that constant was chosen in; a number pushed through the pipeline
+needs the space the pipeline runs in.** The bench had the identical defect from the identical
+cause (one encode passed to both roles) — which is how it was caught, and why it must keep
+mirroring the split.
+
 **The bench (`experiments/bench/`) is how constants get fitted now** — log PNGs in, graded PNGs
 + chosen parameters out, every tunable a flag. Full usage in `experiments/bench/README.md`; the
 solve itself lives in `src/OneGradeCreative.h` so the bench calls plugin code rather than
