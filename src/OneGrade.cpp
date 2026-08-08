@@ -547,6 +547,9 @@ private:
     OFX::DoubleParam* m_CleanMaxGain;  // ceiling on Gain: 1.0 = never brighten
     OFX::DoubleParam* m_CleanShoulder; // rolloff per unit of highlight overshoot
     OFX::DoubleParam* m_CleanMaxExp;   // ceiling on how far Base may brighten, in stops
+    OFX::DoubleParam* m_ToneLo;        // Magic Tone's cached neutral percentiles; -1 = not solved
+    OFX::DoubleParam* m_ToneMid;
+    OFX::DoubleParam* m_ToneHi;
     OFX::DoubleParam* m_CreativeLow;   // where Creative places its black point (pre-LUT)
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
@@ -626,6 +629,9 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_MagicNote    = fetchStringParam("magicNote");
     m_MagicWhy     = fetchStringParam("magicWhy");
     m_BiasArmed    = fetchBooleanParam("biasArmed");
+    m_ToneLo       = fetchDoubleParam("toneLo");
+    m_ToneMid      = fetchDoubleParam("toneMid");
+    m_ToneHi       = fetchDoubleParam("toneHi");
     m_BiasGain     = fetchDoubleParam("biasGain");
     m_BiasLift     = fetchDoubleParam("biasLift");
     m_BiasGamma    = fetchDoubleParam("biasGamma");
@@ -1633,6 +1639,54 @@ void OneGrade::applyBias()
     // position, so this delta is zero at that instant and the hand tweak is preserved exactly.
     double biasAt = 0.0; m_BiasAt->getValue(biasAt);
     bias -= biasAt;
+
+    // WHEN MAGIC TONE OWNS THE GRADE, BIAS MOVES THE TARGETS AND RE-SOLVES.
+    //
+    // The path below offsets Lift, Gamma and Gain by fixed coefficients. That is fine against a
+    // preset, and destroys a solved grade: Magic Tone chose those three to satisfy three
+    // conditions at once, so nudging any of them breaks all three and the picture falls apart on
+    // the first slider move. Reported on footage as "if I touch the bias slider we kill the
+    // grade", which is exactly what it was doing.
+    //
+    // Shifting the TARGETS instead is both correct and what the slider was asked to be: a
+    // neutral starting point that contrast can be added to or taken from. Opening up raises the
+    // subject's floor and lowers the frame's ceiling (less range, flatter); closing down does the
+    // reverse. The subject's midtone never moves, because that is the legibility anchor -- Bias
+    // changes how much contrast surrounds the subject, never how bright the subject is.
+    //
+    // It also makes crushing STRUCTURALLY IMPOSSIBLE rather than guarded against. The floor is a
+    // target the solve hits, not a value the slider drifts toward, so there is nothing for the
+    // anti-crush guard below to catch. Bias at -1 places the floor lower and the solve puts it
+    // exactly there.
+    //
+    // Cheap enough to drag: the three percentiles are neutral measurements and do not depend on
+    // Lift, Gamma or Gain, so a re-solve is three scalar bisections over cached scalars -- no
+    // re-measuring, and no re-segmenting, which is what made this button read its own output.
+    double tLo = -1.0, tMid = -1.0, tHi = -1.0;
+    m_ToneLo->getValue(tLo); m_ToneMid->getValue(tMid); m_ToneHi->getValue(tHi);
+    if (tLo >= 0.0 && tMid >= 0.0 && tHi >= 0.0) {
+        float Pc[oga::kParamN];
+        Pc[0]=(float)m_Temp->getValue();    Pc[1]=(float)m_Tint->getValue();
+        Pc[2]=(float)m_Density->getValue(); Pc[3]=(float)m_Lift->getValue();
+        Pc[4]=(float)m_Gamma->getValue();   Pc[5]=(float)m_Gain->getValue();
+        Pc[6]=(float)m_OffTemp->getValue(); Pc[7]=(float)m_OffTint->getValue();
+        Pc[8]=(float)m_PostExp->getValue(); Pc[9]=(float)m_PostCon->getValue();
+        Pc[10]=(float)m_RawExp->getValue(); Pc[11]=(float)m_RawTemp->getValue();
+        Pc[12]=(float)m_Rolloff->getValue();
+        const bool lutOk = lutSelected() && m_Lut.size >= 2;
+        og::grade::Tunables tn;
+        const og::grade::MagicTone mt = og::grade::solve_magic_tone_from(
+            tLo, tMid, tHi, Pc, lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0,
+            std::min(0.40, std::max(0.00, tn.subjFloor    + bias * 0.06)),
+            tn.subjMid,
+            std::min(1.00, std::max(0.60, tn.frameCeiling - bias * 0.03)));
+        if (mt.ok) {
+            m_Lift->setValue(mt.lift);
+            m_Gamma->setValue(mt.gamma);
+            m_Gain->setValue(mt.gain);
+            return;
+        }
+    }
     double aGain = 1.0, aLift = 0.0, aGamma = 1.0, aRoll = 0.0, aHot = 0.0;
     m_BiasGain->getValue(aGain);
     m_BiasLift->getValue(aLift);
@@ -1861,7 +1915,16 @@ void OneGrade::applyMagicGrade(double p_Time)
             m_Lift->setValue(tone.lift);
             m_Gamma->setValue(tone.gamma);
             m_Gain->setValue(tone.gain);
-            m_LastGain = tone.gain;    // Bias re-derives from this, so it must be the new anchor
+            m_LastGain = tone.gain;
+            // Hand the neutral percentiles to Bias so a drag re-solves rather than nudging.
+            m_ToneLo->setValue(tone.sLo);
+            m_ToneMid->setValue(tone.sMid);
+            m_ToneHi->setValue(tone.fHi);
+        } else {
+            // CLEARED ON DECLINE, so Bias falls back to the coefficient path rather than
+            // re-solving against a previous shot's subject. Stale cached state that silently
+            // keeps working is the shape of most of this feature's bugs.
+            m_ToneLo->setValue(-1.0); m_ToneMid->setValue(-1.0); m_ToneHi->setValue(-1.0);
         }
     }
 
@@ -2694,6 +2757,10 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             // The slider position the anchor was taken at. Without it, a manual edit either
             // jumps the slider to zero or silently discards the edit on the next drag.
             anch("biasAt", 0.0);
+            // The three NEUTRAL percentiles Magic Tone solved against, plus a flag. Hidden and
+            // saved, like the rest of the anchor, so Bias keeps re-solving after a reload rather
+            // than falling back to nudging parameters.
+            anch("toneLo", -1.0); anch("toneMid", -1.0); anch("toneHi", -1.0);
         }
 
         PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");

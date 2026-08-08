@@ -354,16 +354,56 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
 // LUMA FOR THE SUBJECT, PER-CHANNEL FOR THE CEILING. Legibility is a luminance property; clipping
 // is not. A waveform shows R, G and B independently and on a saturated highlight they spread far
 // apart, so containing luma would let a channel clip while the number said the target was met.
-struct MagicTone {
-    float lift = 0.f, gamma = 1.f, gain = 1.f;
-    float subjLo = 0.f, frameHi = 0.f, mid = 0.f;   // what it ACHIEVED, for the panel
-    bool  ok = false;
-};
-
 // Swept on the interview frame: 1 pass lands subj 0.131 against a 0.135 target, 3 gets 0.133,
 // 8 gets 0.134, 30 gets 0.135. Each pass is three scalar bisections, so 8 is free and well past
 // the point the picture stops changing.
 static const int kMagicTonePasses = 8;
+
+struct MagicTone {
+    float lift = 0.f, gamma = 1.f, gain = 1.f;
+    float subjLo = 0.f, frameHi = 0.f, mid = 0.f;   // what it ACHIEVED, for the panel
+    // The three NEUTRAL percentiles the solve was run against. They do not depend on Lift, Gamma
+    // or Gain, so caching them lets Bias re-solve from three scalars instead of re-measuring
+    // 200k samples -- which is what makes Bias a target move rather than a parameter drift.
+    float sLo = 0.f, sMid = 0.f, fHi = 0.f;
+    bool  ok = false;
+};
+
+// THE SOLVE ITSELF, over three cached scalars. Separated from the measurement so Bias can call
+// it on every drag: Bias shifts the TARGETS and re-solves, rather than nudging the parameters the
+// solve just chose. Nudging them breaks all three conditions at once -- which is exactly what
+// happened, one slider move undoing the whole grade.
+static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double fHi,
+                                              const float P0[analysis::kParamN],
+                                              const float* lut, int lutSize,
+                                              double subjFloor, double subjMid, double frameCeiling)
+{
+    MagicTone out;
+    const double pe = P0[8], con = P0[9], roll = P0[12];
+    auto render = [&](double v, double lf, double gm, double gn) {
+        float x = og::lgg_core((float)v, (float)lf, (float)gm, (float)gn);
+        float r = x, g = x, b = x;
+        if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
+        og::apply_trim((float)pe, (float)con, r, g, b);
+        if (roll > 0.f) g = og::softclip(g, (float)roll);
+        return (double)g;
+    };
+
+    double lf = P0[3], gm = P0[4], gn = P0[5];
+    for (int pass = 0; pass < kMagicTonePasses; ++pass) {
+        lf = solve1d(-0.50, 0.50, subjFloor,    [&](double v) { return render(sLo,  v, gm, gn); });
+        gn = solve1d( 0.05,  3.00, frameCeiling,[&](double v) { return render(fHi,  lf, gm, v); });
+        gm = solve1d( 0.30,  3.00, subjMid,     [&](double v) { return render(sMid, lf, v, gn); });
+    }
+    out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
+    out.sLo = (float)sLo; out.sMid = (float)sMid; out.fHi = (float)fHi;
+    out.subjLo  = (float)render(sLo,  lf, gm, gn);
+    out.frameHi = (float)render(fHi,  lf, gm, gn);
+    out.mid     = (float)render(sMid, lf, gm, gn);
+    out.ok = true;
+    return out;
+}
+
 
 static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subject,
                                          int cam, int enc,
@@ -373,6 +413,21 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     MagicTone out;
     const size_t n = S.rgb.size() / 3;
     if (n < 64 || S.region.size() != n) return out;
+
+    // ONLY WHERE THE TARGETS MEAN SOMETHING. All three came from a face, and a face is the one
+    // subject whose correct lightness is not a matter of taste -- lit skin sits a stop or so over
+    // mid-gray whatever the shot is. Nothing else does: sky belongs near the top, foliage low,
+    // sand bright, and forcing any of them to a face's numbers is not a grade, it is damage.
+    //
+    // Observed on a beach frame where the subject came back VEGETATION: driving dark foliage to a
+    // subject midtone of 0.278 needed enough lift and gamma to put the sky into neon cyan, and
+    // the picture was destroyed by a solve that met every condition it was given.
+    //
+    // So it declines rather than guesses, and Creative's behaviour stands. Extending this to other
+    // subjects is a DATA question, not a code one: it needs a hand-graded landscape the way the
+    // face targets needed a hand-graded interview. Until then a wrong target is worse than none,
+    // because the whole point of the button is that its bad cases are impossible rather than rare.
+    if (subject != analysis::R_SKIN) return out;
 
     float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
     Pn[11] = P0[11];   // keep the white balance; it is not a tone control
@@ -396,40 +451,8 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         std::nth_element(v.begin(), v.begin() + k, v.end());
         return (double)v[k];
     };
-    const double sLo  = pct(subjL, 0.10);
-    const double sMid = pct(subjL, 0.50);
-    const double fHi  = pct(allC,  0.999);
-    const double fMid = pct(allL,  0.50);
-
-    // The full chain from a neutral value to the pixel on screen, LUT included, because the
-    // targets are post-LUT: a print stock's toe and shoulder move both ends, and solving pre-LUT
-    // would place the floor somewhere the stock then takes away.
-    const double pe = P0[8], con = P0[9], roll = P0[12];
-    auto render = [&](double v, double lf, double gm, double gn) {
-        float x = og::lgg_core((float)v, (float)lf, (float)gm, (float)gn);
-        float r = x, g = x, b = x;
-        if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
-        og::apply_trim((float)pe, (float)con, r, g, b);
-        if (roll > 0.f) g = og::softclip(g, (float)roll);
-        return (double)g;
-    };
-
-    double lf = P0[3], gm = P0[4], gn = P0[5];
-
-    // Three passes. Each control is monotone in its own condition, so plain bisection lands it;
-    // the passes exist only because the three conditions share a curve.
-    for (int pass = 0; pass < kMagicTonePasses; ++pass) {
-        lf = solve1d(-0.50, 0.50, t.subjFloor,    [&](double v) { return render(sLo, v, gm, gn); });
-        gn = solve1d( 0.05,  3.00, t.frameCeiling,[&](double v) { return render(fHi, lf, gm, v); });
-        gm = solve1d( 0.30,  3.00, t.subjMid,     [&](double v) { return render(sMid, lf, v, gn); });
-    }
-
-    out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
-    out.subjLo  = (float)render(sLo,  lf, gm, gn);
-    out.frameHi = (float)render(fHi,  lf, gm, gn);
-    out.mid     = (float)render(sMid, lf, gm, gn);
-    out.ok = true;
-    return out;
+    return solve_magic_tone_from(pct(subjL, 0.10), pct(subjL, 0.50), pct(allC, 0.999),
+                                 P0, lut, lutSize, t.subjFloor, t.subjMid, t.frameCeiling);
 }
 
 } // namespace grade
