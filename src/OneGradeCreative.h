@@ -31,6 +31,7 @@
 #pragma once
 #include "OneGradePipeline.h"
 #include "OneGradeAnalysis.h"
+#include "CubeLUT.h"
 
 #include <algorithm>
 #include <cmath>
@@ -71,6 +72,21 @@ struct Tunables {
 
     // MAGIC. How far the chosen region's b* should travel at Separation 1.0. Never fitted.
     double magicUnit = 6.0;
+
+    // MAGIC TONE -- legibility of the subject, measured POST-LUT because that is the picture
+    // being judged. Both from ONE hand-graded interview frame (2026-08-07), so treat them as
+    // placeholders with the right shape rather than as fitted values.
+    //
+    // subjFloor is where the subject's own shadows sit. Creative left the face at p10 0.078 on
+    // that frame; the user's correction put it at 0.135, and the frame-wide floor moving
+    // 0.050 -> 0.085 was a consequence of that rather than the goal.
+    //
+    // frameCeiling exists because Creative's picture was pinned: p99.9 at 0.993 with 1.12% of
+    // the frame already clipped, so there was nowhere for Bias to go before it destroyed
+    // something. The hand grade landed at 0.968 with nothing clipped.
+    double subjFloor    = 0.135;
+    double subjMid      = 0.278;
+    double frameCeiling = 0.968;
 };
 
 // The Cinematic Film Emulation recipe, which Creative Grade starts from. User-validated, and the
@@ -297,6 +313,121 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
     // docs/AUTO-GRADE.md 9). Snapping a near-neutral answer to exactly 6500 avoids paying that
     // for a correction too small to see.
     if (std::fabs(out.kelvin - 6500.0) < 120.0) out.kelvin = 6500.0;
+    out.ok = true;
+    return out;
+}
+
+// ---------------------------------------------------------------------------------------
+// MAGIC TONE: place the SUBJECT so it is legible, and leave Bias somewhere to go.
+//
+// WHAT MAGIC GRADE IS FOR, as distinct from Creative. Creative makes the pronounced grade;
+// Magic makes a smooth starting point whose Bias slider begins from a neutral place, so contrast
+// can be added or removed from there. Creative's picture was pinned at both ends -- floor on its
+// 0.050 target, ceiling at 0.993 with 1.12% of the frame already clipped -- so a Bias move in
+// either direction immediately destroyed something. That is the defect this solves.
+//
+// LEGIBILITY IS A PROPERTY OF THE SUBJECT, so the floor condition is stated on the subject and
+// not on the frame. The existing anti-crush guard protects the frame's black point, which is why
+// it did not help: on the interview frame the frame floor sat correctly on target while the face
+// was already at p10 0.078, and lowering Bias pushed the face into the mud with every guard
+// reporting success.
+//
+// THREE CONDITIONS, THREE CONTROLS, and they are the three moves the user made by hand, in the
+// order they made them:
+//
+//     subject's shadows -> subjFloor     Lift      ("reduce the contrast on the face")
+//     frame's highlight -> frameCeiling  Gain      ("remove the hot spot")
+//     subject's midtone -> subjMid       Gamma     ("bring the overall contrast down")
+//
+// TWO OF THE THREE ARE ABOUT THE SUBJECT, which is the point: legibility is a property of the
+// thing being looked at. The first attempt held the FRAME's midtone instead, on the observation
+// that it barely moved between the two grades (0.537 -> 0.529) -- and the solve diverged, lift
+// running to its bound with gamma collapsing to 0.315. The frame mid barely moved because the
+// subject came up (0.213 -> 0.278) while its surround came down (0.594 -> 0.570); holding the
+// net was pinning a quantity that only looked still because two real moves cancelled inside it.
+//
+// Solved by coordinate passes rather than iteration-with-remeasurement. Each condition is
+// monotone in its own control, and with Density gone the whole chain is closed form -- the same
+// argument that retired the old loop in c4ec540. Re-measuring would also mean re-segmenting,
+// which is how Magic Grade came to read its own output and converge over three presses.
+//
+// LUMA FOR THE SUBJECT, PER-CHANNEL FOR THE CEILING. Legibility is a luminance property; clipping
+// is not. A waveform shows R, G and B independently and on a saturated highlight they spread far
+// apart, so containing luma would let a channel clip while the number said the target was met.
+struct MagicTone {
+    float lift = 0.f, gamma = 1.f, gain = 1.f;
+    float subjLo = 0.f, frameHi = 0.f, mid = 0.f;   // what it ACHIEVED, for the panel
+    bool  ok = false;
+};
+
+// Swept on the interview frame: 1 pass lands subj 0.131 against a 0.135 target, 3 gets 0.133,
+// 8 gets 0.134, 30 gets 0.135. Each pass is three scalar bisections, so 8 is free and well past
+// the point the picture stops changing.
+static const int kMagicTonePasses = 8;
+
+static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subject,
+                                         int cam, int enc,
+                                         const float* lut, int lutSize,
+                                         const float P0[analysis::kParamN], const Tunables& t)
+{
+    MagicTone out;
+    const size_t n = S.rgb.size() / 3;
+    if (n < 64 || S.region.size() != n) return out;
+
+    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    Pn[11] = P0[11];   // keep the white balance; it is not a tone control
+
+    // Neutral render once, in the encode the grade curve runs in. Everything below is a solve on
+    // these numbers, so they must come from the render's own space (see docs/AUTO-GRADE.md 2).
+    std::vector<float> subjL, allL, allC;
+    subjL.reserve(n / 4 + 1); allL.reserve(n); allC.reserve(n * 3);
+    for (size_t i = 0; i < n; ++i) {
+        float r, g, b;
+        og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+        const float L = 0.2126f*r + 0.7152f*g + 0.0722f*b;
+        allL.push_back(L);
+        allC.push_back(r); allC.push_back(g); allC.push_back(b);
+        if ((int)S.region[i] == subject) subjL.push_back(L);
+    }
+    if (subjL.size() < 32) return out;   // no subject worth placing
+
+    auto pct = [](std::vector<float> v, double q) {
+        const size_t k = (size_t)(q * (v.size() - 1));
+        std::nth_element(v.begin(), v.begin() + k, v.end());
+        return (double)v[k];
+    };
+    const double sLo  = pct(subjL, 0.10);
+    const double sMid = pct(subjL, 0.50);
+    const double fHi  = pct(allC,  0.999);
+    const double fMid = pct(allL,  0.50);
+
+    // The full chain from a neutral value to the pixel on screen, LUT included, because the
+    // targets are post-LUT: a print stock's toe and shoulder move both ends, and solving pre-LUT
+    // would place the floor somewhere the stock then takes away.
+    const double pe = P0[8], con = P0[9], roll = P0[12];
+    auto render = [&](double v, double lf, double gm, double gn) {
+        float x = og::lgg_core((float)v, (float)lf, (float)gm, (float)gn);
+        float r = x, g = x, b = x;
+        if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
+        og::apply_trim((float)pe, (float)con, r, g, b);
+        if (roll > 0.f) g = og::softclip(g, (float)roll);
+        return (double)g;
+    };
+
+    double lf = P0[3], gm = P0[4], gn = P0[5];
+
+    // Three passes. Each control is monotone in its own condition, so plain bisection lands it;
+    // the passes exist only because the three conditions share a curve.
+    for (int pass = 0; pass < kMagicTonePasses; ++pass) {
+        lf = solve1d(-0.50, 0.50, t.subjFloor,    [&](double v) { return render(sLo, v, gm, gn); });
+        gn = solve1d( 0.05,  3.00, t.frameCeiling,[&](double v) { return render(fHi, lf, gm, v); });
+        gm = solve1d( 0.30,  3.00, t.subjMid,     [&](double v) { return render(sMid, lf, v, gn); });
+    }
+
+    out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
+    out.subjLo  = (float)render(sLo,  lf, gm, gn);
+    out.frameHi = (float)render(fHi,  lf, gm, gn);
+    out.mid     = (float)render(sMid, lf, gm, gn);
     out.ok = true;
     return out;
 }

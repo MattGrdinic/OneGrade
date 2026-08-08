@@ -168,11 +168,15 @@ int main(int argc, char** argv)
     tun.gainMin    = argd(argc, argv, "--gain-min",     tun.gainMin);
     tun.gainMax    = argd(argc, argv, "--gain-max",     tun.gainMax);
     tun.blackTarget= argd(argc, argv, "--black",        tun.blackTarget);
+    tun.subjFloor    = argd(argc, argv, "--subj-floor",    tun.subjFloor);
+    tun.subjMid      = argd(argc, argv, "--subj-mid",      tun.subjMid);
+    tun.frameCeiling = argd(argc, argv, "--frame-ceiling", tun.frameCeiling);
     tun.magicUnit  = argd(argc, argv, "--unit",         tun.magicUnit);
     const int   cam = (int)argd(argc, argv, "--camera", og::grade::kCreativeCamera);
     const int   enc = (int)argd(argc, argv, "--encode", og::grade::kCreativeEncode);
     const double sep = argd(argc, argv, "--sep", 1.0);
     const bool  wb  = argf(argc, argv, "--wb");
+    const bool  noTone = argf(argc, argv, "--no-tone");
     const char* lutPath = nullptr;
     for (int i = 1; i < argc; ++i) if (!strncmp(argv[i], "--lut=", 6)) lutPath = argv[i] + 6;
 
@@ -234,6 +238,7 @@ int main(int argc, char** argv)
         // neutral, then stamp the result into Scene White Balance after the grade solve, which
         // is the order applyMagicGrade() uses.
         char wbNote[48] = "";
+        char toneNote[96] = "";
         if (wb && seg.ready()) {
             std::vector<float>         wsrc((size_t)512 * 512 * 3);
             std::vector<unsigned char> wthumb((size_t)512 * 512 * 3);
@@ -292,6 +297,17 @@ int main(int argc, char** argv)
                     // -- and Offset Temp is additive, so on a dark frame it subtracts from blue
                     // and can drive the channel through zero. Exactly the kind of thing an
                     // offline check exists to catch.
+                    // MAGIC TONE: place the subject for legibility and leave Bias somewhere to
+                    // go. Runs before the colour move so the colour is chosen against the tone
+                    // the picture will actually have.
+                    const og::grade::MagicTone mt =
+                        og::grade::solve_magic_tone(S, c.subject, cam, enc, lutData, lutSize, P, tun);
+                    if (mt.ok && !noTone) {
+                        P[3] = mt.lift; P[4] = mt.gamma; P[5] = mt.gain;
+                        snprintf(toneNote, sizeof toneNote,
+                                 " tone L%+.3f G%.3f g%.3f -> subj %.3f/%.3f hi %.3f",
+                                 mt.lift, mt.gamma, mt.gain, mt.subjLo, mt.mid, mt.frameHi);
+                    }
                     const double base = og::grade::solve_magic_base(S, cam, enc <= 2 ? enc : 1, c, st, tun);
                     P[c.param] = (float)std::min(1.0, std::max(-1.0, (double)P[c.param] + base * sep));
                     char buf[96];
@@ -308,7 +324,7 @@ int main(int argc, char** argv)
         const char* nm = strrchr(argv[i], '/'); nm = nm ? nm + 1 : argv[i];
         printf("%-24s %+6.2f %6.3f %+6.3f %6.3f %6.3f %6.3f  %s\n",
                nm, m.key, P[5], P[3], P[12], d.v[oga::D_BLACK], d.v[oga::D_MID],
-               (decision + wbNote).c_str());
+               (decision + wbNote + toneNote).c_str());
 
         // Write the graded frame, and measure it ON THE WAY OUT.
         //

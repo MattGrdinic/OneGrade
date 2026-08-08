@@ -1834,6 +1834,37 @@ void OneGrade::applyMagicGrade(double p_Time)
     // would be a different move on every piece of footage, which is the exact defect that made
     // Creative's stamped Lift wrong.
     og::grade::Tunables mt;
+
+    // MAGIC TONE, before the colour move so the colour is chosen against the tone the picture
+    // will actually have. This is what separates Magic Grade from Creative: Creative makes the
+    // pronounced grade, Magic makes a legible subject and leaves Bias somewhere to go. Creative's
+    // picture was pinned at both ends -- floor on target, ceiling at 0.993 with 1.12% of the frame
+    // already clipped -- so any Bias move destroyed something immediately.
+    //
+    // Uses the RENDER encode and the real LUT, because the targets are post-LUT: a print stock's
+    // toe and shoulder move both ends, and a floor solved pre-LUT is a floor the stock then takes
+    // away. m_LastEnc is the display-referred fallback and is deliberately NOT used here.
+    {
+        float Pc[oga::kParamN];
+        Pc[0] = (float)m_Temp->getValue();     Pc[1] = (float)m_Tint->getValue();
+        Pc[2] = (float)m_Density->getValue();  Pc[3] = (float)m_Lift->getValue();
+        Pc[4] = (float)m_Gamma->getValue();    Pc[5] = (float)m_Gain->getValue();
+        Pc[6] = (float)m_OffTemp->getValue();  Pc[7] = (float)m_OffTint->getValue();
+        Pc[8] = (float)m_PostExp->getValue();  Pc[9] = (float)m_PostCon->getValue();
+        Pc[10]= (float)m_RawExp->getValue();   Pc[11]= (float)m_RawTemp->getValue();
+        Pc[12]= (float)m_Rolloff->getValue();
+        const bool lutOk = lutSelected() && m_Lut.size >= 2;
+        const og::grade::MagicTone tone = og::grade::solve_magic_tone(
+            S, c.subject, og::grade::kCreativeCamera, og::grade::kCreativeEncode,
+            lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0, Pc, mt);
+        if (tone.ok) {
+            m_Lift->setValue(tone.lift);
+            m_Gamma->setValue(tone.gamma);
+            m_Gain->setValue(tone.gain);
+            m_LastGain = tone.gain;    // Bias re-derives from this, so it must be the new anchor
+        }
+    }
+
     const double base = og::grade::solve_magic_base(S, m_LastCam, m_LastEnc, c, st, mt);
     double sep = 1.0; m_Separation->getValue(sep);
 
