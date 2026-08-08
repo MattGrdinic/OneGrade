@@ -487,6 +487,37 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
         gm = solve1d( 0.30,  3.00, subjMid,     [&](double v) { return render(sMid, lf, v, gn); });
         gn = solve1d( 0.05,  3.00, frameCeiling,[&](double v) { return render(fHi,  lf, gm, v); });
     }
+    // THE CEILING GIVES WAY TO THE SUBJECT, never the reverse.
+    //
+    // On a dark room with a bright window, holding the frame's highlight drove Gain to 0.217 and
+    // Gamma into its 3.00 bound, and the subject STILL landed at 0.157 against a 0.278 target --
+    // a face crushed into the floor to protect a practical. The user's read of that class of
+    // shot: the window is not clipped at the sensor, so whether to contain it is an editorial
+    // choice, and the face is not.
+    //
+    // Detected by the subject missing its midtone, which is what the failure actually looks like,
+    // rather than by testing whether a control sits on a bound -- a bound can be reached
+    // legitimately. The fallback drops the ceiling condition entirely and re-solves the two
+    // subject conditions against Creative's gain, which converges because it is then 2x2.
+    if (std::fabs(render(sMid, lf, gm, gn) - subjMid) > 0.01) {
+        // GAIN CARRIES THE MIDTONE HERE, not Gamma, and it is allowed past Creative's ceiling.
+        //
+        // That ceiling (gainMax 0.80) exists so a deliberately low-key shot is never pushed up --
+        // the clamp that made `key` descriptive rather than prescriptive, and it is right for a
+        // frame median. It is wrong for a face: a subject too dark to read is underexposure, not
+        // intent, and the whole point of finding the subject is to be able to tell those apart.
+        //
+        // Gamma goes back to neutral rather than being solved. Left to carry the midtone it ran
+        // straight into its 3.00 bound and stretched the subject across 0.875 of the range, which
+        // is a face blown at the top instead of crushed at the bottom -- the same failure wearing
+        // the other end. Exposure is Gain's job; Gamma's business is the shape in between.
+        gm = P0[4];
+        for (int pass = 0; pass < kMagicTonePasses; ++pass) {
+            lf = solve1d(-0.50, 0.50, subjFloor, [&](double v) { return render(sLo,  v, gm, gn); });
+            gn = solve1d( 0.05,  2.00, subjMid,  [&](double v) { return render(sMid, lf, gm, v); });
+        }
+    }
+
     out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
     out.sLo = (float)sLo; out.sMid = (float)sMid; out.sHi = (float)sHi; out.fHi = (float)fHi;
     out.subjLo  = (float)render(sLo,  lf, gm, gn);
@@ -521,6 +552,24 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     // face targets needed a hand-graded interview. Until then a wrong target is worse than none,
     // because the whole point of the button is that its bad cases are impossible rather than rare.
     if (subject != analysis::R_SKIN) return out;
+
+    // AND ONLY WHEN THE MASK PLAUSIBLY IS A FACE. Coverage is the tell, the same tell
+    // skin_trustworthy() already uses at 25% for the chromatic mask: a face occupies a modest
+    // share of frame, and when the number climbs the label has stopped meaning what it says.
+    //
+    // One frame came back SKIN 43% with the region spanning 0.875 of the tonal range and its p90
+    // pinned at 1.000. No monotone curve can place p10 and p50 for a region that wide and still
+    // keep its top inside the picture, and the solve duly ran Gain to its bound trying: the
+    // symptom of an infeasible target is a control on a bound, and the cause was that the mask
+    // covered a dark interior AND a window rather than a face.
+    //
+    // Set above the chromatic mask's 25% because this one is a segmentation label rather than a
+    // hue window, so a genuine close-up can legitimately read higher.
+    {
+        size_t cover = 0;
+        for (size_t i = 0; i < n; ++i) if ((int)S.region[i] == subject) ++cover;
+        if ((double)cover > 0.35 * (double)n) return out;
+    }
 
     float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
     Pn[11] = P0[11];   // keep the white balance; it is not a tone control
