@@ -1343,6 +1343,9 @@ static double og_solve(double lo, double hi, double target,
 //
 // Writes ordinary slider values the user can then drag. That is the whole design: a
 // starting point that shows its work, so a bad analysis costs one undo, not trust.
+static inline int kCreativeCam() { return og::grade::kCreativeCamera; }
+static inline int kCreativeEnc() { return og::grade::kCreativeEncode; }
+
 void OneGrade::applyAutoGrade(double p_Time)
 {
     // Measured in the configuration applyPreset(1) is ABOUT to create, not the current one --
@@ -1367,7 +1370,15 @@ void OneGrade::applyAutoGrade(double p_Time)
     og::grade::Tunables tun;
     m_CreativeLow->getValue(tun.blackTarget);
     float Pc[og::analysis::kParamN];
-    og::grade::solve_creative(meas, tun, Pc);
+    // The LUT goes in, because the black point is judged on the picture the stock produces and
+    // not on the one feeding it. Without this the solve hit 0.050 while the screen showed 0.000.
+    const bool lutOkC = lutSelected() && m_Lut.size >= 2;
+    if (m_LastSamples.size() >= 512)
+        og::grade::solve_creative_px(m_LastSamples, kCreativeCam(), kCreativeEnc(), meas, tun, Pc,
+                                     lutOkC ? m_Lut.data.data() : nullptr, lutOkC ? m_Lut.size : 0);
+    else
+        og::grade::solve_creative(meas, tun, Pc,
+                                  lutOkC ? m_Lut.data.data() : nullptr, lutOkC ? m_Lut.size : 0);
     const double gain = Pc[5];
 
     // Highlight Rolloff from SOURCE CLIPPING, which is the only measurement that separated

@@ -231,7 +231,7 @@ int main(int argc, char** argv)
         const int dispEnc = (enc <= 2) ? enc : 1;
         og::grade::Measurements m = measure(f, cam, enc, S);
         float P[oga::kParamN];
-        og::grade::solve_creative(m, tun, P);
+        og::grade::solve_creative_px(S, cam, enc, m, tun, P, lutData, lutSize);
 
         // WHITE BALANCE FIRST. --wb used to be parsed, printed as "wb on", and never acted on.
         // Mirrors the plugin: segment a NEUTRAL thumbnail, solve on the surfaces that should be
@@ -311,6 +311,21 @@ int main(int argc, char** argv)
                     }
                     const double base = og::grade::solve_magic_base(S, cam, enc <= 2 ? enc : 1, c, st, tun);
                     P[c.param] = (float)std::min(1.0, std::max(-1.0, (double)P[c.param] + base * sep));
+
+                    // RE-SOLVE THE FLOOR AFTER THE COLOUR MOVE. Offset Temp is additive and Gain
+                    // Temp multiplicative, so either one shifts the channels the black point was
+                    // just placed on -- and it is a CHANNEL that crushes. Solving first and
+                    // colouring second left the frame's floor somewhere nobody had checked: the
+                    // pre-LUT black read 0.375 on one shot while 7% of the picture sat at zero.
+                    //
+                    // Same shape as the first-press bug: a grade has to be solved for the
+                    // configuration it ends in, not the one it passed through.
+                    og::grade::solve_creative_px(S, cam, enc, m, tun, P, lutData, lutSize);
+                    if (mt.ok && !noTone) {
+                        const og::grade::MagicTone m2 =
+                            og::grade::solve_magic_tone(S, c.subject, cam, enc, lutData, lutSize, P, tun);
+                        if (m2.ok) { P[3] = m2.lift; P[4] = m2.gamma; P[5] = m2.gain; }
+                    }
                     char buf[96];
                     snprintf(buf, sizeof buf, "%d/%d %s %.0f%% -> %s %+.3f",
                              c.option + 1, c.options, oga::region_name(c.subject), c.cover,

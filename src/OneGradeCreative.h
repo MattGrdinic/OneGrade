@@ -135,7 +135,8 @@ static inline double solve1d(double lo, double hi, double target,
 // Creative Grade: the film recipe, with Gain from exposure, Rolloff from clipping, and Lift
 // solved so the black point lands on target whatever the footage's own floor happens to be.
 static inline void solve_creative(const Measurements& m, const Tunables& t,
-                                  float P[analysis::kParamN])
+                                  float P[analysis::kParamN],
+                                  const float* lut = nullptr, int lutSize = 0)
 {
     creative_preset(P);
     if (!m.valid) return;
@@ -146,16 +147,99 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
 
     // The whole chain in closed form, which works because the grade curve is monotonic and a
     // monotonic map commutes with percentiles: one measured scalar stands in for the frame.
-    const double pe = P[8], gm = P[4];
+    //
+    // THE LUT IS PART OF THAT CHAIN, and leaving it out placed the black point somewhere the
+    // print stock then took away. Measured across twelve frames: the solve reported hitting
+    // 0.050 every time while the picture on screen had a black point of 0.000 and, on the worst
+    // shot, 46% of its pixels at or below 1/255. It was not wrong about its target; it was
+    // aiming at the wrong picture.
+    //
+    // Third instance of one mistake in one day -- a number measured or solved in one space and
+    // judged in another. The other two were the black point measured in the display fallback
+    // while the curve ran in Cineon, and the analysis reading the node's encode before the preset
+    // that changes it. The rule from docs/AUTO-GRADE.md 2 covers this too: a number pushed
+    // through the pipeline needs the space the pipeline runs in, and the LUT is in the pipeline.
+    const double pe = P[8], gm = P[4], con = P[9];
     const double lift = solve1d(-0.50, 0.50, t.blackTarget, [&](double lf) {
-        const double v = (double)og::lgg_core((float)m.d01, (float)lf, (float)gm, (float)gain)
-                       * std::exp2(pe);
-        return rolloff > 0.0 ? (double)og::softclip((float)v, (float)rolloff) : v;
+        float x = og::lgg_core((float)m.d01, (float)lf, (float)gm, (float)gain);
+        float r = x, g = x, b = x;
+        if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
+        og::apply_trim((float)pe, (float)con, r, g, b);
+        if (rolloff > 0.0) g = og::softclip(g, (float)rolloff);
+        return (double)g;
     });
 
     P[3]  = (float)lift;
     P[5]  = (float)gain;
     P[12] = (float)rolloff;
+}
+
+// The same black point, solved on the frame's ACTUAL DARK PIXELS instead of on a grey scalar.
+//
+// WHY A SCALAR IS NOT ENOUGH ONCE A LUT IS INVOLVED. The version above pushes one number through
+// the chain as neutral grey, r = g = b. That is exact for everything before the LUT, because the
+// grade curve is per-channel and monotonic, so it maps percentiles. A print stock is a 3D lookup
+// and does no such thing: a saturated dark blue and a neutral grey of the same level land in
+// completely different parts of the cube, and 2383's toe is far harder on saturated darks than
+// on the neutral axis.
+//
+// Measured across twelve frames. The three with a near-neutral subject -- faces -- came out with
+// 0.00 to 0.13% of pixels crushed. The nine landscapes, all saturated foliage and sky in the
+// shadows, came out at up to 46%, with the solve reporting its target met every time. Adding the
+// LUT to the scalar solve only moved 46% to 42%, which is the tell that the error is chromatic
+// rather than tonal: the neutral axis simply is not where those pixels are.
+//
+// So the darkest samples are carried through in colour. Cheap because only the bottom slice
+// matters -- a few thousand triples through a bisection, against a solve that already renders
+// 200k samples once.
+static inline void solve_creative_px(const analysis::SampleSet& S, int cam, int enc,
+                                     const Measurements& m, const Tunables& t,
+                                     float P[analysis::kParamN],
+                                     const float* lut, int lutSize)
+{
+    solve_creative(m, t, P, lut, lutSize);         // gain, rolloff, and a starting lift
+    const size_t n = S.rgb.size() / 3;
+    if (!m.valid || n < 512) return;
+
+    // Rank by the neutral render's min channel: what crushes is a CHANNEL, not a luminance, and
+    // on a saturated shadow the channels sit far apart.
+    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    Pn[11] = P[11];
+    std::vector<std::pair<float,size_t>> key; key.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        float r, g, b;
+        og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+        key.push_back({ std::min(r, std::min(g, b)), i });
+    }
+    const size_t keep = std::min<size_t>(4000, n / 4 + 1);
+    std::nth_element(key.begin(), key.begin() + keep, key.end(),
+                     [](const std::pair<float,size_t>& a, const std::pair<float,size_t>& b2) { return a.first < b2.first; });
+    key.resize(keep);
+
+    const double pe = P[8], con = P[9], roll = P[12], gm = P[4], gn = P[5];
+    // p1 OF THE DARK SLICE, not its minimum. A minimum is one pixel and would let a single
+    // speck of sensor noise set the whole frame's lift.
+    const size_t q = keep / 100;
+    auto floorAt = [&](double lf) {
+        std::vector<float> v; v.reserve(keep);
+        for (size_t k = 0; k < keep; ++k) {
+            const size_t i = key[k].second;
+            float r, g, b;
+            float Pt[analysis::kParamN];
+            for (int j = 0; j < analysis::kParamN; ++j) Pt[j] = P[j];
+            Pt[3] = (float)lf;
+            og::process(cam, enc, Pt, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+            if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
+            og::apply_trim((float)pe, (float)con, r, g, b);
+            if (roll > 0.0) { r = og::softclip(r, (float)roll); g = og::softclip(g, (float)roll);
+                              b = og::softclip(b, (float)roll); }
+            v.push_back(std::min(r, std::min(g, b)));
+        }
+        std::nth_element(v.begin(), v.begin() + q, v.end());
+        return (double)v[q];
+    };
+    (void)gm; (void)gn;
+    P[3] = (float)solve1d(-0.50, 0.50, t.blackTarget, floorAt);
 }
 
 // The Magic move's magnitude, MEASURED on the shot rather than assumed.
