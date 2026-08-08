@@ -1956,6 +1956,57 @@ void OneGrade::applyMagicGrade(double p_Time)
     sep = 1.0;
     applySeparation();
 
+    // RE-SOLVE THE TONE AFTER THE COLOUR MOVE, which the bench has been doing and this had not.
+    //
+    // Offset Temp is additive and Gain Temp multiplicative, so either shifts the channels the
+    // black point and the subject were just placed on -- and it is a CHANNEL that crushes. The
+    // same argument as the first-press bug: a grade has to be solved for the configuration it
+    // ends in, not one it passed through.
+    //
+    // It was fixed in the bench and not here, which made the harness disagree with Resolve on the
+    // same frame -- the one failure mode the bench exists to make impossible, introduced by the
+    // commit that was fixing exactly this. Whatever the bench does after the colour move, this
+    // must do too; the two orderings are the thing being kept in step.
+    {
+        og::grade::Tunables tn;
+        const bool lutOkR = lutSelected() && m_Lut.size >= 2;
+        const float* lp = lutOkR ? m_Lut.data.data() : nullptr;
+        const int    ls = lutOkR ? m_Lut.size : 0;
+
+        og::grade::Measurements meas;
+        meas.key = m_LastKey; meas.pin = m_LastPin; meas.hot = m_LastHot;
+        meas.d01 = m_LastR01; meas.d50 = m_LastD50; meas.d99 = m_LastD99;
+        meas.valid = true;
+        m_CreativeLow->getValue(tn.blackTarget);
+
+        float Pr[oga::kParamN];
+        Pr[0]=(float)m_Temp->getValue();    Pr[1]=(float)m_Tint->getValue();
+        Pr[2]=(float)m_Density->getValue(); Pr[3]=(float)m_Lift->getValue();
+        Pr[4]=(float)m_Gamma->getValue();   Pr[5]=(float)m_Gain->getValue();
+        Pr[6]=(float)m_OffTemp->getValue(); Pr[7]=(float)m_OffTint->getValue();
+        Pr[8]=(float)m_PostExp->getValue(); Pr[9]=(float)m_PostCon->getValue();
+        Pr[10]=(float)m_RawExp->getValue(); Pr[11]=(float)m_RawTemp->getValue();
+        Pr[12]=(float)m_Rolloff->getValue();
+
+        og::grade::solve_creative_px(S, kCreativeCam(), kCreativeEnc(), meas, tn, Pr, lp, ls);
+        m_Lift->setValue(Pr[3]);
+        m_Gain->setValue(Pr[5]);
+
+        const og::grade::MagicTone t2 = og::grade::solve_magic_tone(
+            S, c.subject, kCreativeCam(), kCreativeEnc(), lp, ls, Pr, tn);
+        if (t2.ok) {
+            m_Lift->setValue(t2.lift);
+            m_Gamma->setValue(t2.gamma);
+            m_Gain->setValue(t2.gain);
+            m_LastGain = t2.gain;
+            m_ToneLo->setValue(t2.sLo);  m_ToneMid->setValue(t2.sMid);
+            m_ToneShi->setValue(t2.sHi); m_ToneHi->setValue(t2.fHi);
+        } else {
+            m_ToneLo->setValue(-1.0); m_ToneMid->setValue(-1.0);
+            m_ToneShi->setValue(-1.0); m_ToneHi->setValue(-1.0);
+        }
+    }
+
     char msg[160];
     snprintf(msg, sizeof msg, "%d/%d  %s %.0f%% -> %s %+.3f  [%s]",
              c.option + 1, c.options, oga::region_name(c.subject), c.cover,
