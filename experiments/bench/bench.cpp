@@ -305,8 +305,9 @@ int main(int argc, char** argv)
                     if (mt.ok && !noTone) {
                         P[3] = mt.lift; P[4] = mt.gamma; P[5] = mt.gain;
                         snprintf(toneNote, sizeof toneNote,
-                                 " tone L%+.3f G%.3f g%.3f -> subj %.3f/%.3f hi %.3f",
-                                 mt.lift, mt.gamma, mt.gain, mt.subjLo, mt.mid, mt.frameHi);
+                                 " tone L%+.3f G%.3f g%.3f -> subj %.3f/%.3f/%.3f spread %.3f  hi %.3f",
+                                 mt.lift, mt.gamma, mt.gain, mt.subjLo, mt.mid, mt.subjHi,
+                                 mt.subjHi - mt.subjLo, mt.frameHi);
                     }
                     const double base = og::grade::solve_magic_base(S, cam, enc <= 2 ? enc : 1, c, st, tun);
                     P[c.param] = (float)std::min(1.0, std::max(-1.0, (double)P[c.param] + base * sep));

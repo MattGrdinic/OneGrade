@@ -77,14 +77,19 @@ struct Tunables {
     // being judged. Both from ONE hand-graded interview frame (2026-08-07), so treat them as
     // placeholders with the right shape rather than as fitted values.
     //
-    // subjFloor is where the subject's own shadows sit. Creative left the face at p10 0.078 on
-    // that frame; the user's correction put it at 0.135, and the frame-wide floor moving
-    // 0.050 -> 0.085 was a consequence of that rather than the goal.
+    // subjFloor is where the subject's own shadows sit, and it is the dial for how much contrast
+    // the subject carries. Creative left the face at p10 0.078; the user's correction put it at
+    // 0.135, and the frame-wide floor moving 0.050 -> 0.085 was a consequence rather than a goal.
+    //
+    // Set slightly below the hand grade at the user's call -- "a bit more contrast in our subject,
+    // just less than we were allowing before". Measured subject spread on that frame: hand grade
+    // 0.336, this 0.372, the crunchy pre-tone Magic 0.379. Costs nothing at the top, because the
+    // ceiling is solved last (see the pass order).
     //
     // frameCeiling exists because Creative's picture was pinned: p99.9 at 0.993 with 1.12% of
     // the frame already clipped, so there was nowhere for Bias to go before it destroyed
     // something. The hand grade landed at 0.968 with nothing clipped.
-    double subjFloor    = 0.135;
+    double subjFloor    = 0.125;
     double subjMid      = 0.278;
     double frameCeiling = 0.968;
 };
@@ -361,11 +366,14 @@ static const int kMagicTonePasses = 8;
 
 struct MagicTone {
     float lift = 0.f, gamma = 1.f, gain = 1.f;
-    float subjLo = 0.f, frameHi = 0.f, mid = 0.f;   // what it ACHIEVED, for the panel
+    float subjLo = 0.f, subjHi = 0.f, frameHi = 0.f, mid = 0.f;   // what it ACHIEVED
+    // The subject's own contrast, subjHi - subjLo. Not a condition -- it FALLS OUT of the
+    // floor and midtone targets -- but it is the quantity being judged when someone says the
+    // face has too much or too little contrast, so it is reported rather than inferred.
     // The three NEUTRAL percentiles the solve was run against. They do not depend on Lift, Gamma
     // or Gain, so caching them lets Bias re-solve from three scalars instead of re-measuring
     // 200k samples -- which is what makes Bias a target move rather than a parameter drift.
-    float sLo = 0.f, sMid = 0.f, fHi = 0.f;
+    float sLo = 0.f, sMid = 0.f, sHi = 0.f, fHi = 0.f;
     bool  ok = false;
 };
 
@@ -373,7 +381,7 @@ struct MagicTone {
 // it on every drag: Bias shifts the TARGETS and re-solves, rather than nudging the parameters the
 // solve just chose. Nudging them breaks all three conditions at once -- which is exactly what
 // happened, one slider move undoing the whole grade.
-static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double fHi,
+static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sHi, double fHi,
                                               const float P0[analysis::kParamN],
                                               const float* lut, int lutSize,
                                               double subjFloor, double subjMid, double frameCeiling)
@@ -392,12 +400,13 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double fH
     double lf = P0[3], gm = P0[4], gn = P0[5];
     for (int pass = 0; pass < kMagicTonePasses; ++pass) {
         lf = solve1d(-0.50, 0.50, subjFloor,    [&](double v) { return render(sLo,  v, gm, gn); });
-        gn = solve1d( 0.05,  3.00, frameCeiling,[&](double v) { return render(fHi,  lf, gm, v); });
         gm = solve1d( 0.30,  3.00, subjMid,     [&](double v) { return render(sMid, lf, v, gn); });
+        gn = solve1d( 0.05,  3.00, frameCeiling,[&](double v) { return render(fHi,  lf, gm, v); });
     }
     out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
-    out.sLo = (float)sLo; out.sMid = (float)sMid; out.fHi = (float)fHi;
+    out.sLo = (float)sLo; out.sMid = (float)sMid; out.sHi = (float)sHi; out.fHi = (float)fHi;
     out.subjLo  = (float)render(sLo,  lf, gm, gn);
+    out.subjHi  = (float)render(sHi,  lf, gm, gn);
     out.frameHi = (float)render(fHi,  lf, gm, gn);
     out.mid     = (float)render(sMid, lf, gm, gn);
     out.ok = true;
@@ -451,7 +460,8 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         std::nth_element(v.begin(), v.begin() + k, v.end());
         return (double)v[k];
     };
-    return solve_magic_tone_from(pct(subjL, 0.10), pct(subjL, 0.50), pct(allC, 0.999),
+    return solve_magic_tone_from(pct(subjL, 0.10), pct(subjL, 0.50), pct(subjL, 0.90),
+                                 pct(allC, 0.999),
                                  P0, lut, lutSize, t.subjFloor, t.subjMid, t.frameCeiling);
 }
 
