@@ -1375,10 +1375,9 @@ void OneGrade::applyAutoGrade(double p_Time)
     const bool lutOkC = lutSelected() && m_Lut.size >= 2;
     if (m_LastSamples.size() >= 512)
         og::grade::solve_creative_px(m_LastSamples, kCreativeCam(), kCreativeEnc(), meas, tun, Pc,
-                                     lutOkC ? m_Lut.data.data() : nullptr, lutOkC ? m_Lut.size : 0);
+                                     nullptr, 0);   // pre-LUT on purpose -- see solve_black_px
     else
-        og::grade::solve_creative(meas, tun, Pc,
-                                  lutOkC ? m_Lut.data.data() : nullptr, lutOkC ? m_Lut.size : 0);
+        og::grade::solve_creative(meas, tun, Pc, nullptr, 0);
     const double gain = Pc[5];
 
     // Highlight Rolloff from SOURCE CLIPPING, which is the only measurement that separated
@@ -1990,7 +1989,7 @@ void OneGrade::applyMagicGrade(double p_Time)
 
         // solve_black_px, NOT solve_creative_px: the latter starts with creative_preset() and
         // would erase the colour move applied a few lines above.
-        og::grade::solve_black_px(S, kCreativeCam(), kCreativeEnc(), Pr, tn.blackTarget, lp, ls);
+        og::grade::solve_black_px(S, kCreativeCam(), kCreativeEnc(), Pr, tn.blackTarget, nullptr, 0);
         m_Lift->setValue(Pr[3]);
 
         const og::grade::MagicTone t2 = og::grade::solve_magic_tone(

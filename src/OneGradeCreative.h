@@ -200,6 +200,23 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
 // rendered the reset array, so its picture lost the move entirely, while the plugin copied only
 // Lift and Gain back into params that still held it. Two implementations, one bug, two different
 // wrong answers -- which is exactly why they stopped matching on one frame.
+// PRE-LUT BY DEFAULT, and the callers pass no LUT deliberately.
+//
+// Solving this post-LUT is defensible on paper -- the black point is judged on screen, and the
+// print stock's toe eats most of the margin left before it -- and it flattened every landscape in
+// the set. Chasing it moved pre-LUT floors from 0.050 to between 0.13 and 0.38, which is three to
+// seven times higher on every frame, and the sunsets went first.
+//
+// It was chasing `crushed%`, a metric the user had already said did not match what they saw: the
+// frames it flagged worst were ones they called good starting points. A shot with a large
+// silhouette is SUPPOSED to sit on the floor. Same lesson as `hot` versus `pin` earlier in this
+// project -- a measurement that reports an intended property as a defect, and optimising against
+// it makes the picture worse while the number improves.
+//
+// What survives from that work and is worth keeping: solving on real pixels rather than a grey
+// scalar, so the Magic colour move is accounted for. Pre-LUT that costs nothing, since the grade
+// curve is per-channel and monotonic; it earns its keep only because Offset and Gain Temp move
+// the channels after the floor is placed.
 static inline void solve_black_px(const analysis::SampleSet& S, int cam, int enc,
                                   float P[analysis::kParamN], double blackTarget,
                                   const float* lut, int lutSize)
@@ -223,9 +240,18 @@ static inline void solve_black_px(const analysis::SampleSet& S, int cam, int enc
     key.resize(keep);
 
     const double pe = P[8], con = P[9], roll = P[12], gm = P[4], gn = P[5];
-    // p1 OF THE DARK SLICE, not its minimum. A minimum is one pixel and would let a single
-    // speck of sensor noise set the whole frame's lift.
-    const size_t q = keep / 100;
+    // THE SAME PERCENTILE THE SCALAR SOLVE PLACES -- p0.1 of the WHOLE frame, not of the dark
+    // slice. The slice is only how the candidates are gathered; the quantity being placed has to
+    // stay the one every constant was fitted against.
+    //
+    // Indexing into the slice by keep/100 quietly placed the frame's 0.02 percentile instead,
+    // which is a darker pixel, so the solve lifted further to get it onto target: floors came out
+    // at 0.13 rather than 0.05 and the landscapes flattened. A percentile changed by accident is
+    // indistinguishable from a target changed on purpose, and it looks like a tuning problem
+    // right up until you compare the two definitions.
+    //
+    // Not a minimum, either: one pixel of sensor noise would set the whole frame's lift.
+    const size_t q = std::min(keep - 1, (size_t)(0.001 * (double)n));
     auto floorAt = [&](double lf) {
         std::vector<float> v; v.reserve(keep);
         for (size_t k = 0; k < keep; ++k) {
@@ -398,20 +424,20 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
             // So each reference pixel is compared with what a NEUTRAL surface of its own
             // luminance renders as through the same chain. What survives that subtraction is the
             // cast on the surface; what cancels is the stock being itself.
+            // AGAINST ZERO, INCLUDING THE PRINT STOCK'S OWN CAST.
+            //
+            // A previous version subtracted what a neutral surface of the same luminance renders
+            // as through the stock, so 2383's blue cancelled by construction and stayed in the
+            // picture. That treats the cast as part of the look -- which it is -- but makes it a
+            // DEFAULT rather than a choice.
+            //
+            // The user's call, and the better shape: start as neutral as the controls can get and
+            // let Separation dial the blue back in or out deliberately. Magic Grade's asset is the
+            // subject's tone; colour is offered, not imposed.
             float r, g, b;
-            og::process(cam, enc, P, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], r, g, b);
-            const float y = 0.2126f*r + 0.7152f*g + 0.0722f*b;
-            float gr = y, gg = y, gb = y;
-            if (lut && lutSize >= 2) {
-                og::apply_lut(lut, lutSize, 1.f, r, g, b);
-                og::apply_lut(lut, lutSize, 1.f, gr, gg, gb);
-            }
-            og::apply_trim(postExp, postCon, r, g, b);
-            og::apply_trim(postExp, postCon, gr, gg, gb);
-            float L, a, bb, Lg, ag, bg;
-            analysis::display_to_Lab(1, r,  g,  b,  L,  a,  bb);
-            analysis::display_to_Lab(1, gr, gg, gb, Lg, ag, bg);
-            bs.push_back(bb - bg);
+            shade(P, i, r, g, b);
+            float L, a, bb; analysis::display_to_Lab(1, r, g, b, L, a, bb);
+            bs.push_back(bb);
         }
         if (bs.empty()) return 0.0;
         const size_t m = bs.size() / 2;
@@ -459,9 +485,24 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
         if (std::sqrt(ma*ma + mb*mb) > 9.0) { out.why = "ref not neutral"; return out; }
     }
 
+    // A PLAUSIBLE WHITE BALANCE, not the whole legal range. 2500-15000 K is what the parameter
+    // accepts; it is not what a starting point should ever be. With the wider bounds, a frame
+    // whose reference stayed blue at every temperature clamped to 15000 K -- the maximum warm
+    // shift the control has, spent on a residual of -2.1, over-warming everything else in the
+    // picture while barely denting the cast it was aimed at. Clamping is only reasonable if the
+    // ends are reasonable.
+    double lo = 3500.0, hi = 9500.0;
+    // AS NEUTRAL AS THE CONTROL CAN GET, rather than declining when it cannot reach zero.
+    //
+    // RAW Temp walks the Planckian locus and the stock's cast is not obliged to sit on it, so on
+    // some frames no temperature in a sane range reaches b* = 0 -- one shot with 63% usable
+    // reference declined outright on exactly that. Declining leaves the WHOLE cast in; clamping
+    // to the nearest end removes most of it. "As neutral as we can" is literally a clamp, and the
+    // slider covers what is left.
+    const double bLo = refB(lo), bHi = refB(hi);
     out.b0 = (float)refB(6500.0);
-    double lo = 2500.0, hi = 15000.0;
-    if (refB(lo) > 0.0 || refB(hi) < 0.0) { out.why = "unreachable"; return out; }
+    if (bLo > 0.0) { out.kelvin = lo; out.why = "clamped cool"; out.ok = true; return out; }
+    if (bHi < 0.0) { out.kelvin = hi; out.why = "clamped warm"; out.ok = true; return out; }
     for (int i = 0; i < 24; ++i) {
         const double mid = 0.5 * (lo + hi);
         if (refB(mid) < 0.0) lo = mid; else hi = mid;

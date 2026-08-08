@@ -231,7 +231,7 @@ int main(int argc, char** argv)
         const int dispEnc = (enc <= 2) ? enc : 1;
         og::grade::Measurements m = measure(f, cam, enc, S);
         float P[oga::kParamN];
-        og::grade::solve_creative_px(S, cam, enc, m, tun, P, lutData, lutSize);
+        og::grade::solve_creative_px(S, cam, enc, m, tun, P, nullptr, 0);
 
         // WHITE BALANCE FIRST. --wb used to be parsed, printed as "wb on", and never acted on.
         // Mirrors the plugin: segment a NEUTRAL thumbnail, solve on the surfaces that should be
@@ -320,7 +320,7 @@ int main(int argc, char** argv)
                     //
                     // Same shape as the first-press bug: a grade has to be solved for the
                     // configuration it ends in, not the one it passed through.
-                    og::grade::solve_black_px(S, cam, enc, P, tun.blackTarget, lutData, lutSize);
+                    og::grade::solve_black_px(S, cam, enc, P, tun.blackTarget, nullptr, 0);
                     if (mt.ok && !noTone) {
                         const og::grade::MagicTone m2 =
                             og::grade::solve_magic_tone(S, c.subject, cam, enc, lutData, lutSize, P, tun);
