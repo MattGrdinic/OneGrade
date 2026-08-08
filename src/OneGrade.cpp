@@ -2015,6 +2015,24 @@ void OneGrade::applyMagicGrade(double p_Time)
     if (wbNote[0]) strncat(msg, wbNote, sizeof msg - strlen(msg) - 1);
     m_MagicNote->setValue(msg);
 
+    // RE-ARM BIAS ON THE FINAL GRADE, not the halfway one.
+    //
+    // applyAutoGrade arms the anchor, and everything after it -- the tone solve, the colour move,
+    // and the re-solve that follows the colour move -- changes Lift, Gamma and Gain again. So the
+    // anchor held values the node had passed THROUGH rather than the ones it ended on, and
+    // applyBias's coefficient path computes lift as anchor + bias*0.06: an absolute value, not a
+    // nudge. The first touch of the slider therefore snapped the picture back to the intermediate
+    // grade, a full jump from a move of 0.003.
+    //
+    // It appeared on some shots and not others, which is what made it read as a slider problem
+    // rather than an ordering one: a trusted face takes the tone path, which re-solves from the
+    // current parameters against barely-moved targets and is continuous by construction, while
+    // everything else falls through to the coefficient path and its stale anchor.
+    //
+    // Third discontinuity-at-its-own-default in this project, after Rolloff at 0 and RAW Temp at
+    // 6500. The tell was identical all three times: the first nudge is a step, not a ramp.
+    armBias(true);
+
     // WHY, in the panel, in a sentence. The feature exists to surface a move an inexperienced
     // colourist would not have considered, and a suggestion with no visible reasoning teaches
     // nothing. It also makes a wrong pick legible rather than mysterious, which matters more
