@@ -414,7 +414,9 @@ public:
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName);
     void setEnabledness();
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
-    void probeAnalyze(double p_Time);   // measure the frame and report (writes m_LastKey)
+    // forCreative: measure in the configuration Creative Grade is about to CREATE, not the
+    // one the node happens to be in. See the call in applyAutoGrade().
+    void probeAnalyze(double p_Time, bool forCreative = false);   // writes m_LastKey
     void probeSetup(double p_Time);     // is the input actually camera log? + what the host says
     void applyAutoGrade(double p_Time);      // measure, then set the film look + Gain from key
     void applyAutoGradeClean(double p_Time); // measure, then contain the range with no LUT
@@ -817,7 +819,7 @@ void OneGrade::probeSetup(double p_Time)
 // Everything stays wrapped: fetchImage outside render may throw, return null, or hand back
 // zeros, and all three are answers as long as we survive them. `anyNonZero` is tracked
 // separately because an empty buffer and a black shot both read as p1 = p50 = p99 = 0.
-void OneGrade::probeAnalyze(double p_Time)
+void OneGrade::probeAnalyze(double p_Time, bool forCreative)
 {
     m_ProbeScene->setValue("");
     m_ProbeDisplay->setValue("");
@@ -860,6 +862,30 @@ void OneGrade::probeAnalyze(double p_Time)
         // selected the Output Encode param is not what gets rendered, so measuring against
         // it would report a curve the user isn't looking at.
         if (lutSelected()) encode = (lutMode == 2) ? 3 : 0;
+
+        // MEASURE THE CONFIGURATION THE GRADE IS ABOUT TO CREATE, not the one the node is in.
+        //
+        // Creative Grade begins with applyPreset(1), which sets Camera to Rec.2100 PQ and selects
+        // the film LUT, and a film LUT forces Cineon. On a node that does not have those yet --
+        // the FIRST press, or any fresh node -- the lines above read the pre-preset state, so the
+        // black point was solved against a Gamma 2.2 measurement and then rendered in Cineon.
+        // That is the crush the encode fix was supposed to have removed, and it survived in
+        // exactly one place: the first press. The second press worked because by then the node
+        // was already configured, which is what made it look intermittent rather than wrong.
+        //
+        // Same cause for White Balance misfiring on a first press and settling by the third: it
+        // segments and solves on a render built from these values, so it too was describing a
+        // picture the node was about to stop being. A button that converges over repeated presses
+        // is reading its own output; the tell is that pressing it again changes the answer when
+        // nothing about the footage changed.
+        //
+        // Reading current state is right for the standalone Analyze button and wrong for a button
+        // whose whole job is to put the node somewhere else. The target is known in advance -- it
+        // is two constants in OneGradeCreative.h -- so it is asserted rather than discovered.
+        if (forCreative) {
+            camera = og::grade::kCreativeCamera;
+            encode = og::grade::kCreativeEncode;
+        }
         // ...but the analysis must land in a DISPLAY-REFERRED space, so fall back to Gamma
         // 2.2 when the effective encode isn't one. A Film Look forces Cineon, and Cineon is
         // a log encode: it clamps to [0,1] (so 'hot' reads a flat 0% on a genuinely blown
@@ -1311,7 +1337,10 @@ static double og_solve(double lo, double hi, double target,
 // starting point that shows its work, so a bad analysis costs one undo, not trust.
 void OneGrade::applyAutoGrade(double p_Time)
 {
-    probeAnalyze(p_Time);              // fills m_LastKey, and reports what it saw
+    // Measured in the configuration applyPreset(1) is ABOUT to create, not the current one --
+    // otherwise a first press solves against the node's old camera and encode. The preset still
+    // comes second, so a failed analysis leaves the node untouched.
+    probeAnalyze(p_Time, /*forCreative=*/true);
     if (!m_HaveKey) return;            // analysis failed; probeAnalyze has already said why
 
     applyPreset(1);                    // Cinematic Film Emulation (Kodak 2383 D60)
@@ -1675,7 +1704,7 @@ void OneGrade::applyMagicGrade(double p_Time)
     m_WbFirst->getValue(wbFirst);
     char wbNote[64] = {0};
     if (wbFirst) {
-        probeAnalyze(p_Time);                       // fetch + source thumbnail
+        probeAnalyze(p_Time, /*forCreative=*/true);  // fetch + source thumbnail
         if (m_LastThumbSrc.size() == (size_t)512 * 512 * 3 && s_seg_ready()) {
             RenderConfig neutral{};                 // segment the UNGRADED frame: the cast is
             neutral.camera = m_LastCam;             // what we are here to measure, so it must
