@@ -420,3 +420,28 @@ different measurements.
 whether pre-LUT b\* predicts post-LUT b\* at all. If the ordering holds, this is a non-issue and
 the note can be deleted. If it inverts, the decision-making descriptors need the LUT and the
 Jacobian probably does not.
+
+---
+
+## Extract the whole Magic sequence, not just its steps
+
+`src/OneGradeCreative.h` exists so the plugin and the bench cannot paraphrase each other, and
+it works: `solve_creative`, `solve_creative_px`, `solve_magic_tone`, `solve_magic_base` and
+`solve_white_balance` are each called by both. What is still written out **twice** is the
+ORDER the steps run in — and on 2026-08-08 that is what drifted. The bench gained a re-solve
+after the colour move; the plugin did not; the two produced different pictures from the same
+still, which is the single failure the bench exists to prevent.
+
+Extracting individual functions turned out to fix the arithmetic and leave the *choreography*
+duplicated. The sequence is: creative → tone → decide → colour → creative → tone, and every
+one of those edges is a place the two can diverge silently.
+
+**The shape:** one call taking `(SampleSet, cam, enc, lut, lutSize, Tunables, int click)` and
+returning a filled `P[kParamN]` plus the `MagicChoice` and `MagicTone` for the panel. The
+plugin then writes `P[]` into OFX params and the bench renders it — neither knows the order.
+Bias already works this way and is the proof it is tractable: it calls
+`solve_magic_tone_from` over three cached scalars and cannot drift.
+
+**Why it was not done at the time:** it lands in the middle of an active tuning session, and
+the constants were still moving. Do it before the constants are refitted, not after, so the
+refit happens against one implementation.
