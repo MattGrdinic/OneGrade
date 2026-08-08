@@ -356,3 +356,33 @@ so a weak axis gets a weak move; it was never ported to C++. Two options when it
 **Deferred deliberately.** The user liked the result on the frame where the reasoning was
 weakest, and one shot is not enough to know how often the axis is that thin. Worth living with
 first and seeing whether arbitrary directions actually bite.
+
+---
+
+## Multiple classifier passes: objects, then quality (user's idea, 2026-08-07)
+
+> "we may want to run the image through the classifier multiple times, the first to grade
+> objects, then further passes to determine quality and aesthetics."
+
+The first pass exists — semantic regions, driving which slider moves and in which direction.
+What is missing is any notion of whether the *result* is good, and that gap is exactly what the
+"too dark on high-key scenes" report is: the grade lands where its constants say it should, and
+nothing in the loop ever looks at the output and objects.
+
+Two distinct things could sit in later passes, and they are worth keeping apart:
+
+**Re-measure the graded frame.** Cheap and already possible — `describe()` is a pure function of
+the parameters, so the graded state can be measured without re-rendering anything. A rule as
+plain as "the midtone must not fall below X" would have caught the darkness before it was
+noticed by eye. This is the one to do first: it needs no model, no data and no training.
+
+**An aesthetic score.** The real version of the idea, and the harder one. A learned "is this a
+good image" predictor could close the loop properly, letting the grade be searched rather than
+computed. Two obstacles, both real: the small ones are trained on web-photo taste rather than
+cinema, and running one inside a search loop costs a forward pass per candidate — CLIP-based
+scorers are seconds each, which is a non-starter for a button. A tiny model over the descriptors
+already computed is the tractable shape, and it needs the ground truth the bench is being built
+to collect.
+
+Sequence: measure the graded frame and add sanity rules (now) → collect graded/ungraded pairs
+with the bench (ongoing) → consider a learned score once there is something to fit it to.

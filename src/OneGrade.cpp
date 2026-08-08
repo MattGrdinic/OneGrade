@@ -7,6 +7,7 @@
 #include "OneGradePipeline.h"
 #include "OneGradeAnalysis.h"   // CPU-only scene descriptors + control Jacobian (NOT mirrored)
 #include "OneGradeSegment.h"    // ncnn semantic segmentation for Magic Grade's regions
+#include "OneGradeCreative.h"   // the grade solve, shared with the offline bench
 #include "CubeLUT.h"
 
 #include <cstdio>
@@ -1286,7 +1287,18 @@ void OneGrade::applyAutoGrade(double p_Time)
 
     // Fitted from the user's grades. Floor exists because the fit is only evidenced out to
     // about -2 EV; beyond that it extrapolates, and an unclamped line reaches 0 near -4 EV.
-    const double gain = std::min(0.80, std::max(0.30, 0.80 + 0.19 * m_LastKey));
+    // THE SOLVE LIVES IN OneGradeCreative.h so the offline bench runs the same code rather
+    // than a reimplementation. Every constant this feature has got wrong so far was a
+    // paraphrase of something that already existed.
+    og::grade::Measurements meas;
+    meas.key = m_LastKey; meas.pin = m_LastPin; meas.hot = m_LastHot;
+    meas.d01 = m_LastD01; meas.d50 = m_LastD50; meas.d99 = m_LastD99;
+    meas.valid = true;
+    og::grade::Tunables tun;
+    m_CreativeLow->getValue(tun.blackTarget);
+    float Pc[og::analysis::kParamN];
+    og::grade::solve_creative(meas, tun, Pc);
+    const double gain = Pc[5];
 
     // Highlight Rolloff from SOURCE CLIPPING, which is the only measurement that separated
     // the user's rolloff choices:
@@ -1304,7 +1316,7 @@ void OneGrade::applyAutoGrade(double p_Time)
     // diffuse white, and no measured shot came near it.
     // Rolloff from source clipping, the one fit evidenced across shots. Set here rather than
     // inside applyBias(), which is now a relative offset and no longer owns any absolute value.
-    const double rolloff = std::min(0.80, std::max(0.00, 0.090 * m_LastPin));
+    const double rolloff = Pc[12];
     m_Gain->setValue(gain);
     m_Rolloff->setValue(rolloff);
     m_LastGain = gain;
@@ -1328,22 +1340,14 @@ void OneGrade::applyAutoGrade(double p_Time)
     // so this places the black point going INTO the stock rather than coming out of it. That
     // is the right place for it: it is the space the user's own corrections were made in, and
     // the stock's own toe is part of the look rather than something to solve around.
-    double cLow = 0.050;
-    m_CreativeLow->getValue(cLow);
-    const double pe = m_PostExp->getValue();     // whatever the preset set (0.55 today)
-    const double gm = m_Gamma->getValue();       // 1.0 in the film recipe
-    const double lift = og_solve(-0.50, 0.50, cLow, [&](double lf) {
-        const double v = og_grade_display(m_LastD01, lf, gm, gain) * std::exp2(pe);
-        return rolloff > 0.0 ? (double)og::softclip((float)v, (float)rolloff) : v;
-    });
-    m_Lift->setValue(lift);
+    m_Lift->setValue(Pc[3]);
 
     armBias(true);                     // fresh grade: Bias returns to neutral
     applyBias();
 
     char msg[128];
     snprintf(msg, sizeof msg, "Creative G %.3f L %+.3f (blk %.3f)  Roll %.3f",
-             gain, lift, cLow, rolloff);
+             gain, Pc[3], tun.blackTarget, rolloff);
     m_ProbeApplied->setValue(msg);
     setEnabledness();                  // the preset switches LUT Mode
 }

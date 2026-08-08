@@ -18,3 +18,7 @@ experiments/segmentation/seg-env/
 # and the shipping checkpoint is not settled yet
 experiments/segmentation/converted/
 experiments/segmentation/verify
+
+# offline bench binary and its outputs
+experiments/bench/bench
+experiments/bench/out/
