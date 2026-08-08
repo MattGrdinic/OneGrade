@@ -89,6 +89,12 @@ static og::grade::Measurements measure(const Frame& f, int cam, int enc, oga::Sa
     const int step = std::max(1, (int)(std::sqrt((double)(f.w * f.h) / 200000.0) + 0.5));
     float N[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
 
+    // TWO ENCODES, mirroring probeAnalyze(). `hot` is a threshold chosen in display space, so it
+    // needs a display-referred encode; d01/d99 get pushed through og_lgg by the solve, so they
+    // need the space the grade curve actually runs in. Passing one encode to both is what made
+    // this bench and the plugin disagree by 0.06 of Lift on the same frame.
+    const int dispEnc = (enc <= 2) ? enc : 1;
+
     std::vector<float> lum, chn, srcTop;
     std::vector<float> sceneY;
     for (int y = 0; y < f.h; y += step) {
@@ -101,8 +107,9 @@ static og::grade::Measurements measure(const Frame& f, int cam, int enc, oga::Sa
             sceneY.push_back(xyz[1]);
 
             float r, g, b;
-            og::process(cam, enc, N, p[0], p[1], p[2], r, g, b);
+            og::process(cam, dispEnc, N, p[0], p[1], p[2], r, g, b);
             lum.push_back(0.2126f*r + 0.7152f*g + 0.0722f*b);
+            if (enc != dispEnc) og::process(cam, enc, N, p[0], p[1], p[2], r, g, b);
             chn.push_back(r); chn.push_back(g); chn.push_back(b);
 
             S.rgb.push_back(p[0]); S.rgb.push_back(p[1]); S.rgb.push_back(p[2]);

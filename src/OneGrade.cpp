@@ -430,6 +430,9 @@ public:
     // Clean auto-grade solves against them directly: the grade curve is monotonic, so it maps
     // percentiles exactly, and three numbers stand in for the whole frame (see solveClean()).
     double m_LastD01 = 0.0;   // p0.1 — the BLACK POINT the solve places (not p1, see below)
+    // The same p0.1 measured in the RENDER encode rather than the display-referred fallback.
+    // Every solve that runs the grade curve must use this one; see the rendC declaration.
+    double m_LastR01 = 0.0;
     double m_LastD1  = 0.0;
     double m_LastD50 = 0.0;
     double m_LastD99 = 0.0;
@@ -881,8 +884,31 @@ void OneGrade::probeAnalyze(double p_Time)
         // target had been hit exactly. Measuring a summary statistic instead of the quantity
         // that actually fails is the same mistake as measuring in the wrong encode.
         std::vector<float> dispC;
+        // ...and the same per-channel values in the encode the RENDER actually uses, which is
+        // not always the one above.
+        //
+        // THE BLACK POINT IS SOLVED, NOT MEASURED, AND A SOLVE HAS A SPACE. Lift/Gamma/Gain run
+        // in whatever curve the output encode selects, so solving "place p0.1 at 0.050" means
+        // pushing p0.1 through og_lgg IN THAT CURVE. Feed it a percentile measured somewhere
+        // else and the solve is exact about the wrong question.
+        //
+        // That is what shipped. Creative Grade always selects the film LUT, which forces Cineon,
+        // while the display fallback above put the measurement in Gamma 2.2 -- so the solve
+        // aimed at 0.050 and landed at 0.000, Lift going to -0.025 where the render's own space
+        // wanted +0.034. The blacks crushed on every Creative and Magic grade, and the panel
+        // reported "(blk 0.050)" while doing it, because the solve had hit the target it was
+        // given. Found by the bench disagreeing with Resolve on one frame.
+        //
+        // The 2.2 fallback stays correct for what it was written for -- `hot`, saturation, the
+        // skin mask -- because those are THRESHOLDS chosen in display space. The distinction is
+        // not display-vs-log, it is "a number compared against a constant" (needs the space the
+        // constant was chosen in) versus "a number pushed through the pipeline" (needs the
+        // space the pipeline runs in). Same frame, same percentile, two legitimate answers.
+        std::vector<float> rendC;
+        const bool sameEnc = (encode == dispEnc);
         double skinR = 0.0, skinG = 0.0, skinB = 0.0;   // skin chromaticity, for a warmth read
         sceneY.reserve(220000); dispL.reserve(220000); dispC.reserve(660000);
+        if (!sameEnc) rendC.reserve(660000);
         long long hot = 0;
         std::vector<float> srcTop;   // per-sample max input channel, for ceiling detection
         srcTop.reserve(220000);
@@ -933,6 +959,11 @@ void OneGrade::probeAnalyze(double p_Time)
                 const float L = 0.2126f*dr + 0.7152f*dg + 0.0722f*db;
                 dispL.push_back(L);
                 dispC.push_back(dr); dispC.push_back(dg); dispC.push_back(db);
+                if (!sameEnc) {
+                    float rr, rg, rb;
+                    og::process(camera, encode, neutral, p[0], p[1], p[2], rr, rg, rb);
+                    rendC.push_back(rr); rendC.push_back(rg); rendC.push_back(rb);
+                }
                 if (L > 1.0f) ++hot;   // above display white: lost on export unless rolled off
 
                 float hh, ss, vv; og::rgb2hsv(dr, dg, db, hh, ss, vv);
@@ -1059,6 +1090,7 @@ void OneGrade::probeAnalyze(double p_Time)
         m_ProbePeak->setValue(m2);
 
         m_LastD01 = c01; m_LastD50 = c50; m_LastD99 = c99;   // per-channel, for the Base solve
+        m_LastR01 = sameEnc ? c01 : pct(rendC, 0.001);       // ...and in the render's own curve
         m_LastD1 = d1;                                       // luma p1, reported only
         m_LastPin = 100.0 * (double)pinned / (double)n;
         m_LastHot = 100.0 * (double)hot / (double)n;
@@ -1292,7 +1324,9 @@ void OneGrade::applyAutoGrade(double p_Time)
     // paraphrase of something that already existed.
     og::grade::Measurements meas;
     meas.key = m_LastKey; meas.pin = m_LastPin; meas.hot = m_LastHot;
-    meas.d01 = m_LastD01; meas.d50 = m_LastD50; meas.d99 = m_LastD99;
+    // RENDER-ENCODE p0.1, not the display-referred one: solve_creative pushes this through
+    // og_lgg, and Creative always forces Cineon via the film LUT. See the rendC declaration.
+    meas.d01 = m_LastR01; meas.d50 = m_LastD50; meas.d99 = m_LastD99;
     meas.valid = true;
     og::grade::Tunables tun;
     m_CreativeLow->getValue(tun.blackTarget);
@@ -1414,7 +1448,7 @@ void OneGrade::applyAutoGradeClean(double p_Time)
     //     softclip( lgg_core(d, lift, gamma, gain) * 2^postExp , rolloff )
     // Every stage Base touches is in there, which is why no iteration is needed: test 14
     // proves lgg_core predicts the render, and the two stages after it are this simple.
-    const double d01 = m_LastD01, d50 = m_LastD50, d99 = m_LastD99;
+    const double d01 = m_LastR01, d50 = m_LastD50, d99 = m_LastD99;   // render encode: it goes through og_lgg
     double gain = 1.0, lift = 0.0, postExp = 0.0;
     const double gamma = 1.0;           // the midtone rides on exposure, not gamma
     auto chain = [&](double d, double lf, double gn, double pe) {
@@ -1605,7 +1639,7 @@ void OneGrade::applyBias()
     if (m_HaveKey) {
         const double pe = m_PostExp->getValue();
         auto blackAt = [&](double lf) {
-            const double v = og_grade_display(m_LastD01, lf, gamma, gain) * std::exp2(pe);
+            const double v = og_grade_display(m_LastR01, lf, gamma, gain) * std::exp2(pe);
             return rolloff > 0.0 ? (double)og::softclip((float)v, (float)rolloff) : v;
         };
         const double blackFloor = 0.006;          // ~1.5 code values at 8 bit
