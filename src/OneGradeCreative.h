@@ -92,6 +92,12 @@ struct Tunables {
     double subjFloor    = 0.125;
     double subjMid      = 0.278;
     double frameCeiling = 0.968;
+
+    // Where an underexposed subject's NEUTRAL midtone has to reach before the tone solve runs.
+    // Read off the frames that already work: their subjects sit near this without help, so a shot
+    // below it is one the grade stage cannot rescue on its own.
+    double subjNeutralMid = 0.22;
+    double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
 };
 
 // The Cinematic Film Emulation recipe, which Creative Grade starts from. User-validated, and the
@@ -570,6 +576,9 @@ struct MagicTone {
     // or Gain, so caching them lets Bias re-solve from three scalars instead of re-measuring
     // 200k samples -- which is what makes Bias a target move rather than a parameter drift.
     float sLo = 0.f, sMid = 0.f, sHi = 0.f, fHi = 0.f;
+    float rawExp = 0.f;   // scene-linear stops added to rescue an underexposed subject
+    float sMidNeutral = 0.f;   // the subject's midtone before any of this, for diagnosis
+    const char* why = "";   // which decline, when ok is false -- see solve_white_balance
     bool  ok = false;
 };
 
@@ -630,6 +639,25 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
         }
     }
 
+    // DECLINE RATHER THAN SHIP A FAILED SOLVE.
+    //
+    // On a frame 3.5 stops under, Gain ran to its 2.00 bound -- worth one stop -- and the subject
+    // still came out with p10 and p50 both on 0.125 against a 0.278 midtone target: the face
+    // squeezed into a single value, spread 0.133, and the frame's highlight blown to 1.000 at the
+    // same time. Flat, crushed and clipped together, applied with no indication anything had gone
+    // wrong.
+    //
+    // There is no arrangement of Lift, Gamma and Gain that makes that shot legible -- it wants
+    // exposure the grade stage does not have -- so the honest answer is to leave Creative's tone
+    // alone. Same shape as the non-skin gate and the 43%-coverage gate: the button's bad cases
+    // have to be impossible rather than rare, and a solve that misses its target this far is a
+    // bad case whatever produced it.
+    //
+    // Checked on the RESULT, not on whether a control sits at a bound. A bound can be reached
+    // legitimately, and a solve can fail without reaching one.
+    if (std::fabs(render(sMid, lf, gm, gn) - subjMid) > 0.02) { out.why = "subject unplaceable"; return out; }
+    if (render(fHi, lf, gm, gn) >= 0.999) { out.why = "highlight blown"; return out; }
+
     out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
     out.sLo = (float)sLo; out.sMid = (float)sMid; out.sHi = (float)sHi; out.fHi = (float)fHi;
     out.subjLo  = (float)render(sLo,  lf, gm, gn);
@@ -663,7 +691,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     // subjects is a DATA question, not a code one: it needs a hand-graded landscape the way the
     // face targets needed a hand-graded interview. Until then a wrong target is worse than none,
     // because the whole point of the button is that its bad cases are impossible rather than rare.
-    if (subject != analysis::R_SKIN) return out;
+    if (subject != analysis::R_SKIN) { out.why = "not a face"; return out; }
 
     // AND ONLY WHEN THE MASK PLAUSIBLY IS A FACE. Coverage is the tell, the same tell
     // skin_trustworthy() already uses at 25% for the chromatic mask: a face occupies a modest
@@ -680,7 +708,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     {
         size_t cover = 0;
         for (size_t i = 0; i < n; ++i) if ((int)S.region[i] == subject) ++cover;
-        if ((double)cover > 0.35 * (double)n) return out;
+        if ((double)cover > 0.35 * (double)n) { out.why = "face too large to be one"; return out; }
     }
 
     float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
@@ -688,26 +716,95 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
 
     // Neutral render once, in the encode the grade curve runs in. Everything below is a solve on
     // these numbers, so they must come from the render's own space (see docs/AUTO-GRADE.md 2).
-    std::vector<float> subjL, allL, allC;
-    subjL.reserve(n / 4 + 1); allL.reserve(n); allC.reserve(n * 3);
+    // REPRESENTATIVE SOURCE PIXELS, not percentile scalars.
+    //
+    // The percentiles used to be measured once at neutral and then treated as constants, which is
+    // exact for Lift, Gamma and Gain because those act after the measurement. It is wrong for RAW
+    // Exposure, which acts on scene light BEFORE the transform, so changing it changes the very
+    // numbers the solve is standing on. Keeping the source triple that sits at each percentile
+    // makes every stage a function of the parameters, exposure included.
+    std::vector<std::pair<float,size_t>> subjK, allK;
+    subjK.reserve(n / 4 + 1); allK.reserve(n);
     for (size_t i = 0; i < n; ++i) {
         float r, g, b;
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        const float L = 0.2126f*r + 0.7152f*g + 0.0722f*b;
-        allL.push_back(L);
-        allC.push_back(r); allC.push_back(g); allC.push_back(b);
-        if ((int)S.region[i] == subject) subjL.push_back(L);
+        allK.push_back({ std::max(r, std::max(g, b)), i });
+        if ((int)S.region[i] == subject)
+            subjK.push_back({ 0.2126f*r + 0.7152f*g + 0.0722f*b, i });
     }
-    if (subjL.size() < 32) return out;   // no subject worth placing
+    if (subjK.size() < 32) { out.why = "subject too small"; return out; }
 
-    auto pct = [](std::vector<float> v, double q) {
+    auto at = [](std::vector<std::pair<float,size_t>>& v, double q) {
         const size_t k = (size_t)(q * (v.size() - 1));
-        std::nth_element(v.begin(), v.begin() + k, v.end());
-        return (double)v[k];
+        std::nth_element(v.begin(), v.begin() + k, v.end(),
+            [](const std::pair<float,size_t>& a, const std::pair<float,size_t>& b) { return a.first < b.first; });
+        return v[k].second;
     };
-    return solve_magic_tone_from(pct(subjL, 0.10), pct(subjL, 0.50), pct(subjL, 0.90),
-                                 pct(allC, 0.999),
-                                 P0, lut, lutSize, t.subjFloor, t.subjMid, t.frameCeiling);
+    const size_t iLo = at(subjK, 0.10), iMid = at(subjK, 0.50),
+                 iHi = at(subjK, 0.90), iTop = at(allK, 0.999);
+
+    // UNDEREXPOSURE IS NOT LOW KEY, AND THE SUBJECT IS HOW YOU TELL THEM APART.
+    //
+    // Creative caps Gain at 0.80 so a deliberately dark shot is never pushed up -- the clamp that
+    // made `key` descriptive rather than prescriptive. It is right about a frame median and blind
+    // to the difference between a moody interior and a shot that simply missed exposure. A face
+    // too dark to read settles it: that is not intent.
+    //
+    // RAW EXPOSURE, NOT GAIN, because 3.5 stops is an exposure problem. Gain is a multiply in
+    // display space and buys about one stop before the highlights go; RAW Exposure is a linear
+    // gain on scene light applied before the transform, which is what exposing the shot properly
+    // would have done. On the failing frame Gain ran to 2.00 and still left the subject's p10 and
+    // p50 both on 0.125 -- the face squeezed to a single value while the frame's top blew.
+    //
+    // Only ever upward, and only for a subject: this must not be able to pull a bright shot down,
+    // and it must not fire on a landscape whose "subject" is a hillside.
+    // A LIT FACE IS NOT BLACK. If the subject's midtone renders at the floor, the label is wrong
+    // -- and on an underexposed shot that is exactly what the model has to work with, because it
+    // is fed the graded thumbnail and a dark noisy picture is far outside what it was trained on.
+    //
+    // Worth separating from "unplaceable", which is where this landed before: exposure cannot fix
+    // it. Scene-linear gain multiplies, and 0 times anything is 0 -- tested at 4, 6 and 8 stops,
+    // all identical. A decline that names the cause stops the next person spending an hour on the
+    // exposure path, which is what happened here.
+    {
+        float r0, g0, b0;
+        og::process(cam, enc, Pn, S.rgb[iMid*3], S.rgb[iMid*3+1], S.rgb[iMid*3+2], r0, g0, b0);
+        if (0.2126f*r0 + 0.7152f*g0 + 0.0722f*b0 < 0.01f) { out.why = "subject is black, not dark"; return out; }
+    }
+
+    float Pe[analysis::kParamN];
+    for (int i = 0; i < analysis::kParamN; ++i) Pe[i] = P0[i];
+    auto neutralMid = [&](double stops) {
+        float Q[analysis::kParamN];
+        for (int i = 0; i < analysis::kParamN; ++i) Q[i] = Pn[i];
+        Q[10] = (float)stops;
+        float r, g, b;
+        og::process(cam, enc, Q, S.rgb[iMid*3], S.rgb[iMid*3+1], S.rgb[iMid*3+2], r, g, b);
+        return (double)(0.2126f*r + 0.7152f*g + 0.0722f*b);
+    };
+    // Target the subject's NEUTRAL midtone, so the tone solve then starts from a shot that looks
+    // correctly exposed rather than one it has to rescue with the grade curve.
+    if (neutralMid(0.0) < t.subjNeutralMid) {
+        Pe[10] = (float)std::min(t.rawExpMax,
+                                 solve1d(0.0, t.rawExpMax, t.subjNeutralMid, neutralMid));
+        Pn[10] = Pe[10];
+    }
+
+    auto shade = [&](size_t i) {
+        float r, g, b;
+        og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+        return (double)(0.2126f*r + 0.7152f*g + 0.0722f*b);
+    };
+    auto shadeMax = [&](size_t i) {
+        float r, g, b;
+        og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+        return (double)std::max(r, std::max(g, b));
+    };
+    MagicTone r = solve_magic_tone_from(shade(iLo), shade(iMid), shade(iHi), shadeMax(iTop),
+                                        Pe, lut, lutSize, t.subjFloor, t.subjMid, t.frameCeiling);
+    r.rawExp = Pe[10];
+    r.sMidNeutral = (float)neutralMid(0.0);
+    return r;
 }
 
 } // namespace grade

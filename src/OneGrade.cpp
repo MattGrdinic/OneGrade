@@ -1932,6 +1932,7 @@ void OneGrade::applyMagicGrade(double p_Time)
             m_Lift->setValue(tone.lift);
             m_Gamma->setValue(tone.gamma);
             m_Gain->setValue(tone.gain);
+            if (tone.rawExp > 0.f) m_RawExp->setValue(tone.rawExp);
             m_LastGain = tone.gain;
             // Hand the neutral percentiles to Bias so a drag re-solves rather than nudging.
             m_ToneLo->setValue(tone.sLo);
@@ -1998,6 +1999,7 @@ void OneGrade::applyMagicGrade(double p_Time)
             m_Lift->setValue(t2.lift);
             m_Gamma->setValue(t2.gamma);
             m_Gain->setValue(t2.gain);
+            if (t2.rawExp > 0.f) m_RawExp->setValue(t2.rawExp);
             m_LastGain = t2.gain;
             m_ToneLo->setValue(t2.sLo);  m_ToneMid->setValue(t2.sMid);
             m_ToneShi->setValue(t2.sHi); m_ToneHi->setValue(t2.fHi);

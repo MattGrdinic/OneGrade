@@ -170,6 +170,7 @@ int main(int argc, char** argv)
     tun.blackTarget= argd(argc, argv, "--black",        tun.blackTarget);
     tun.subjFloor    = argd(argc, argv, "--subj-floor",    tun.subjFloor);
     tun.subjMid      = argd(argc, argv, "--subj-mid",      tun.subjMid);
+    tun.rawExpMax    = argd(argc, argv, "--raw-exp-max",   tun.rawExpMax);
     tun.frameCeiling = argd(argc, argv, "--frame-ceiling", tun.frameCeiling);
     tun.magicUnit  = argd(argc, argv, "--unit",         tun.magicUnit);
     const int   cam = (int)argd(argc, argv, "--camera", og::grade::kCreativeCamera);
@@ -302,11 +303,13 @@ int main(int argc, char** argv)
                     // the picture will actually have.
                     const og::grade::MagicTone mt =
                         og::grade::solve_magic_tone(S, c.subject, cam, enc, lutData, lutSize, P, tun);
+                    if (!mt.ok && !noTone && mt.why[0])
+                        snprintf(toneNote, sizeof toneNote, " tone declined: %s (neutral subj mid %.3f, %.2fEV)", mt.why, mt.sMidNeutral, mt.rawExp);
                     if (mt.ok && !noTone) {
-                        P[3] = mt.lift; P[4] = mt.gamma; P[5] = mt.gain;
+                        P[3] = mt.lift; P[4] = mt.gamma; P[5] = mt.gain; P[10] = mt.rawExp;
                         snprintf(toneNote, sizeof toneNote,
-                                 " tone L%+.3f G%.3f g%.3f -> subj %.3f/%.3f/%.3f spread %.3f  hi %.3f",
-                                 mt.lift, mt.gamma, mt.gain, mt.subjLo, mt.mid, mt.subjHi,
+                                 " tone L%+.3f G%.3f g%.3f x%.2fEV -> subj %.3f/%.3f/%.3f spread %.3f  hi %.3f",
+                                 mt.lift, mt.gamma, mt.gain, mt.rawExp, mt.subjLo, mt.mid, mt.subjHi,
                                  mt.subjHi - mt.subjLo, mt.frameHi);
                     }
                     const double base = og::grade::solve_magic_base(S, cam, enc <= 2 ? enc : 1, c, st, tun);
