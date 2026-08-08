@@ -224,9 +224,44 @@ int main(int argc, char** argv)
         }
 
         oga::SampleSet S;
+        const int dispEnc = (enc <= 2) ? enc : 1;
         og::grade::Measurements m = measure(f, cam, enc, S);
         float P[oga::kParamN];
         og::grade::solve_creative(m, tun, P);
+
+        // WHITE BALANCE FIRST. --wb used to be parsed, printed as "wb on", and never acted on.
+        // Mirrors the plugin: segment a NEUTRAL thumbnail, solve on the surfaces that should be
+        // neutral, then stamp the result into Scene White Balance after the grade solve, which
+        // is the order applyMagicGrade() uses.
+        char wbNote[48] = "";
+        if (wb && seg.ready()) {
+            std::vector<float>         wsrc((size_t)512 * 512 * 3);
+            std::vector<unsigned char> wthumb((size_t)512 * 512 * 3);
+            float Nn[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+            for (int y = 0; y < 512; ++y)
+                for (int x = 0; x < 512; ++x) {
+                    const float* q = &f.px[(((size_t)(y * f.h / 512) * f.w) + (x * f.w / 512)) * 3];
+                    const size_t o = ((size_t)y * 512 + x) * 3;
+                    wsrc[o] = q[0]; wsrc[o+1] = q[1]; wsrc[o+2] = q[2];
+                    float r, g, b;
+                    og::process(cam, dispEnc, Nn, q[0], q[1], q[2], r, g, b);
+                    wthumb[o+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
+                    wthumb[o+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
+                    wthumb[o+2] = (unsigned char)(og::clamp01(b) * 255.f + .5f);
+                }
+            std::vector<unsigned char> wmask; int ww = 0, wh = 0;
+            if (seg.run(wthumb.data(), 512, 512, wmask, ww, wh)) {
+                std::vector<unsigned char> full((size_t)512 * 512);
+                for (int y = 0; y < 512; ++y)
+                    for (int x = 0; x < 512; ++x)
+                        full[(size_t)y * 512 + x] = wmask[(size_t)(y * wh / 512) * ww + (x * ww / 512)];
+                const og::grade::WhiteBalance W =
+                    og::grade::solve_white_balance(wsrc, full, cam, dispEnc);
+                if (W.ok) { P[11] = (float)W.kelvin;
+                            snprintf(wbNote, sizeof wbNote, " WB %.0fK (%.0f%% ref, b0 %+.1f)", W.kelvin, W.cover, W.b0); }
+                else      { snprintf(wbNote, sizeof wbNote, " WB declined (%.0f%% ref)", W.cover); }
+            }
+        }
 
         // What the grade actually achieved, measured the same way the plugin measures it.
         oga::classify(S, cam, enc <= 2 ? enc : 1);
@@ -272,7 +307,8 @@ int main(int argc, char** argv)
 
         const char* nm = strrchr(argv[i], '/'); nm = nm ? nm + 1 : argv[i];
         printf("%-24s %+6.2f %6.3f %+6.3f %6.3f %6.3f %6.3f  %s\n",
-               nm, m.key, P[5], P[3], P[12], d.v[oga::D_BLACK], d.v[oga::D_MID], decision.c_str());
+               nm, m.key, P[5], P[3], P[12], d.v[oga::D_BLACK], d.v[oga::D_MID],
+               (decision + wbNote).c_str());
 
         // Write the graded frame, and measure it ON THE WAY OUT.
         //

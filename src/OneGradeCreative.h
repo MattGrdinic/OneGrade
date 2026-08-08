@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <vector>
 
 namespace og {
 namespace grade {
@@ -177,6 +178,127 @@ static inline double solve_magic_base(const analysis::SampleSet& S, int cam, int
     if (std::fabs(grip) > 1e-4)
         base = c.sign * t.magicUnit * (double)step / std::fabs((double)grip);
     return std::min(0.35, std::max(-0.35, base));   // a colour cast, not a transform
+}
+
+// ---------------------------------------------------------------------------------------
+// WHITE BALANCE FIRST, solved on the surfaces that ought to be neutral.
+//
+// Shared with the bench for the same reason everything else here is: `--wb` used to be a flag
+// the bench parsed, printed as "wb on", and then never acted on -- advertising a capability it
+// did not have, which is this project's single most repeated defect.
+struct WhiteBalance {
+    double kelvin = 6500.0;
+    float  cover  = 0.f;   // % of frame that is USABLE reference, not just labelled as such
+    float  b0     = 0.f;   // the reference's warm/cool error before correction
+    bool   ok     = false;
+};
+
+// thumbSrc: 512*512*3 camera log. regions: 512*512 region labels. enc: display-referred.
+static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSrc,
+                                               const std::vector<unsigned char>& regions,
+                                               int cam, int enc)
+{
+    WhiteBalance out;
+    const size_t N = (size_t)512 * 512;
+    if (thumbSrc.size() != N * 3 || regions.size() != N) return out;
+
+    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+
+    // A LIGHT SOURCE IS NOT A REFERENCE SURFACE, even when the model is right about what it is.
+    // ADE20K's `windowpane` and `curtain` are both BUILT, so a blown window -- the brightest,
+    // warmest thing in a daylit interior -- lands in the reference set and drags it yellow. The
+    // solve then cools the entire frame to bring that back to zero, which is a blue cast over
+    // everything, arrived at honestly.
+    //
+    // Excluded by luminance rather than by class, because the property that disqualifies a pixel
+    // is physical, not semantic: once any channel is near its ceiling the channels have clipped
+    // at different times and the hue is an artefact of clipping, not a measurement of the
+    // illuminant. That covers practicals, specular highlights and blown sky for free, and needs
+    // no change to the region table. The floor excludes pixels dark enough to be noise, where
+    // chromaticity is equally meaningless.
+    std::vector<size_t> ref;
+    ref.reserve(4096);
+    for (size_t i = 0; i < N; ++i) {
+        const unsigned char r = regions[i];
+        if (r != analysis::R_BUILT && r != analysis::R_GROUND) continue;
+        float dr, dg, db;
+        og::process(cam, enc, Pn, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], dr, dg, db);
+        const float mx = std::max(dr, std::max(dg, db));
+        if (mx >= 0.90f || mx <= 0.05f) continue;
+        ref.push_back(i);
+    }
+    // Coverage is of the USABLE reference, which is the quantity actually being trusted. A wall
+    // that is 40% of frame but mostly blown window is not 40% of anything worth balancing on.
+    out.cover = 100.f * (float)ref.size() / (float)N;
+    if (out.cover < 15.f) return out;
+
+    // MEDIAN, NOT MEAN -- the design rule this feature was built on and this function broke.
+    // "Percentiles, never means: one blown practical wrecks a mean." The luminance filter above
+    // already removes the worst offenders, but the median is what makes the estimate robust to
+    // whatever survives it, and it costs a partial sort over about a thousand samples.
+    auto refB = [&](double kelvin) {
+        float P[analysis::kParamN];
+        for (int i = 0; i < analysis::kParamN; ++i) P[i] = Pn[i];
+        P[11] = (float)kelvin;
+        std::vector<float> bs; bs.reserve(ref.size() / 4 + 1);
+        for (size_t k = 0; k < ref.size(); k += 4) {
+            const size_t i = ref[k];
+            float r, g, b;
+            og::process(cam, enc, P, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], r, g, b);
+            float L, a, bb; analysis::display_to_Lab(enc, r, g, b, L, a, bb);
+            bs.push_back(bb);
+        }
+        if (bs.empty()) return 0.0;
+        const size_t m = bs.size() / 2;
+        std::nth_element(bs.begin(), bs.begin() + m, bs.end());
+        return (double)bs[m];
+    };
+
+    // IS THE REFERENCE ACTUALLY NEUTRAL? Coverage says a lot of the frame is labelled wall or
+    // floor; it does not say the model was right. A macro of grass comes back 98% "wall", and
+    // balancing on it would correct the green out of the foliage -- a confident, wrong move on a
+    // frame the rest of Magic Grade correctly declines to touch.
+    //
+    // Fitted on eight frames -- city 6.4, car interior 7.5, grass-as-wall 11.7 -- so 9 separates
+    // them, and the margin is thin. The failure it buys is a false negative: a genuinely neutral
+    // wall under a STRONG cast also reads as strongly coloured and gets declined, which is
+    // exactly the case worth correcting. That is the safe direction to fail in, since declining
+    // changes nothing and the checkbox is optional, but if real interiors start being refused
+    // this number is the reason.
+    {
+        std::vector<float> as, bs;
+        as.reserve(ref.size() / 4 + 1); bs.reserve(ref.size() / 4 + 1);
+        for (size_t k = 0; k < ref.size(); k += 4) {
+            const size_t i = ref[k];
+            float r, g, b;
+            og::process(cam, enc, Pn, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], r, g, b);
+            float L, a, bb; analysis::display_to_Lab(enc, r, g, b, L, a, bb);
+            as.push_back(a); bs.push_back(bb);
+        }
+        if (as.empty()) return out;
+        const size_t m = as.size() / 2;
+        std::nth_element(as.begin(), as.begin() + m, as.end());
+        std::nth_element(bs.begin(), bs.begin() + m, bs.end());
+        const double ma = as[m], mb = bs[m];
+        if (std::sqrt(ma*ma + mb*mb) > 9.0) return out;
+    }
+
+    out.b0 = (float)refB(6500.0);
+    double lo = 2500.0, hi = 15000.0;
+    if (refB(lo) > 0.0 || refB(hi) < 0.0) return out;   // target unreachable in a sane range
+    for (int i = 0; i < 24; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        if (refB(mid) < 0.0) lo = mid; else hi = mid;
+    }
+    out.kelvin = 0.5 * (lo + hi);
+
+    // white_balance() forces identity on 6499 < T < 6501 while the Planckian locus at 6500 K is
+    // not D65, so stepping just off the default jumps a neutral grey by a* +2.06 (see
+    // docs/AUTO-GRADE.md 9). Snapping a near-neutral answer to exactly 6500 avoids paying that
+    // for a correction too small to see.
+    if (std::fabs(out.kelvin - 6500.0) < 120.0) out.kelvin = 6500.0;
+    out.ok = true;
+    return out;
 }
 
 } // namespace grade

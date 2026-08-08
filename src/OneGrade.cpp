@@ -455,7 +455,6 @@ public:
     // normally exposed picture, so callers pass the grade that is actually in effect.
     void renderThumb(const RenderConfig& cfg, std::vector<unsigned char>& out) const;
     // Solve Scene White Balance so the frame's neutral-expectation regions read neutral.
-    bool estimateWhiteBalance(double& outKelvin, float& outCover, float& outB0) const;
     std::vector<uint8_t> m_LastRegions;   // 512x512 region map from the last segmentation
     int         m_LastCam = 0;      // the camera/encode the samples were classified under:
     int         m_LastEnc = 1;      // re-solving in a different space would be meaningless
@@ -1692,10 +1691,14 @@ void OneGrade::applyMagicGrade(double p_Time)
                     for (int x = 0; x < 512; ++x)
                         m_LastRegions[(size_t)y * 512 + x] =
                             m0[(size_t)(y * h0 / 512) * w0 + (x * w0 / 512)];
-                double k = 6500.0; float cover = 0.f, b0 = 0.f;
-                if (estimateWhiteBalance(k, cover, b0)) {
-                    m_RawTemp->setValue(k);
-                    snprintf(wbNote, sizeof wbNote, "  WB %.0fK", k);
+                // SOLVED IN OneGradeCreative.h so the bench runs this exact code. It used to
+                // live here, which is why the bench's --wb flag printed "wb on" and did nothing.
+                const og::grade::WhiteBalance wb =
+                    og::grade::solve_white_balance(m_LastThumbSrc, m_LastRegions, m_LastCam, m_LastEnc);
+                const float cover = wb.cover;
+                if (wb.ok) {
+                    m_RawTemp->setValue(wb.kelvin);
+                    snprintf(wbNote, sizeof wbNote, "  WB %.0fK", wb.kelvin);
                 } else {
                     // Two different declines, and the difference is worth showing: "no
                     // reference" is a sunset with no neutral surface in it, "not neutral" is the
@@ -1898,84 +1901,6 @@ void OneGrade::applySeparation()
 // Solves TEMPERATURE ONLY, driving the reference regions' b* to zero -- the warm/cool axis is
 // what a temperature control moves, and it is what the user corrected by hand (6500 -> 8301).
 // Tint would need its own control and its own evidence.
-bool OneGrade::estimateWhiteBalance(double& outKelvin, float& outCover, float& outB0) const
-{
-    outKelvin = 6500.0; outCover = 0.f; outB0 = 0.f;
-    if (m_LastThumbSrc.size() != (size_t)512 * 512 * 3) return false;
-    if (m_LastRegions.size() != (size_t)512 * 512) return false;
-
-    // Reference pixels only, and enough of them to mean something.
-    std::vector<size_t> ref;
-    ref.reserve(4096);
-    for (size_t i = 0; i < m_LastRegions.size(); ++i) {
-        const uint8_t r = m_LastRegions[i];
-        if (r == oga::R_BUILT || r == oga::R_GROUND) ref.push_back(i);
-    }
-    outCover = 100.f * (float)ref.size() / (float)m_LastRegions.size();
-    if (outCover < 15.f) return false;      // too little to trust; decline rather than guess
-
-    // Mean b* of the reference, as a function of Scene White Balance. Monotonic -- raising the
-    // temperature warms the image -- so a plain bisection lands it.
-    auto refB = [&](double kelvin) {
-        float P[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
-        P[11] = (float)kelvin;
-        double sum = 0.0;
-        for (size_t k = 0; k < ref.size(); k += 4) {          // every 4th is plenty for a mean
-            const size_t i = ref[k];
-            float r, g, b;
-            og::process(m_LastCam, m_LastEnc, P,
-                        m_LastThumbSrc[i*3], m_LastThumbSrc[i*3+1], m_LastThumbSrc[i*3+2], r, g, b);
-            float L, a, bb; oga::display_to_Lab(m_LastEnc, r, g, b, L, a, bb);
-            sum += bb;
-        }
-        return sum / (double)((ref.size() + 3) / 4);
-    };
-
-    // IS THE REFERENCE ACTUALLY NEUTRAL? Coverage says a lot of the frame is labelled wall or
-    // floor; it does not say the model was right. A macro of grass comes back 98% "wall", and
-    // balancing on it would correct the green out of the foliage -- a confident, wrong move on a
-    // frame the rest of Magic Grade correctly declines to touch.
-    //
-    // So the assumption gets checked: a surface that is supposed to be neutral should not be
-    // strongly coloured. Measured across the eight test frames -- city 6.4, car interior 7.5,
-    // grass-as-wall 11.7 -- so 9 separates them.
-    //
-    // FITTED ON EIGHT FRAMES AND THE MARGIN IS THIN. The failure mode it buys is a false
-    // negative: a genuinely neutral wall under a STRONG cast also reads as strongly coloured,
-    // and would be declined when it is exactly the case worth correcting. That is the safe
-    // direction to fail in -- declining changes nothing, and the checkbox is optional -- but if
-    // real interiors start being refused, this number is the reason and it should go up.
-    {
-        float P[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
-        double sa = 0.0, sb = 0.0; long long n = 0;
-        for (size_t k = 0; k < ref.size(); k += 4) {
-            const size_t i = ref[k];
-            float r, g, b;
-            og::process(m_LastCam, m_LastEnc, P,
-                        m_LastThumbSrc[i*3], m_LastThumbSrc[i*3+1], m_LastThumbSrc[i*3+2], r, g, b);
-            float L, a, bb; oga::display_to_Lab(m_LastEnc, r, g, b, L, a, bb);
-            sa += a; sb += bb; ++n;
-        }
-        if (n > 0 && std::sqrt((sa/n)*(sa/n) + (sb/n)*(sb/n)) > 9.0) return false;
-    }
-
-    outB0 = (float)refB(6500.0);
-    double lo = 2500.0, hi = 15000.0;
-    if (refB(lo) > 0.0 || refB(hi) < 0.0) return false;   // target unreachable in a sane range
-    for (int i = 0; i < 24; ++i) {
-        const double mid = 0.5 * (lo + hi);
-        if (refB(mid) < 0.0) lo = mid; else hi = mid;
-    }
-    outKelvin = 0.5 * (lo + hi);
-
-    // white_balance() forces identity on 6499 < T < 6501 while the Planckian locus at 6500 K is
-    // not D65, so stepping just off the default jumps a neutral grey by a* +2.06 (see
-    // docs/AUTO-GRADE.md 9). Snapping a near-neutral answer to exactly 6500 avoids paying that
-    // for a correction too small to see.
-    if (std::fabs(outKelvin - 6500.0) < 120.0) outKelvin = 6500.0;
-    return true;
-}
-
 void OneGrade::renderThumb(const RenderConfig& cfg, std::vector<unsigned char>& out) const
 {
     const float* lut  = cfg.lutOk ? m_Lut.data.data() : nullptr;

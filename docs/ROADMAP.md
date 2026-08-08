@@ -386,3 +386,37 @@ to collect.
 
 Sequence: measure the graded frame and add sanity rules (now) → collect graded/ungraded pairs
 with the bench (ongoing) → consider a learned score once there is something to fit it to.
+
+---
+
+## The colour reasoning is done pre-LUT, on a picture the user never sees
+
+Noticed 2026-08-07 while chasing an over-cool Magic result. `OneGradeAnalysis.h` contains no
+reference to `apply_lut` at all: every region L\*/a\*/b\*, the Magic warm/cool decision, the
+Jacobian and the separation triple are computed by `og::process()` alone. But Creative and Magic
+Grade always select the Kodak 2383 print stock, and a print stock is emphatically not
+hue-preserving — that is what it is for.
+
+The split is already half-right and that is what makes it easy to miss: the model is fed the
+**graded, post-LUT** thumbnail, because it was trained on photographs. Only the *colour
+statistics* stayed pre-LUT. So the segmentation knows what it is looking at and the colorimetry
+describes a different image.
+
+Consistent with this, on one interview frame the pre-LUT descriptors ordered two presses
+opposite to how they looked: the press reading `a*-4.1 b*-6.2` (cool) produced the neutral
+picture, and the one reading `a*-1.3 b*+2.4` (near-neutral) produced the visibly teal one.
+Suggestive, not proof — the frame was never captured as a log still, so it was never put through
+the bench.
+
+**This is the same defect class as the black-point encode bug** (`docs/AUTO-GRADE.md` §2): a
+number measured in one space used to reason about another. Not acted on because the fix is not
+obviously "add the LUT" — some of these consumers legitimately want the pre-LUT picture, since
+that is the space the controls act in, and the Jacobian in particular is a derivative of
+controls that operate before the LUT. Wanting the decision to be about the final picture and
+wanting the derivative to be about the controls are different requirements and may need
+different measurements.
+
+**To restart:** capture the interview frame as 16-bit log, run it through the bench, and check
+whether pre-LUT b\* predicts post-LUT b\* at all. If the ordering holds, this is a non-issue and
+the note can be deleted. If it inverts, the decision-making descriptors need the LUT and the
+Jacobian probably does not.
