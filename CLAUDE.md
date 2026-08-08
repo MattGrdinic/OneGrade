@@ -627,6 +627,16 @@ is to split the clip, which the user reached independently. **Frame-based is a f
 here, not a defect** — the user picks which moment it optimises for by parking the
 playhead. Say that rather than trying to engineer around it.
 
+**The bench (`experiments/bench/`) is how constants get fitted now** — log PNGs in, graded PNGs
++ chosen parameters out, every tunable a flag. Full usage in `experiments/bench/README.md`; the
+solve itself lives in `src/OneGradeCreative.h` so the bench calls plugin code rather than
+paraphrasing it (four bugs on this feature were paraphrases). **Input must be 16-bit from
+Deliver, not an 8-bit Gallery still**: the first five stills were 8-bit, and the frame under
+investigation for crushed blacks spanned 0.098-0.412 — ~80 code values total, its darkest tenth
+in about ten. The bench called it the healthiest of the five while Resolve visibly crushed it,
+and both were right about their own input. **Check the floor, not just the ceiling** — the
+"never reaches 1.0" log tell says nothing about whether the shadows survived the export.
+
 **Fit to the USER's grades, not to a convention.** Every textbook target tried before this
 (median -> 18% grey) contradicted what the user actually does. Four shots of ground truth
 beat the convention immediately. Re-fit the constants if the style shifts; they're two

@@ -10,6 +10,8 @@
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$HERE/../.."
+if [ "$1" = "--help" ] || [ -z "$1" ]; then sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; \
+   echo; echo "Full documentation: experiments/bench/README.md"; exit 0; fi
 DIR="${1:?usage: run.sh FRAME_DIR [--flags]}"; shift || true
 
 LUT="/Library/Application Support/Blackmagic Design/DaVinci Resolve/LUT/Film Looks/Rec709 Kodak 2383 D60.cube"

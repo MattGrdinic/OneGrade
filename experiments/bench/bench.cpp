@@ -269,8 +269,38 @@ int main(int argc, char** argv)
             std::nth_element(outCh.begin(), outCh.begin() + q, outCh.end());
             postBlk = outCh[q];
         }
-        printf("%-24s %6s %6s %6s %6s %6.3f %6s  post-LUT blk, %.2f%% crushed\n",
-               "", "", "", "", "", postBlk, "", 100.0 * (double)crushed / (double)total);
+
+        // SHADOW SEPARATION, because counting pixels at zero measures the wrong thing.
+        //
+        // "Crushed" to the eye means the shadows have lost SEPARATION -- a dark object's form
+        // collapsing into a single flat tone. Nothing has to reach zero for that to happen: a
+        // range of 0.02 to 0.06 has no black pixels at all and still reads as a black hole. The
+        // count said 0.00% on a frame that visibly had the problem, which is a metric answering
+        // a question nobody asked.
+        //
+        // So: take the darkest tenth of the SOURCE, push both ends through the grade, and report
+        // how much output range they still occupy. That is exactly the quantity the eye is
+        // judging -- how much of the shadow detail survived.
+        double sep10 = 0.0;
+        {
+            std::vector<float> srcL; srcL.reserve((size_t)f.w * f.h / 64 + 8);
+            for (size_t k = 0; k < (size_t)f.w * f.h; k += 64)
+                srcL.push_back(std::min(f.px[k*3], std::min(f.px[k*3+1], f.px[k*3+2])));
+            if (srcL.size() > 8) {
+                auto q = [&](double t) {
+                    size_t i = (size_t)(t * (srcL.size() - 1));
+                    std::nth_element(srcL.begin(), srcL.begin() + i, srcL.end());
+                    return srcL[i];
+                };
+                const float lo = q(0.01), hi = q(0.10);
+                float r0,g0,b0, r1,g1,b1;
+                full_chain(cam, enc, P, lutData, lutSize, 1.f, lo, lo, lo, r0, g0, b0);
+                full_chain(cam, enc, P, lutData, lutSize, 1.f, hi, hi, hi, r1, g1, b1);
+                sep10 = (double)(g1 - g0);
+            }
+        }
+        printf("%-24s %6s %6s %6s %6.3f %6.2f %6.3f  post-LUT blk / %% crushed / shadow sep\n",
+               "", "", "", "", postBlk, 100.0 * (double)crushed / (double)total, sep10);
         std::string op = outDir + "/" + std::string(nm);
         stbi_write_png(op.c_str(), f.w, f.h, 3, out.data(), f.w * 3);
     }
