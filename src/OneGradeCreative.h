@@ -192,14 +192,20 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
 // So the darkest samples are carried through in colour. Cheap because only the bottom slice
 // matters -- a few thousand triples through a bisection, against a solve that already renders
 // 200k samples once.
-static inline void solve_creative_px(const analysis::SampleSet& S, int cam, int enc,
-                                     const Measurements& m, const Tunables& t,
-                                     float P[analysis::kParamN],
-                                     const float* lut, int lutSize)
+// The black point alone, on real pixels, LEAVING EVERY OTHER PARAMETER ALONE.
+//
+// Separate from solve_creative_px because that one begins with creative_preset(), which rewrites
+// the whole array -- including Gain Temp and Offset Temp. Re-solving the floor after the Magic
+// colour move therefore erased the colour move, and it did so DIFFERENTLY on each side: the bench
+// rendered the reset array, so its picture lost the move entirely, while the plugin copied only
+// Lift and Gain back into params that still held it. Two implementations, one bug, two different
+// wrong answers -- which is exactly why they stopped matching on one frame.
+static inline void solve_black_px(const analysis::SampleSet& S, int cam, int enc,
+                                  float P[analysis::kParamN], double blackTarget,
+                                  const float* lut, int lutSize)
 {
-    solve_creative(m, t, P, lut, lutSize);         // gain, rolloff, and a starting lift
     const size_t n = S.rgb.size() / 3;
-    if (!m.valid || n < 512) return;
+    if (n < 512) return;
 
     // Rank by the neutral render's min channel: what crushes is a CHANNEL, not a luminance, and
     // on a saturated shadow the channels sit far apart.
@@ -239,7 +245,17 @@ static inline void solve_creative_px(const analysis::SampleSet& S, int cam, int 
         return (double)v[q];
     };
     (void)gm; (void)gn;
-    P[3] = (float)solve1d(-0.50, 0.50, t.blackTarget, floorAt);
+    P[3] = (float)solve1d(-0.50, 0.50, blackTarget, floorAt);
+}
+
+// Creative's full solve: gain and rolloff from the measurements, then the black point on pixels.
+static inline void solve_creative_px(const analysis::SampleSet& S, int cam, int enc,
+                                     const Measurements& m, const Tunables& t,
+                                     float P[analysis::kParamN],
+                                     const float* lut, int lutSize)
+{
+    solve_creative(m, t, P, lut, lutSize);         // gain, rolloff, and a starting lift
+    if (m.valid) solve_black_px(S, cam, enc, P, t.blackTarget, lut, lutSize);
 }
 
 // The Magic move's magnitude, MEASURED on the shot rather than assumed.

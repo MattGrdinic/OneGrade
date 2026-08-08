@@ -1973,10 +1973,6 @@ void OneGrade::applyMagicGrade(double p_Time)
         const float* lp = lutOkR ? m_Lut.data.data() : nullptr;
         const int    ls = lutOkR ? m_Lut.size : 0;
 
-        og::grade::Measurements meas;
-        meas.key = m_LastKey; meas.pin = m_LastPin; meas.hot = m_LastHot;
-        meas.d01 = m_LastR01; meas.d50 = m_LastD50; meas.d99 = m_LastD99;
-        meas.valid = true;
         m_CreativeLow->getValue(tn.blackTarget);
 
         float Pr[oga::kParamN];
@@ -1988,9 +1984,10 @@ void OneGrade::applyMagicGrade(double p_Time)
         Pr[10]=(float)m_RawExp->getValue(); Pr[11]=(float)m_RawTemp->getValue();
         Pr[12]=(float)m_Rolloff->getValue();
 
-        og::grade::solve_creative_px(S, kCreativeCam(), kCreativeEnc(), meas, tn, Pr, lp, ls);
+        // solve_black_px, NOT solve_creative_px: the latter starts with creative_preset() and
+        // would erase the colour move applied a few lines above.
+        og::grade::solve_black_px(S, kCreativeCam(), kCreativeEnc(), Pr, tn.blackTarget, lp, ls);
         m_Lift->setValue(Pr[3]);
-        m_Gain->setValue(Pr[5]);
 
         const og::grade::MagicTone t2 = og::grade::solve_magic_tone(
             S, c.subject, kCreativeCam(), kCreativeEnc(), lp, ls, Pr, tn);

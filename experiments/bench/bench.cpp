@@ -320,7 +320,7 @@ int main(int argc, char** argv)
                     //
                     // Same shape as the first-press bug: a grade has to be solved for the
                     // configuration it ends in, not the one it passed through.
-                    og::grade::solve_creative_px(S, cam, enc, m, tun, P, lutData, lutSize);
+                    og::grade::solve_black_px(S, cam, enc, P, tun.blackTarget, lutData, lutSize);
                     if (mt.ok && !noTone) {
                         const og::grade::MagicTone m2 =
                             og::grade::solve_magic_tone(S, c.subject, cam, enc, lutData, lutSize, P, tun);
