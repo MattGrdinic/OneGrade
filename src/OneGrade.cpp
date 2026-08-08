@@ -1791,7 +1791,11 @@ void OneGrade::applyMagicGrade(double p_Time)
                 // SOLVED IN OneGradeCreative.h so the bench runs this exact code. It used to
                 // live here, which is why the bench's --wb flag printed "wb on" and did nothing.
                 const og::grade::WhiteBalance wb =
-                    og::grade::solve_white_balance(m_LastThumbSrc, m_LastRegions, m_LastCam, m_LastEnc);
+                    og::grade::solve_white_balance(m_LastThumbSrc, m_LastRegions,
+                        og::grade::kCreativeCamera, og::grade::kCreativeEncode,
+                        (lutSelected() && m_Lut.size >= 2) ? m_Lut.data.data() : nullptr,
+                        (lutSelected() && m_Lut.size >= 2) ? m_Lut.size : 0,
+                        0.55f, 1.0f);   // Creative's trim, which the picture is judged through
                 const float cover = wb.cover;
                 if (wb.ok) {
                     m_RawTemp->setValue(wb.kelvin);

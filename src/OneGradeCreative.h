@@ -311,14 +311,38 @@ struct WhiteBalance {
     double kelvin = 6500.0;
     float  cover  = 0.f;   // % of frame that is USABLE reference, not just labelled as such
     float  b0     = 0.f;   // the reference's warm/cool error before correction
+    // WHICH decline, not just that it declined. "No reference" is a sunset with no neutral
+    // surface in it; "not neutral" is the reference itself looking wrong; "unreachable" is a cast
+    // no sane colour temperature fixes. They call for completely different responses and a bare
+    // false makes them indistinguishable -- which cost an hour of looking at the wrong check.
+    const char* why = "";
     bool   ok     = false;
 };
 
 // thumbSrc: 512*512*3 camera log. regions: 512*512 region labels. enc: display-referred.
+// POST-LUT, because "neutral" is a judgement about the picture on screen.
+//
+// This measured the reference through og::process alone, and so declared a frame already
+// balanced while the graded result visibly was not. Across twelve frames the checkbox moved the
+// render by under 4/255 on four shots and not at all on seven -- doing its job perfectly against
+// an image nobody was looking at. Fourth instance in one day of a number computed in one space
+// and judged in another.
+//
+// The print stock's own colour character is deliberately NOT what this corrects: it is a look and
+// it belongs. What it corrects is a surface that should read neutral and does not, measured where
+// the eye reads it.
 static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSrc,
                                                const std::vector<unsigned char>& regions,
-                                               int cam, int enc)
+                                               int cam, int enc,
+                                               const float* lut = nullptr, int lutSize = 0,
+                                               float postExp = 0.f, float postCon = 1.f)
 {
+    const int dispEnc = (enc <= 2) ? enc : 1;   // for thresholds only; see the chroma check
+    auto shade = [&](const float* P, size_t i, float& r, float& g, float& b) {
+        og::process(cam, enc, P, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], r, g, b);
+        if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
+        og::apply_trim(postExp, postCon, r, g, b);
+    };
     WhiteBalance out;
     const size_t N = (size_t)512 * 512;
     if (thumbSrc.size() != N * 3 || regions.size() != N) return out;
@@ -343,7 +367,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
         const unsigned char r = regions[i];
         if (r != analysis::R_BUILT && r != analysis::R_GROUND) continue;
         float dr, dg, db;
-        og::process(cam, enc, Pn, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], dr, dg, db);
+        shade(Pn, i, dr, dg, db);
         const float mx = std::max(dr, std::max(dg, db));
         if (mx >= 0.90f || mx <= 0.05f) continue;
         ref.push_back(i);
@@ -351,7 +375,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
     // Coverage is of the USABLE reference, which is the quantity actually being trusted. A wall
     // that is 40% of frame but mostly blown window is not 40% of anything worth balancing on.
     out.cover = 100.f * (float)ref.size() / (float)N;
-    if (out.cover < 15.f) return out;
+    if (out.cover < 15.f) { out.why = "no ref"; return out; }
 
     // MEDIAN, NOT MEAN -- the design rule this feature was built on and this function broke.
     // "Percentiles, never means: one blown practical wrecks a mean." The luminance filter above
@@ -364,10 +388,30 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
         std::vector<float> bs; bs.reserve(ref.size() / 4 + 1);
         for (size_t k = 0; k < ref.size(); k += 4) {
             const size_t i = ref[k];
+            // AGAINST THE STOCK'S OWN NEUTRAL, not against zero.
+            //
+            // Targeting b* = 0 post-LUT asks Scene White Balance to cancel the print stock, and
+            // the stock's colour character is the look -- it belongs. On one frame with 63% good
+            // reference no temperature between 2500 K and 15000 K could reach zero, and the
+            // estimator reported "unreachable" for a shot that needed almost no correction.
+            //
+            // So each reference pixel is compared with what a NEUTRAL surface of its own
+            // luminance renders as through the same chain. What survives that subtraction is the
+            // cast on the surface; what cancels is the stock being itself.
             float r, g, b;
             og::process(cam, enc, P, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], r, g, b);
-            float L, a, bb; analysis::display_to_Lab(enc, r, g, b, L, a, bb);
-            bs.push_back(bb);
+            const float y = 0.2126f*r + 0.7152f*g + 0.0722f*b;
+            float gr = y, gg = y, gb = y;
+            if (lut && lutSize >= 2) {
+                og::apply_lut(lut, lutSize, 1.f, r, g, b);
+                og::apply_lut(lut, lutSize, 1.f, gr, gg, gb);
+            }
+            og::apply_trim(postExp, postCon, r, g, b);
+            og::apply_trim(postExp, postCon, gr, gg, gb);
+            float L, a, bb, Lg, ag, bg;
+            analysis::display_to_Lab(1, r,  g,  b,  L,  a,  bb);
+            analysis::display_to_Lab(1, gr, gg, gb, Lg, ag, bg);
+            bs.push_back(bb - bg);
         }
         if (bs.empty()) return 0.0;
         const size_t m = bs.size() / 2;
@@ -391,22 +435,33 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
         as.reserve(ref.size() / 4 + 1); bs.reserve(ref.size() / 4 + 1);
         for (size_t k = 0; k < ref.size(); k += 4) {
             const size_t i = ref[k];
+            // PRE-LUT, DELIBERATELY, and it is the one measurement here that stays that way.
+            //
+            // This is a THRESHOLD -- "is a surface that claims to be neutral actually neutral" --
+            // and 9 was fitted on eight frames without a print stock in the chain. The solve above
+            // is post-LUT because it is judged on screen; this is compared against a constant, so
+            // it needs the space that constant was chosen in. Running it post-LUT rejected a
+            // frame with 63% good reference, because 2383 adds saturation and every fitted number
+            // moved out from under it.
+            //
+            // Same distinction as the black point, written up in docs/AUTO-GRADE.md 2. It applies
+            // WITHIN one function here, which is why it was easy to get wrong.
             float r, g, b;
-            og::process(cam, enc, Pn, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], r, g, b);
-            float L, a, bb; analysis::display_to_Lab(enc, r, g, b, L, a, bb);
+            og::process(cam, dispEnc, Pn, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], r, g, b);
+            float L, a, bb; analysis::display_to_Lab(dispEnc, r, g, b, L, a, bb);
             as.push_back(a); bs.push_back(bb);
         }
-        if (as.empty()) return out;
+        if (as.empty()) { out.why = "empty"; return out; }
         const size_t m = as.size() / 2;
         std::nth_element(as.begin(), as.begin() + m, as.end());
         std::nth_element(bs.begin(), bs.begin() + m, bs.end());
         const double ma = as[m], mb = bs[m];
-        if (std::sqrt(ma*ma + mb*mb) > 9.0) return out;
+        if (std::sqrt(ma*ma + mb*mb) > 9.0) { out.why = "ref not neutral"; return out; }
     }
 
     out.b0 = (float)refB(6500.0);
     double lo = 2500.0, hi = 15000.0;
-    if (refB(lo) > 0.0 || refB(hi) < 0.0) return out;   // target unreachable in a sane range
+    if (refB(lo) > 0.0 || refB(hi) < 0.0) { out.why = "unreachable"; return out; }
     for (int i = 0; i < 24; ++i) {
         const double mid = 0.5 * (lo + hi);
         if (refB(mid) < 0.0) lo = mid; else hi = mid;

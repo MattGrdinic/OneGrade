@@ -261,10 +261,10 @@ int main(int argc, char** argv)
                     for (int x = 0; x < 512; ++x)
                         full[(size_t)y * 512 + x] = wmask[(size_t)(y * wh / 512) * ww + (x * ww / 512)];
                 const og::grade::WhiteBalance W =
-                    og::grade::solve_white_balance(wsrc, full, cam, dispEnc);
+                    og::grade::solve_white_balance(wsrc, full, cam, enc, lutData, lutSize, P[8], P[9]);
                 if (W.ok) { P[11] = (float)W.kelvin;
                             snprintf(wbNote, sizeof wbNote, " WB %.0fK (%.0f%% ref, b0 %+.1f)", W.kelvin, W.cover, W.b0); }
-                else      { snprintf(wbNote, sizeof wbNote, " WB declined (%.0f%% ref)", W.cover); }
+                else      { snprintf(wbNote, sizeof wbNote, " WB declined: %s (%.0f%% ref)", W.why, W.cover); }
             }
         }
 
