@@ -119,33 +119,23 @@ is narrow and something upstream — Data Levels, or a transform left enabled �
 
 ## Why those two settings in particular
 
-Log, because that is what the plugin receives from OFX — a graded export gets graded twice.
+**Log**, because that is what the plugin receives from OFX. A display-referred export gets graded
+a second time, and the tell is the ceiling: real log never reaches 1.0, and Blackmagic peaks near
+0.75. If `max` is 1.0, something upstream already transformed it and every number here will be
+wrong in a way that still looks entirely plausible.
 
-**The tell that an export really is log: it never reaches 1.0.** Blackmagic peaks near 0.75. If
-`max` is 1.0 you have exported something already transformed, and every number here will be
-wrong in a way that still looks plausible.
+**16-bit**, because the floor is where the grade is being judged and 8 bits does not have one.
+This is not a nicety — it broke a real investigation. Log packs the whole dynamic range into the
+code values available, so 8 bits leaves the shadows very few, and a dark shot fewer still because
+it does not use the top of the range either. The first five stills were 8-bit, and the frame
+under investigation for crushed blacks spanned 0.098 to 0.412 — about **80 code values for the
+entire image**, its darkest tenth living in roughly ten of them.
 
-**Export 16-bit from the Deliver page, not a Gallery still.** This is not a nicety, and it broke
-a real investigation. Log packs the whole dynamic range into the code values available, so in 8
-bits the shadows get very few of them — and a dark shot gets fewer still, because it does not use
-the top of the range either. The first five stills were 8-bit, and the frame being investigated
-for crushed blacks spanned 0.098 to 0.412, roughly **80 code values for the entire image**, with
-its darkest tenth living in about ten of them.
-
-So the shadow detail the grade was accused of destroying **was not in the file to destroy**. The
-bench reported the frame as the healthiest of the five while Resolve visibly crushed it, and both
-were right about their own input.
-
-Log stills have two tells, and the floor is the one that bites:
-
-- **max never reaches 1.0** — Blackmagic peaks near 0.75. If it is 1.0, the export was already
-  transformed and every number here is wrong in a plausible-looking way.
-- **min should be near 0** — if the floor is well above zero on a dark shot, the shadows have been
-  quantised away. Check before trusting anything the bench says about blacks.
-
-```bash
-python3 -c "import sys;print(open(sys.argv[1],'rb').read()[24])" frame.png   # 8 or 16
-```
+The shadow detail the grade stood accused of destroying **was not in the file to destroy**. The
+bench scored that frame the healthiest of the five while Resolve visibly crushed it, and both
+were right about their own input. The ceiling tell passed the whole time; nobody had thought to
+check the floor. That is why the bench now reports its own input range rather than leaving it to
+a habit somebody has to remember.
 
 ## Why it shares the plugin's code
 
