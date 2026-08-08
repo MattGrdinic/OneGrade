@@ -58,12 +58,14 @@ static inline void full_chain(int cam, int enc, const float* P,
 
 struct Frame {
     int w = 0, h = 0;
+    int bits = 8;               // of the FILE, which decides whether the shadows survived export
     std::vector<float> px;      // w*h*3, camera log, 0..1
 };
 
 static bool load_log(const char* path, Frame& f)
 {
     int c = 0;
+    f.bits = stbi_is_16_bit(path) ? 16 : 8;
     if (stbi_is_16_bit(path)) {
         unsigned short* d = stbi_load_16(path, &f.w, &f.h, &c, 3);
         if (!d) return false;
@@ -189,6 +191,30 @@ int main(int argc, char** argv)
         if (argv[i][0] == '-') continue;
         Frame f;
         if (!load_log(argv[i], f)) { fprintf(stderr, "cannot read %s\n", argv[i]); continue; }
+
+        // SAY SO WHEN THE INPUT CANNOT ANSWER THE QUESTION.
+        //
+        // Log packs the whole dynamic range into whatever code values are available, so 8 bits
+        // leaves the shadows very few -- and a dark shot fewer still, because it does not reach
+        // the top of the range either. One 8-bit still spanned 0.098 to 0.412, about 80 code
+        // values for the entire image, and the bench scored it the healthiest of five while
+        // Resolve visibly crushed it. Both were right about their own input.
+        //
+        // The existing log tell ("max never reaches 1.0") only guards the ceiling. This reports
+        // what is actually left at the bottom, which is where the grade is being judged. A
+        // silent measurement of an input that cannot carry the answer is the same defect class
+        // as the CUDA CPU fallback and the Windows LUT directory: degrading without saying so.
+        {
+            float lo = 1e9f, hi = -1e9f;
+            for (size_t k = 0; k < f.px.size(); k += 3 * 64)
+                { lo = std::min(lo, f.px[k]); hi = std::max(hi, f.px[k]); }
+            const float peak = (f.bits == 16) ? 65535.f : 255.f;
+            const int span = (int)((hi - lo) * peak + 0.5f);
+            if (f.bits < 16 || span < 600)
+                printf("  ! %d-bit, %.3f..%.3f = ~%d levels, ~%d in the darkest tenth."
+                       "  Export 16-bit from Deliver; see experiments/bench/README.md\n",
+                       f.bits, lo, hi, span, std::max(1, span / 10));
+        }
 
         oga::SampleSet S;
         og::grade::Measurements m = measure(f, cam, enc, S);

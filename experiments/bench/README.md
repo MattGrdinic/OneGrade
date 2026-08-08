@@ -75,9 +75,51 @@ Still …_220447_1.22.1.png  +1.32  0.800 +0.034  0.000  0.050  0.391  1/3 BUILT
   without any pixel reaching zero, which reads as crushed to the eye and scores 0% on the count.
   Under about 0.02 is worth looking at.
 
-## Input has to be camera log
+## Exporting frames from Resolve
 
-Not a graded export — log is what the plugin receives from OFX.
+The bench needs what the plugin gets from OFX: **camera log, ungraded, 16-bit**. That is a
+Deliver-page render of a single frame, not a Gallery still.
+
+### On the Color page
+
+1. Park the playhead on the frame you want. Single-frame analysis is the feature, not a
+   limitation — you are choosing which moment the grade optimises for.
+2. **Bypass all grades** — `Shift+D`, or the bypass toggle at the top of the node graph. This
+   includes OneGrade itself. You want the footage as the plugin receives it.
+3. Confirm there is no CST or LUT anywhere in the node tree, and that the clip's Camera RAW tab
+   is on its project default. Whatever you leave enabled gets baked in and the bench will grade
+   it a second time.
+
+### Project settings, once
+
+- **Color Science: DaVinci YRGB** (not Color Managed). Color Managed applies its own output
+  transform on render and you will get display-referred pixels, not log.
+- **Color Management → Output LUT: None.** An output LUT bakes into renders.
+
+### On the Deliver page
+
+4. Mark **in and out on the same frame** (`I` then `O`), and set Render to **Single Clip**.
+5. Format **PNG**, and set **Bit Depth to 16** — this is the one that matters, and it is not the
+   default.
+6. Uncheck **Export Audio**.
+7. Advanced Settings → **Data Levels: Full.** On Video the export is scaled to legal range and
+   the shadows are clipped before you ever see them.
+8. Add to Render Queue, Render All.
+
+### Confirm it worked
+
+Run the bench. It checks the input and complains if the frame cannot answer the question:
+
+```
+! 8-bit, 0.137..0.725 = ~150 levels, ~15 in the darkest tenth.  Export 16-bit from Deliver
+```
+
+A good 16-bit log frame produces no such line. If a 16-bit export still does, the range itself
+is narrow and something upstream — Data Levels, or a transform left enabled — has compressed it.
+
+## Why those two settings in particular
+
+Log, because that is what the plugin receives from OFX — a graded export gets graded twice.
 
 **The tell that an export really is log: it never reaches 1.0.** Blackmagic peaks near 0.75. If
 `max` is 1.0 you have exported something already transformed, and every number here will be
