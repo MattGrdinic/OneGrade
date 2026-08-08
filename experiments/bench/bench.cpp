@@ -219,10 +219,17 @@ int main(int argc, char** argv)
                 oga::region_stats(S, cam, enc <= 2 ? enc : 1, P, st);
                 oga::MagicChoice c = oga::magic_decide(st, 0);
                 if (c.ok) {
+                    // APPLY IT. The bench used to render Creative Grade alone and report the
+                    // decision without making it, so anything the move itself did was invisible
+                    // -- and Offset Temp is additive, so on a dark frame it subtracts from blue
+                    // and can drive the channel through zero. Exactly the kind of thing an
+                    // offline check exists to catch.
+                    const double base = og::grade::solve_magic_base(S, cam, enc <= 2 ? enc : 1, c, st, tun);
+                    P[c.param] = (float)std::min(1.0, std::max(-1.0, (double)P[c.param] + base * sep));
                     char buf[96];
-                    snprintf(buf, sizeof buf, "%d/%d %s %.0f%% -> %s %s",
+                    snprintf(buf, sizeof buf, "%d/%d %s %.0f%% -> %s %+.3f",
                              c.option + 1, c.options, oga::region_name(c.subject), c.cover,
-                             c.param == 6 ? "Offset" : "Gain", c.sign > 0 ? "+" : "-");
+                             c.param == 6 ? "OffTmp" : "GainTmp", base * sep);
                     decision = buf;
                 } else {
                     decision = "no move";
@@ -234,16 +241,36 @@ int main(int argc, char** argv)
         printf("%-24s %+6.2f %6.3f %+6.3f %6.3f %6.3f %6.3f  %s\n",
                nm, m.key, P[5], P[3], P[12], d.v[oga::D_BLACK], d.v[oga::D_MID], decision.c_str());
 
-        // Write the graded frame so the numbers can be checked against a picture.
+        // Write the graded frame, and measure it ON THE WAY OUT.
+        //
+        // The `blk` above is the number the solve TARGETS, and it is measured pre-LUT because
+        // that is where the solve works. What the viewer judges is post-LUT, after a print
+        // stock with a toe of its own. If the stock pulls the bottom down further, the target
+        // is being hit and the picture is still crushed -- which is exactly the shape of
+        // complaint that "the blacks are crushed" is.
         std::vector<unsigned char> out((size_t)f.w * f.h * 3);
+        std::vector<float> outCh; outCh.reserve((size_t)f.w * f.h * 3 / 64 + 8);
+        long long crushed = 0, total = 0;
         for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
             float r, g, b;
             full_chain(cam, enc, P, lutData, lutSize, 1.f,
                        f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+            if ((k & 63) == 0) { outCh.push_back(r); outCh.push_back(g); outCh.push_back(b); }
+            const float mn = std::min(r, std::min(g, b));
+            if (mn <= 0.004f) ++crushed;          // at or under 1/255: detail that is gone
+            ++total;
             out[k*3+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
             out[k*3+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
             out[k*3+2] = (unsigned char)(og::clamp01(b) * 255.f + .5f);
         }
+        double postBlk = 0.0;
+        if (!outCh.empty()) {
+            size_t q = (size_t)(0.001 * (outCh.size() - 1));
+            std::nth_element(outCh.begin(), outCh.begin() + q, outCh.end());
+            postBlk = outCh[q];
+        }
+        printf("%-24s %6s %6s %6s %6s %6.3f %6s  post-LUT blk, %.2f%% crushed\n",
+               "", "", "", "", "", postBlk, "", 100.0 * (double)crushed / (double)total);
         std::string op = outDir + "/" + std::string(nm);
         stbi_write_png(op.c_str(), f.w, f.h, 3, out.data(), f.w * 3);
     }

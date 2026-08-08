@@ -1767,34 +1767,9 @@ void OneGrade::applyMagicGrade(double p_Time)
     // moved b* by 2.63 per step on the beach and 3.96 on the car -- so any fixed slider value
     // would be a different move on every piece of footage, which is the exact defect that made
     // Creative's stamped Lift wrong.
-    oga::SampleSet D = oga::decimate(S, 8000);
-    const float step = oga::param_steps()[c.param];
-    float Pp[oga::kParamN]; for (int i = 0; i < oga::kParamN; ++i) Pp[i] = Pn[i];
-    Pp[c.param] += step;
-    oga::RegionStat sp[oga::kRegionN];
-    oga::region_stats(D, m_LastCam, m_LastEnc, Pp, sp);
-    oga::RegionStat s0[oga::kRegionN];
-    oga::region_stats(D, m_LastCam, m_LastEnc, Pn, s0);
-
-    // For a protected subject the move is spent on the SURROUND, so measure the grip there --
-    // measuring the response of a region we have decided not to move would size the move by how
-    // hard it is to do the thing we are not doing.
-    int measured = c.subject;
-    if (oga::region_protected(c.subject)) {
-        float best = -1.f;
-        for (int r = 0; r < oga::kRegionN; ++r)
-            if (r != c.subject && st[r].cover > best) { best = st[r].cover; measured = r; }
-    }
-    const float grip = sp[measured].b - s0[measured].b;      // b* per one step of the control
-
+    og::grade::Tunables mt;
+    const double base = og::grade::solve_magic_base(S, m_LastCam, m_LastEnc, c, st, mt);
     double sep = 1.0; m_Separation->getValue(sep);
-    // One unit of Separation aims for this much b* movement on the measured region. Six Lab
-    // units is a firm but not transformative push; it is the one constant here and it is a
-    // starting point, to be read off footage like every other number in this file.
-    const double kUnit = 6.0;
-    double base = 0.0;
-    if (std::fabs(grip) > 1e-4) base = c.sign * kUnit * (double)step / std::fabs((double)grip);
-    base = std::min(0.35, std::max(-0.35, base));            // a colour cast, not a transform
 
     const double anchor = (c.param == 6) ? m_OffTemp->getValue() : m_Temp->getValue();
     m_MagicParam->setValue(c.param);

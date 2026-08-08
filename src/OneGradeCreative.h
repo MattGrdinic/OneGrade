@@ -136,5 +136,48 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
     P[12] = (float)rolloff;
 }
 
+// The Magic move's magnitude, MEASURED on the shot rather than assumed.
+//
+// Nudge the chosen control, see how far the subject's b* actually travels, scale to the target.
+// Necessary because the response is wildly shot-dependent -- Offset Temp moved b* by 2.63 per
+// step on one frame and 3.96 on another -- so a fixed slider value would be a different move on
+// every piece of footage, which is the exact defect that made Creative's stamped Lift wrong.
+//
+// Shared with the bench so the offline result is the same move the plugin makes. The bench used
+// to render Creative Grade alone, which meant it could not see anything the magic move did --
+// including crushing the blue channel on a dark frame, since Offset Temp is additive and
+// subtracts from blue.
+static inline double solve_magic_base(const analysis::SampleSet& S, int cam, int enc,
+                                      const analysis::MagicChoice& c,
+                                      const analysis::RegionStat* st, const Tunables& t)
+{
+    if (!c.ok) return 0.0;
+    analysis::SampleSet D = analysis::decimate(S, 8000);
+    const float step = analysis::param_steps()[c.param];
+    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pp[analysis::kParamN];
+    for (int i = 0; i < analysis::kParamN; ++i) Pp[i] = Pn[i];
+    Pp[c.param] += step;
+
+    analysis::RegionStat s0[analysis::kRegionN], sp[analysis::kRegionN];
+    analysis::region_stats(D, cam, enc, Pn, s0);
+    analysis::region_stats(D, cam, enc, Pp, sp);
+
+    // For a protected subject the move is spent on the SURROUND, so the grip is measured there.
+    // Sizing a move by the response of the region we have decided not to move would be sizing
+    // it by how hard it is to do the thing we are not doing.
+    int measured = c.subject;
+    if (analysis::region_protected(c.subject)) {
+        float best = -1.f;
+        for (int r = 0; r < analysis::kRegionN; ++r)
+            if (r != c.subject && st[r].cover > best) { best = st[r].cover; measured = r; }
+    }
+    const float grip = sp[measured].b - s0[measured].b;
+    double base = 0.0;
+    if (std::fabs(grip) > 1e-4)
+        base = c.sign * t.magicUnit * (double)step / std::fabs((double)grip);
+    return std::min(0.35, std::max(-0.35, base));   // a colour cast, not a transform
+}
+
 } // namespace grade
 } // namespace og

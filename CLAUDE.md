@@ -231,6 +231,35 @@ it needed Rolloff 0.5 to stop practicals clipping neon — under PQ decode the s
 built in, so presets set rolloff 0). Values are starting points — expect on-footage
 tuning requests.
 
+## The bench — USE THIS, not Resolve, for anything numeric (2026-08-07)
+`experiments/bench/` grades log stills offline and prints what it did. **Every constant in Auto
+Grade and Magic Grade was fitted at roughly one observation per minute** — build, install,
+restart Resolve, press a button, squint — which is why so few of them have any evidence behind
+them. The bench turns that into a second.
+
+```bash
+./experiments/bench/run.sh ~/Desktop/onegrade-training                  # grade a folder of PNGs
+./experiments/bench/run.sh ~/Desktop/onegrade-training --unit=3 --black=0.08
+```
+Flags: `--gain-base --gain-per-key --gain-min --gain-max --black --unit --sep --wb --camera
+--encode --lut=`. Graded PNGs land in `<folder>/out`. Columns: `key`, the solved
+`gain/lift/roll`, the ACHIEVED `blk`/`mid`, the Magic decision and its magnitude, then a second
+line with the **post-LUT** black point and what share of the frame is crushed at or below 1/255.
+
+**Input is CAMERA LOG, not a graded export** — that is what the plugin gets from OFX. The tell
+that an export really is log: it never reaches 1.0 (Blackmagic peaks near 0.75). 16-bit PNG from
+the Deliver page is much better than an 8-bit Gallery still; log in 8 bits has 256 levels across
+the whole range and the shadows band once graded.
+
+**It calls the plugin's own code and must keep doing so.** `src/OneGradeCreative.h` holds the
+grade solve (`solve_creative`) and the Magic magnitude (`solve_magic_base`) precisely so the
+bench cannot drift from the plugin. **Every bug on Magic Grade that survived more than a few
+minutes was a paraphrase** of something that already existed — a neutral render standing in for
+a graded one, a pre-LUT render for the real one, a Python threshold never ported, a bench that
+reported the Magic decision without applying it. All four produced plausible output while being
+wrong, and all four were caught only by comparing two implementations on one frame. If something
+has to be reimplemented to test it, extract it to a header instead.
+
 ## Build / test / install (macOS, the dev machine)
 ```bash
 make                 # -> OneGrade.ofx.bundle (universal arm64+x86_64)
