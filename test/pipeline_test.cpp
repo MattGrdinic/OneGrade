@@ -3,8 +3,10 @@
 // Copyright (C) 2026 Matthew Grdinic
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../src/OneGradePipeline.h"
+#include "../src/OneGradeAnalysis.h"
 #include <cstdio>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <array>
@@ -21,6 +23,46 @@ static bool finite3(float r, float g, float b) { return std::isfinite(r) && std:
 static void neutral(float P[12]) { for (int i=0;i<12;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
 // Full 13-wide vector (adds P[12] rolloff) for tests that chain whole nodes together.
 static void neutral13(float P[13]) { for (int i=0;i<13;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
+
+// ---- synthetic frames for the scene-descriptor / Jacobian tests (OneGradeAnalysis.h) ----
+// Deterministic noise, so percentiles are non-degenerate but every run is identical.
+static uint32_t g_seed = 12345u;
+static float srnd() { g_seed = g_seed*1664525u + 1013904223u; return (float)(g_seed >> 8) / (float)(1u<<24); }
+
+// kind 0: two-tone "sunset over water" — warm bright top third over a cooler bottom.
+// kind 1: achromatic, for the control case where the two populations should collapse.
+// kind 2: two-tone with a skin-hued patch, to exercise the masked descriptors. The patch
+//         value renders to display h 0.051 / s 0.395, mid-window in both.
+static oga::SampleSet make_frame(int kind, int W = 64, int H = 64)
+{
+    oga::SampleSet S; g_seed = 12345u;
+    S.rgb.reserve((size_t)W*H*3); S.band.reserve((size_t)W*H);
+    for (int y = 0; y < H; ++y) {
+        const uint8_t band = (uint8_t)std::min(2, (y * 3) / H);   // OFX is bottom-up: 2 = top
+        for (int x = 0; x < W; ++x) {
+            float r, g, b;
+            const bool face = (kind == 2) && (x > 20 && x < 44 && y > 8 && y < 32);
+            if (face)              { r = 0.460f; g = 0.420f; b = 0.384f; }   // skin
+            else if (kind == 1)    { r = 0.440f; g = 0.440f; b = 0.440f; }   // achromatic
+            else if (band == 2)    { r = 0.560f; g = 0.480f; b = 0.380f; }   // warm sky
+            else                   { r = 0.380f; g = 0.390f; b = 0.430f; }   // cool water
+            const float n = (srnd() - 0.5f) * 0.10f;
+            S.rgb.push_back(r+n); S.rgb.push_back(g+n); S.rgb.push_back(b+n);
+            S.band.push_back(band);
+        }
+    }
+    return S;
+}
+// Each descriptor's natural scale: the largest one-step response in its own row. Judging a
+// prediction against this rather than against the size of the move is what keeps a 0.0003
+// wobble in a quantity whose value is 78 from being reported as a modelling failure.
+static void desc_scales(const oga::Jac& J, float* out) {
+    for (int d = 0; d < oga::kDescN; ++d) {
+        float mx = 0.f;
+        for (int p = 0; p < oga::kParamN; ++p) mx = std::max(mx, std::fabs(J.at(d, p)));
+        out[d] = std::max(mx, 1e-4f);
+    }
+}
 
 int main() {
     printf("OneGrade pipeline tests\n");
@@ -321,6 +363,527 @@ int main() {
             }
         }
         check(ok, "Clean auto grade: lgg_core on a display percentile predicts the render");
+    }
+
+    // =====================================================================================
+    // SCENE DESCRIPTORS + THE CONTROL JACOBIAN (OneGradeAnalysis.h)
+    // =====================================================================================
+
+    // 15. The descriptors describe the FOOTAGE: a warm-over-cool frame separates into two
+    //     populations, an achromatic one does not. If clustering ever silently degenerates to
+    //     one population (or splits noise), every colour heuristic built on `sep` is nonsense
+    //     and nothing else would notice.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+
+        oga::SampleSet two = make_frame(0);
+        oga::Extras e2 = oga::classify(two, cam, enc);
+        oga::Desc d2 = oga::describe(two, cam, enc, P0);
+
+        oga::SampleSet flat = make_frame(1);
+        oga::Extras ef = oga::classify(flat, cam, enc);
+        oga::Desc df = oga::describe(flat, cam, enc, P0);
+
+        const bool ok =
+            d2.v[oga::D_SEP] > 20.f &&        // two genuinely distinct colour populations
+            df.v[oga::D_SEP] < 1.f  &&        // achromatic frame: nothing to separate
+            d2.v[oga::D_DB]  > 10.f &&        // top band is the warm one
+            d2.v[oga::D_DL]  > 0.f  &&        // ...and the brighter one
+            e2.share[0] > 15.f && e2.share[1] > 15.f &&   // neither population is a rounding error
+            ef.share[0] > 15.f && ef.share[1] > 15.f &&
+            std::fabs(df.v[oga::D_DB]) < 1.f;
+        check(ok, "descriptors: two-tone frame splits into two populations, achromatic does not");
+    }
+
+    // 16. The Jacobian recovers what each control MEANS, without anyone writing it down.
+    //     This is the whole point of measuring the controls instead of describing them: the
+    //     system is never told that negative Offset Temp adds blue, it perturbs the control
+    //     and observes b* fall. Signs are checked against the physics, so a sign flip
+    //     anywhere in the pipeline shows up here as a control that now means its opposite.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+
+        const bool ok =
+            J.at(oga::D_B, 6)      > 0.2f &&   // Offset Temp up  -> warmer (b* up)
+            J.at(oga::D_B, 0)      > 0.1f &&   // Balance Temp up -> warmer
+            J.at(oga::D_B, 11)     > 0.1f &&   // RAW Temp up     -> warmer
+            J.at(oga::D_A, 7)      < -0.2f &&  // Offset Tint up  -> greener (a* down)
+            J.at(oga::D_CHROMA, 2) > 0.2f &&   // Density up      -> more colourful
+            J.at(oga::D_MID, 5)    > 0.f &&    // Gain up         -> brighter midtone
+            J.at(oga::D_WHITE, 5)  > J.at(oga::D_MID, 5) &&  // ...and the top moves most (pivots black)
+            J.at(oga::D_BLACK, 3)  > 0.f &&    // Lift up         -> floor rises
+            J.at(oga::D_MID, 8)    > 0.f &&    // Post Exposure up-> brighter
+            J.at(oga::D_WHITE, 12) < 0.f;      // Rolloff up      -> top pulled down
+        check(ok, "Jacobian recovers the meaning of each control from measurement alone");
+    }
+
+    // 17. It is a real derivative, not a plausible-looking table: halve the move and the
+    //     linear prediction error should fall roughly fourfold. A forward difference, a wrong
+    //     step size, or a descriptor whose mask moves with the grade would all break the rate
+    //     while still producing numbers that look reasonable in isolation.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+
+        bool ok = true;
+        for (int p : {2, 5, 6, 9}) {          // density, gain, offset temp, contrast
+            double prev = 0.0;
+            for (float mag : {0.8f, 0.4f, 0.2f}) {
+                float dp[13] = {0}; dp[p] = mag;
+                float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
+                float P1[13]; oga::apply_move(P0, dp, P1);
+                oga::Desc d1 = oga::describe(S, cam, enc, P1);
+                double e = 0.0;
+                for (int d = 0; d < oga::kDescN; ++d)
+                    e = std::max(e, (double)std::fabs(pred[d] - (d1.v[d] - d0.v[d])));
+                if (prev > 1e-5) ok &= (e < prev / 3.0);   // quadratic would give 4x; allow slack
+                prev = e;
+            }
+        }
+        check(ok, "Jacobian converges quadratically (it is a derivative, not a lookup table)");
+    }
+
+    // 18. Prediction accuracy at a realistic move, over the STEERABLE controls only.
+    //     Rolloff and (at its default) RAW Temp are excluded by steer_mask because both are
+    //     discontinuous there — see the header. Test 20 pins that discontinuity separately so
+    //     the exclusion stays honest rather than becoming a way to hide a bad column.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+        float scale[oga::kDescN]; desc_scales(J, scale);
+        bool allow[13]; oga::steer_mask(P0, allow);
+
+        double worst = 0.0;
+        for (int p = 0; p < 13; ++p) {
+            if (!allow[p]) continue;
+            for (float mag : {-0.5f, 0.5f}) {
+                float dp[13] = {0}; dp[p] = mag;
+                float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
+                float P1[13]; oga::apply_move(P0, dp, P1);
+                oga::Desc d1 = oga::describe(S, cam, enc, P1);
+                for (int d = 0; d < oga::kDescN; ++d)
+                    worst = std::max(worst, (double)std::fabs(pred[d] - (d1.v[d]-d0.v[d]))
+                                            / (scale[d] * std::fabs(mag)));
+            }
+        }
+        check(worst < 0.35, "Jacobian predicts a half-step move to within a third of one step");
+    }
+
+    // 19. THE INVERSE — the reason any of this exists. "Make it bluer" is an intent expressed
+    //     in the descriptor the user's own grade moved (b*), and the solver has to come back
+    //     with the slider a colourist would have reached for. Nothing anywhere tells it that
+    //     Offset Temp is the warm/cool control; it falls out of the measured Jacobian.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+
+        // (a) single intent, single control
+        float dd[oga::kDescN] = {0}, w[oga::kDescN] = {0};
+        dd[oga::D_B] = -3.0f; w[oga::D_B] = 1.0f;
+        bool allow[13] = {false}; allow[6] = true;
+        float dp[13]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp);
+        float P1[13]; oga::apply_move(P0, dp, P1);
+        oga::Desc d1 = oga::describe(S, cam, enc, P1);
+        const float got = d1.v[oga::D_B] - d0.v[oga::D_B];
+
+        bool ok = (P1[6] < 0.f)                    // it reached for NEGATIVE Offset Temp
+               && (std::fabs(got - (-3.0f)) < 0.3f);  // and landed within 10% of the ask
+        for (int i = 0; i < 13; ++i) if (!allow[i]) ok &= close(P1[i], P0[i], 1e-6f);
+
+        // (b) two intents, two controls — the case a real Magic Grade rule would produce
+        float dd2[oga::kDescN] = {0}, w2[oga::kDescN] = {0};
+        dd2[oga::D_B] = -3.0f;      w2[oga::D_B] = 1.0f;
+        dd2[oga::D_CHROMA] = 2.0f;  w2[oga::D_CHROMA] = 1.0f;
+        bool allow2[13] = {false}; allow2[6] = true; allow2[2] = true;
+        float dp2[13]; oga::solve_intent(J, dd2, w2, allow2, 1e-4f, dp2);
+        float P2[13]; oga::apply_move(P0, dp2, P2);
+        oga::Desc d2 = oga::describe(S, cam, enc, P2);
+        ok &= std::fabs((d2.v[oga::D_B]      - d0.v[oga::D_B])      - (-3.0f)) < 0.3f;
+        ok &= std::fabs((d2.v[oga::D_CHROMA] - d0.v[oga::D_CHROMA]) - ( 2.0f)) < 0.2f;
+        ok &= (P2[6] < 0.f) && (P2[2] > 0.f);      // cooler balance, more density
+        for (int i = 0; i < 13; ++i) if (!allow2[i]) ok &= close(P2[i], P0[i], 1e-6f);
+
+        check(ok, "intent solve: 'bluer' resolves to negative Offset Temp and lands the target");
+    }
+
+    // 20. The two discontinuities steer_mask() exists to dodge, pinned so they cannot quietly
+    //     change. Both are properties of the shipping pipeline, found by the Jacobian rather
+    //     than looked for. If either is ever fixed, THIS test fails first and says so — at
+    //     which point the control becomes steerable and should be let back into the mask.
+    {
+        // Rolloff: softclip asymptotes hard at 1.0 for any amt > 0, so the first nudge off
+        // zero is a step, not a ramp.
+        const float a = og::softclip(1.26f, 0.0f);
+        const float b = og::softclip(1.26f, 0.0001f);
+        bool ok = close(a, 1.26f, 1e-5f) && close(b, 1.0f, 1e-4f);
+
+        // RAW Temp: white_balance() forces identity on 6499 < T < 6501, but the Planckian
+        // locus at 6500 K is not D65 (dy = -0.0053), so the skipped adaptation is not an
+        // identity and a neutral grey jumps when the slider leaves its default.
+        float P[13]; neutral13(P);
+        float r0,g0,b0, r1,g1,b1;
+        og::process(11, 1, P, 0.45f, 0.45f, 0.45f, r0, g0, b0);
+        P[11] = 6501.f;
+        og::process(11, 1, P, 0.45f, 0.45f, 0.45f, r1, g1, b1);
+        ok &= close(r0, g0, 1e-6f) && close(g0, b0, 1e-6f);   // exactly neutral at 6500
+        ok &= (std::fabs(g1 - r1) > 0.008f);                  // ...and not at 6501
+        check(ok, "known discontinuities pinned: Rolloff at 0, RAW Temp at 6500 K");
+    }
+
+    // 21. The masked descriptors are gated on coverage. A skin number taken off forty pixels
+    //     is noise, and a solver that weighted it would be steering on nothing — so they read
+    //     exactly zero until the mask finds enough to trust, which is also how a caller knows
+    //     not to weight them.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+
+        oga::SampleSet withSkin = make_frame(2);
+        oga::Extras es = oga::classify(withSkin, cam, enc);
+        oga::Desc ds = oga::describe(withSkin, cam, enc, P0);
+
+        oga::SampleSet noSkin = make_frame(1);
+        oga::Extras en = oga::classify(noSkin, cam, enc);
+        oga::Desc dn = oga::describe(noSkin, cam, enc, P0);
+
+        const bool ok =
+            es.skinOk && es.skinPct > 5.f &&
+            ds.v[oga::D_SKINL] > 0.f && std::fabs(ds.v[oga::D_SKINB]) > 1.f &&
+            !en.skinOk && en.skinPct < 1.f &&
+            close(dn.v[oga::D_SKINL], 0.f, 1e-6f) && close(dn.v[oga::D_SKINB], 0.f, 1e-6f);
+        check(ok, "skin descriptors activate on coverage and read zero without it");
+    }
+
+    // 22. ITERATING BEATS ONE LINEAR SHOT ON A BIG MOVE, which is the whole reason it exists.
+    //     Measured on the user's own hand grade: Offset Temp -0.167 is 3.3 natural steps, the
+    //     linear model said that buys b* -8.8, and it delivered -7.0 — 84% of linear, so a
+    //     single solve asked for b* -7.0 comes back a quarter short. This asks for a move well
+    //     outside the half-step range test 18 validates and checks that re-measuring closes the
+    //     gap rather than merely pointing the right way.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+
+        float dd[oga::kDescN] = {0}, w[oga::kDescN] = {0};
+        dd[oga::D_B] = -8.0f; w[oga::D_B] = 1.0f;          // a big ask, ~3 steps of Offset Temp
+        bool allow[13] = {false}; allow[6] = true;
+
+        float dp1[13]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp1);
+        float Pone[13]; oga::apply_move(P0, dp1, Pone);
+        const float errOne = std::fabs((oga::describe(S, cam, enc, Pone).v[oga::D_B]
+                                        - d0.v[oga::D_B]) - (-8.0f));
+
+        float Pit[13];
+        oga::solve_intent_iter(S, cam, enc, P0, dd, w, allow, 1e-4f, 3, Pit);
+        const float errIt = std::fabs((oga::describe(S, cam, enc, Pit).v[oga::D_B]
+                                       - d0.v[oga::D_B]) - (-8.0f));
+
+        const bool ok = (errOne > 0.15f)        // the single shot really does miss, as measured
+                     && (errIt < errOne / 4.f)  // and iterating closes most of the gap
+                     && (errIt < 0.05f)         // landing the value, not just the direction
+                     && (Pit[6] < Pone[6]);     // by reaching FURTHER, since the response saturates
+        check(ok, "iterative solve lands a large move that one linear shot undershoots");
+    }
+
+    // 23. ATTRIBUTION — which control actually caused which descriptor change.
+    //     Exists because I got this wrong on real data: chroma rose 1.2 between the Creative
+    //     grade and the hand grade, I called it "more density", and density had in fact gone
+    //     DOWN 0.053 while Lift, Gain and Offset Temp pushed chroma up. Reading a descriptor
+    //     and naming the obvious control does not work; the controls overlap too much.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+
+        // The shape of the real case: chroma pulled DOWN by density while other controls push
+        // it up, so the net can move opposite to the control a human would blame.
+        float P1[13]; neutral13(P1);
+        P1[2] = -0.05f;    // density down
+        P1[5] =  1.10f;    // gain up
+        P1[6] = -0.05f;    // offset temp down
+        oga::Attribution A = oga::attribute(S, cam, enc, J, P0, P1);
+
+        bool ok = true;
+        // Parts sum to the linear total, for every descriptor — the decomposition is complete,
+        // not a selection of the interesting terms.
+        for (int d = 0; d < oga::kDescN; ++d) {
+            float s = 0.f;
+            for (int p = 0; p < oga::kParamN; ++p) s += A.at(d, p);
+            ok &= close(s, A.linear[d], 1e-3f);
+        }
+        // Over a move this size the linear estimate should still track the measurement.
+        ok &= std::fabs(A.linear[oga::D_B] - A.actual[oga::D_B]) < 0.35f;
+
+        // Offset Temp is the top driver of b*, and it is named without anyone saying so.
+        int drv[oga::kParamN];
+        const int nd = oga::top_drivers(A, oga::D_B, 3, drv);
+        ok &= (nd >= 1) && (drv[0] == 6);
+
+        // And the point of the whole test: density's contribution to chroma is NEGATIVE while
+        // other controls are positive, so the net sign does not identify the control.
+        ok &= (A.at(oga::D_CHROMA, 2) < 0.f);
+        ok &= (A.at(oga::D_CHROMA, 5) > 0.f);
+
+        // Untouched controls contribute exactly nothing.
+        ok &= close(A.at(oga::D_B, 3), 0.f, 1e-9f) && close(A.at(oga::D_B, 9), 0.f, 1e-9f);
+        check(ok, "attribution decomposes a grade into per-control contributions");
+    }
+
+    // 24. SIGNED AXES STEER, MAGNITUDES DO NOT — the finding that reshaped the descriptor set.
+    //     Measured on the beach sunset, neutral -> grade: b* predicted to 5%, C* to 37-57%, and
+    //     `sep` came back +1.1 against a measurement of -3.8, i.e. the wrong SIGN. A distance is
+    //     a positive quantity built from squares, so a linear model cannot express "apart in a,
+    //     together in b" cancelling. The separation triple exists because of that: three signed
+    //     Lab components instead of one distance, which also gives the TONE axis the user named
+    //     ("a different hue or tone level") and the original sep did not have at all.
+    //
+    //     This checks the property the whole steerable set depends on, over a multi-control move
+    //     of the kind a real grade makes.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::Jac J = oga::jacobian(S, cam, enc, P0);
+        oga::Desc d0 = oga::describe(S, cam, enc, P0);
+        float scale[oga::kDescN]; desc_scales(J, scale);
+
+        // Several controls at once, in the proportions a look actually uses.
+        float dp[13] = {0};
+        dp[2] = 0.5f; dp[3] = -0.5f; dp[5] = 0.5f; dp[6] = -0.5f;
+        float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
+        float P1[13]; oga::apply_move(P0, dp, P1);
+        oga::Desc d1 = oga::describe(S, cam, enc, P1);
+
+        double worstSigned = 0.0; int wd = 0;
+        for (int d = 0; d < oga::kSteerableDescN; ++d) {
+            const double e = std::fabs(pred[d] - (d1.v[d]-d0.v[d])) / scale[d];
+            if (e > worstSigned) { worstSigned = e; wd = d; }
+        }
+        // The separation triple is inside the steerable range and the two magnitudes are not —
+        // structural, so a future edit cannot quietly let a distance back into a solve.
+        bool ok = (oga::D_DL < oga::kSteerableDescN)
+               && (oga::D_DA < oga::kSteerableDescN)
+               && (oga::D_DB < oga::kSteerableDescN)
+               && (oga::D_CHROMA >= oga::kSteerableDescN)
+               && (oga::D_SEP    >= oga::kSteerableDescN);
+        ok &= (worstSigned < 0.30);
+        if (!ok) printf("      (worst signed descriptor: %s at %.3f of scale)\n",
+                        oga::desc_name(wd), worstSigned);
+        check(ok, "signed descriptors steer; magnitudes are excluded from the steerable set");
+    }
+
+    // 25. The separation triple carries TONE as well as hue, which is the half the original
+    //     distance was missing. On a frame that is brighter AND warmer up top, all three
+    //     components have to register it — and on a flat frame all three must vanish, or a rule
+    //     targeting separation would chase noise on footage that has none.
+    {
+        const int cam = 11, enc = 1;
+        float P0[13]; neutral13(P0);
+
+        oga::SampleSet two = make_frame(0);
+        oga::classify(two, cam, enc);
+        oga::Desc d2 = oga::describe(two, cam, enc, P0);
+
+        oga::SampleSet flat = make_frame(1);
+        oga::classify(flat, cam, enc);
+        oga::Desc df = oga::describe(flat, cam, enc, P0);
+
+        const bool ok =
+            d2.v[oga::D_DL] > 2.f  &&        // top band genuinely lighter, in L*
+            d2.v[oga::D_DB] > 10.f &&        // ...and warmer
+            std::fabs(df.v[oga::D_DL]) < 1.f &&   // flat frame: no tone separation
+            std::fabs(df.v[oga::D_DA]) < 1.f &&   // ...no hue separation either
+            std::fabs(df.v[oga::D_DB]) < 1.f;
+        check(ok, "separation triple registers tone and hue, and vanishes on a flat frame");
+    }
+
+    // 26. CREATIVE'S BLACK POINT: solving it is consistent across footage, stamping a fixed
+    //     Lift is not. This is the defect three hand grades kept correcting by hand — the
+    //     preset wrote Lift 0.11 on every shot, which lands wherever the footage's own floor
+    //     happens to put it. Measured: the beach came out ~0.15 and the city 0.161, and both
+    //     were pulled down manually, the user's words for the city and car being that the
+    //     shadows were lifted too far.
+    //
+    //     The claim under test is not "the new number is better" — that is a taste question
+    //     settled on footage. It is that the RESULT no longer depends on the footage.
+    {
+        const double target = 0.050, postExp = 0.55, gamma = 1.0, gain = 0.80;
+        const double ex = std::exp2(postExp);
+
+        // Four plausible measured floors, spanning what real cameras hand over: a clip that
+        // reaches zero, and ones sitting progressively further off it.
+        const double floors[4] = { 0.000, 0.030, 0.067, 0.120 };
+
+        double stampedLo = 1e9, stampedHi = -1e9, worstSolved = 0.0;
+        for (double d01 : floors) {
+            // What the preset used to do: one Lift for everybody.
+            const double stamped = (double)og::lgg_core((float)d01, 0.11f, (float)gamma, (float)gain) * ex;
+            stampedLo = std::min(stampedLo, stamped);
+            stampedHi = std::max(stampedHi, stamped);
+
+            // What it does now: bisect Lift until the black point lands on the target. Same
+            // monotonic curve and same 1-D solve Base has always used for its floor.
+            double lo = -0.5, hi = 0.5;
+            for (int i = 0; i < 40; ++i) {
+                const double mid = 0.5*(lo + hi);
+                const double v = (double)og::lgg_core((float)d01, (float)mid, (float)gamma, (float)gain) * ex;
+                if (v < target) lo = mid; else hi = mid;
+            }
+            const double lift = 0.5*(lo + hi);
+            const double got = (double)og::lgg_core((float)d01, (float)lift, (float)gamma, (float)gain) * ex;
+            worstSolved = std::max(worstSolved, std::fabs(got - target));
+        }
+
+        const bool ok = (stampedHi - stampedLo > 0.05)   // a fixed lift really does scatter
+                     && (worstSolved < 1e-3);            // solving lands every one of them
+        check(ok, "Creative places its black point by solving, so footage no longer decides it");
+    }
+
+    // 27. MAGIC GRADE picks its control from the pipeline's own arithmetic, not from a table.
+    //     Offset is additive, so it is a large RELATIVE shift on a dark region; Gain is
+    //     multiplicative, so it grips the bright end. A dark subject therefore resolves to
+    //     Offset Temp and a bright one to Gain Temp. On the beach that yields Offset Temp
+    //     negative for the water — the control and direction the user reached for by hand.
+    {
+        oga::RegionStat st[oga::kRegionN];
+        // The measured beach: water dark and near-neutral, sky bright and very warm.
+        st[oga::R_WATER] = { 51.3f, 40.5f, 12.9f,  4.1f };
+        st[oga::R_SKY]   = { 35.7f, 61.1f, 41.2f, 58.3f };
+        st[oga::R_TERRAIN] = { 12.0f, 27.6f, 17.7f, 13.1f };
+
+        const oga::MagicChoice c0 = oga::magic_decide(st, 0);
+        bool ok = c0.ok && c0.subject == oga::R_WATER && c0.param == 6 && c0.sign < 0;
+
+        // Second press must offer a genuinely different move, and the cycle must wrap rather
+        // than run off the end.
+        const oga::MagicChoice c1 = oga::magic_decide(st, 1);
+        ok &= c1.ok && !(c1.param == c0.param && c1.sign == c0.sign);
+        const oga::MagicChoice cw = oga::magic_decide(st, c0.options);
+        ok &= cw.ok && cw.param == c0.param && cw.sign == c0.sign;
+        ok &= (c0.options >= 2) && (c0.option == 0);
+        check(ok, "Magic Grade: dark subject -> Offset Temp, and presses cycle distinctly");
+    }
+
+    // 28. A PROTECTED SUBJECT INVERTS THE RULE. Skin is never pushed, so when it is the subject
+    //     the move is spent on the surround instead: grip whatever the surround is, and push
+    //     away from skin's hue. Cool the room, let the face come forward — which is the same
+    //     operation a colourist does, addressed from the other side.
+    //
+    //     Also checks the veto: a frame with one region has nothing to read a subject against,
+    //     and must produce no move rather than an arbitrary one.
+    {
+        oga::RegionStat st[oga::kRegionN];
+        // The measured car portrait: a dark face against a brighter, slightly cooler interior.
+        st[oga::R_BUILT] = { 77.7f, 41.0f, -5.5f, -3.7f };
+        st[oga::R_SKIN]  = { 22.3f, 14.4f, -2.1f, -1.4f };
+
+        const oga::MagicChoice c = oga::magic_decide(st, 0);
+        // Salience puts the face first despite covering a fifth of the frame.
+        bool ok = c.ok && c.subject == oga::R_SKIN;
+        // Surround is the brighter half, so Gain Temp has the grip on it; skin is the warmer of
+        // the two, so the surround goes cooler.
+        ok &= (c.param == 0) && (c.sign < 0);
+        // Both candidates here resolve to the same move, so the frame offers exactly one and
+        // pressing again must not pretend otherwise.
+        ok &= (c.options == 1);
+
+        oga::RegionStat one[oga::kRegionN];
+        one[oga::R_BUILT] = { 99.9f, 31.0f, -3.3f, -5.4f };
+        ok &= !oga::magic_decide(one, 0).ok;      // aerial city: nothing to separate
+
+        // One region that IS the frame, with a sliver beside it. The macro-of-leaves frame
+        // measures 98.3% against 1.7%; pushing those apart is a colour cast justified by
+        // speckle, not separation.
+        oga::RegionStat macro[oga::kRegionN];
+        macro[oga::R_BUILT] = { 98.3f, 47.3f,  8.7f, 34.5f };
+        macro[oga::R_VEG]   = {  1.7f, 110.9f, 9.0f, 117.2f };
+        ok &= !oga::magic_decide(macro, 0).ok;
+
+        // ...but a frame whose second region genuinely clears the coverage floor DOES act, even
+        // when the first is large. The downward city view is 92.9% structure against 7.1% roofs
+        // and streets, and those two halves look visibly different. The floor and the ceiling
+        // used to be independent numbers that disagreed about this exact frame; they are
+        // complementary now, so a region is either big enough to matter or it is not, and the
+        // answer no longer depends on which constant is consulted.
+        oga::RegionStat cityish[oga::kRegionN];
+        cityish[oga::R_BUILT]  = { 92.9f, 59.0f, -3.3f,  -8.7f };
+        cityish[oga::R_GROUND] = {  7.1f, 55.5f, -3.0f, -15.8f };
+        ok &= oga::magic_decide(cityish, 0).ok;
+
+        oga::RegionStat none[oga::kRegionN];
+        ok &= !oga::magic_decide(none, 0).ok;     // empty: no move, no crash
+
+        check(ok, "Magic Grade: skin is protected, the surround moves, single-region vetoes");
+    }
+
+    // 29. Region statistics respect the fixed-membership rule the whole file depends on: regions
+    //     are assigned once and only the STATISTICS move with the grade. If assignment drifted
+    //     with the parameters, "this region got cooler" would be unmeasurable by construction.
+    {
+        const int cam = 11, enc = 1;
+        oga::SampleSet S = make_frame(0);
+        oga::classify(S, cam, enc);
+        oga::stub_regions(S, cam, enc);
+        std::vector<uint8_t> before = S.region;
+
+        float P0[13]; neutral13(P0);
+        float P1[13]; neutral13(P1); P1[6] = -0.20f;      // a firm Offset Temp move
+
+        oga::RegionStat a[oga::kRegionN], b[oga::kRegionN];
+        oga::region_stats(S, cam, enc, P0, a);
+        oga::region_stats(S, cam, enc, P1, b);
+
+        bool ok = (S.region == before);                   // assignment untouched by the grade
+        float cover = 0.f; int live = 0;
+        for (int r = 0; r < oga::kRegionN; ++r) {
+            cover += a[r].cover;
+            ok &= close(a[r].cover, b[r].cover, 1e-6f);    // coverage cannot move either
+            if (a[r].cover > 1.f) ++live;
+        }
+        ok &= close(cover, 100.f, 0.01f);                 // every sample lands in exactly one
+        ok &= (live >= 2);                                 // the stub finds structure at all
+        bool moved = false;
+        for (int r = 0; r < oga::kRegionN; ++r)
+            if (a[r].cover > 1.f && std::fabs(a[r].b - b[r].b) > 0.05f) moved = true;
+        ok &= moved;                                       // ...and the statistics DO move
+
+        // DECIMATION MUST CARRY THE REGION LABELS. It did not, and the failure was silent in the
+        // worst way: region_stats() bails when region.size() != size(), so a decimated set
+        // returned all-zero coverage. Magic Grade measures its move's magnitude that way, so
+        // every move came out at exactly zero — a feature that runs, reports what it chose, and
+        // changes nothing on screen. Nothing in the decision tests would have caught it.
+        oga::SampleSet D = oga::decimate(S, 4000);
+        ok &= (D.region.size() == D.size());
+        oga::RegionStat d[oga::kRegionN];
+        oga::region_stats(D, cam, enc, P0, d);
+        float dcover = 0.f;
+        for (int r = 0; r < oga::kRegionN; ++r) dcover += d[r].cover;
+        ok &= close(dcover, 100.f, 0.01f);
+        check(ok, "region stats: membership fixed, coverage sums to 100, survives decimation");
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
