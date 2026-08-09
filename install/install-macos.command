@@ -55,6 +55,22 @@ if [ ! -x /Library/OFX/Plugins/OneGrade.ofx.bundle/Contents/MacOS/OneGrade.ofx ]
   read -r -p "Press return to close." _; exit 1
 fi
 
+# INVALIDATE RESOLVE'S PLUGIN CACHE, or a previous failure keeps this install invisible.
+#
+# Resolve records a verdict per bundle in OFXPluginCacheV2.xml. When a load fails -- as it did
+# for every quarantined install before this installer stripped the flag -- it writes status="2"
+# AND mtime="0" size="0". With no real mtime or size recorded it cannot tell the file has
+# changed, so it never retries: the plugin stays invisible through any number of reinstalls,
+# with "Plugin is not available" in the log and no attempt to load in the first place.
+#
+# So a broken install does not merely fail, it POISONS the host until the cache is cleared. That
+# makes clearing it part of installing rather than a troubleshooting step -- anyone arriving from
+# a quarantined 1.4.0 needs this even though their bundle is now fine.
+#
+# Deleting is safe: Resolve rebuilds it by rescanning every plugin on next launch. Done unelevated
+# because the file belongs to the user, not to root.
+rm -f "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/OFXPluginCacheV2.xml"
+
 echo "OneGrade installed to /Library/OFX/Plugins."
 echo "Restart DaVinci Resolve, then find it under Effects > OpenFX > OneGrade."
 read -r -p "Press return to close." _
