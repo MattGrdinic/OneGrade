@@ -340,6 +340,15 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
 `Co-Authored-By:` trailer naming the Claude model that did the work. Merged so far: #1 look-first-and-hdr
 (all the color fixes), #2 docs-and-distribution, #3 docs-release-process.
 
+## Resolve's own files — logs, plugin cache, LUT dirs (`docs/RESOLVE-PATHS.md`)
+Where Resolve keeps its log, its OFX plugin cache and its LUTs, per platform, plus the order to
+diagnose a plugin that will not appear. **`OFXPluginCacheV2.xml` is the trap**: a failed load is
+recorded `status="2"` with `mtime="0" size="0"`, so Resolve cannot tell the file changed and
+never retries — a broken install stays broken through any number of reinstalls, with no load
+attempt in the log at all. The installer clears it now. **The pivot when debugging: `dlopen` the
+bundle and call `OfxGetNumberOfPlugins`.** If that works the binary is fine and the problem is the
+host, which is the point to stop reading the code and start reading the log.
+
 ## Validation status / gotchas
 - **Validated in Resolve:** Metal + CPU on the user's M3 Max, Rec.709 (Scene) / DaVinci YRGB project.
   Node Role group split (Pre-Clip + Post-Clip) validated 2026-08-02, incl. no float clamp
