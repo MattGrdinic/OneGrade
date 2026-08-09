@@ -13,8 +13,22 @@ if [ ! -d "$SRC" ]; then
   read -r -p "Press return to close." _; exit 1
 fi
 
+# STRIP THE QUARANTINE FLAG, or Resolve will not load what we just installed.
+#
+# A bundle downloaded through a browser gets com.apple.quarantine, cp -R preserves extended
+# attributes, and Gatekeeper refuses to let an unsigned quarantined bundle be loaded by another
+# application. So the installer copied the plugin into place perfectly and Resolve showed no
+# OneGrade in Effects and no error anywhere -- indistinguishable from a broken build.
+#
+# Done here rather than left to the user because it hits EVERY macOS install from a release zip;
+# only a locally built bundle escapes it, which is exactly the case the developer tests.
+#
+# Stripped from the source first, which needs no privileges, so the copy is clean on arrival. The
+# destination is stripped too, in case the bundle reached this machine some other way.
+xattr -dr com.apple.quarantine "$SRC" 2>/dev/null || true
+
 osascript <<EOF
-do shell script "mkdir -p /Library/OFX/Plugins && rm -rf '/Library/OFX/Plugins/OneGrade.ofx.bundle' '/Library/OFX/Plugins/PowerGrade.ofx.bundle' && cp -R '$SRC' /Library/OFX/Plugins/" with administrator privileges
+do shell script "mkdir -p /Library/OFX/Plugins && rm -rf '/Library/OFX/Plugins/OneGrade.ofx.bundle' '/Library/OFX/Plugins/PowerGrade.ofx.bundle' && cp -R '$SRC' /Library/OFX/Plugins/ && xattr -dr com.apple.quarantine /Library/OFX/Plugins/OneGrade.ofx.bundle" with administrator privileges
 EOF
 
 echo "OneGrade installed to /Library/OFX/Plugins."
