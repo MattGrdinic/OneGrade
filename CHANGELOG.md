@@ -4,44 +4,6 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
 
 ---
 
-## v1.4.1 — the macOS installer actually installs
-
-**If you use OneGrade on macOS, this release is not optional.** The v1.4.0 installer could not
-successfully install the plugin, and failing left Resolve in a state that ignored every later
-attempt.
-
-Three macOS protections sat between a downloaded zip and a loaded plugin. Each one hid the
-next, and none of them announced itself:
-
-- **Quarantine.** A bundle downloaded through a browser is flagged by macOS, the installer
-  copied that flag along with the plugin, and Gatekeeper refused to let Resolve load it. No
-  error, no plugin in the Effects list — indistinguishable from a broken build.
-- **File access.** With the flag cleared, the install failed with `Operation not permitted`.
-  The installer's privileged step runs as root, and root does not inherit your permission to
-  read `~/Downloads` — so the refusal was at the *source*, which reads like a problem with the
-  destination and cannot be fixed by granting more privilege.
-- **Resolve's plugin cache.** Worst of the three. Resolve records a verdict per plugin, and a
-  failed load is written with no file size or timestamp — so it cannot tell the plugin has
-  since changed, and never tries again. **A single failed install made the plugin permanently
-  invisible, no matter how many times you reinstalled.**
-
-The installer now handles all three, including clearing that cache entry, so anyone stuck on
-1.4.0 is unstuck by running it. It also verifies the plugin is really on disk before reporting
-success, and explains each failure instead of stopping on a raw system error.
-
-None of this was visible to us: a locally compiled bundle is never quarantined, never lives in
-Downloads, and never fails to load, and those were the only builds either of us had installed.
-
-### Also fixed
-
-- **Magic Grade could produce a dark, crushed first result** on a node that had not yet
-  rendered, snapping correct as soon as any slider moved. The grade is solved against the film
-  LUT, and the LUT was only loaded by the render path — so the very first press could solve
-  against a LUT that was not in memory yet.
-
----
-
-
 ## v1.4.0 — Magic Grade
 
 One button that reads the frame, finds what the shot is *of*, and grades for that.
@@ -62,6 +24,10 @@ One button that reads the frame, finds what the shot is *of*, and grades for tha
 - **It declines more often than it acts, and says why.** The targets were fitted on faces,
   so a landscape gets Creative Grade and a note explaining that rather than a confident
   wrong answer.
+- **The first press is the right one.** The grade is solved against the film LUT, so the LUT
+  has to be in memory before the solve rather than after the first render — otherwise a press
+  on a node that had not yet rendered could come out dark and crushed, snapping correct as
+  soon as any slider moved.
 - **Press again for a different subject.** Each press offers a distinct move, and the panel
   shows which region it chose, how much of the frame it covers, and why that control and
   that direction.
@@ -96,7 +62,26 @@ One button that reads the frame, finds what the shot is *of*, and grades for tha
 - The repo is 140 MB lighter: model-conversion intermediates and stray binaries are gone,
   regenerable from `experiments/segmentation/convert_paddle.py`.
 
+### Installing on macOS
+
+The installer clears three macOS protections that otherwise sit between a downloaded zip and a
+loaded plugin, none of which announces itself:
+
+- **Quarantine.** A bundle downloaded through a browser is flagged, and Gatekeeper will not let
+  Resolve load it — with no error and no plugin in the Effects list.
+- **File access.** The installer's privileged step runs as root, and root does not inherit your
+  permission to read `~/Downloads`, so copying from there fails with `Operation not permitted`.
+- **Resolve's plugin cache.** Resolve records a verdict per plugin, and writes a failed load with
+  no size or timestamp — so it cannot tell the plugin has changed and never tries again. Without
+  clearing that entry, one failed install makes the plugin invisible no matter how many times you
+  reinstall.
+
+The installer also checks the plugin really is on disk before reporting success, and explains
+each failure rather than stopping on a raw system error. `docs/RESOLVE-PATHS.md` has the paths
+and the order to diagnose a plugin that will not appear.
+
 ---
+
 
 ## v1.3.0 — the feedback release
 
