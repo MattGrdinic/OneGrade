@@ -627,6 +627,51 @@ is to split the clip, which the user reached independently. **Frame-based is a f
 here, not a defect** — the user picks which moment it optimises for by parking the
 playhead. Say that rather than trying to engineer around it.
 
+## Magic Tone — the subject-legibility solve (2026-08-08/09, the current shape)
+Full explainer: `docs/AUTO-GRADE.md` §10. The short version for resuming work:
+
+**Magic Grade was Creative + a tint** (mean 7/255 difference on one frame) until this landed, so
+all the subject detection was spent choosing a cast. It now places the subject: **three
+conditions on three controls** — subject shadows 0.125 (Lift) · subject midtone 0.278 (Gamma) ·
+frame highlight 0.968 (Gain) — solved **post-LUT** by coordinate passes. Two of three are about
+the subject because legibility is a property of the thing being looked at; the old anti-crush
+guard never helped because it protects the *frame's* black point while the face sat at p10 0.078.
+
+**Priority when they conflict, and it is not negotiable:** (1) the ceiling gives way to the
+subject — a bright window is editorial, a face is not; (2) the frame's floor caps what placing
+the subject may cost — Lift is global, so a dark subject dragged its frame's black to 0.151 where
+healthy frames sit 0.04-0.08, and Lift then serves the frame's floor while Gamma keeps the
+subject's midtone.
+
+**Underexposed ≠ low key, and the subject is how you tell them apart.** `key` cannot: a fine car
+interior is +2.58 against an underexposed frame's +2.38. *Reach* separates them (neutral p99
+0.699 vs 0.395). The correction is **RAW Exposure, not Gain** — scene-linear, before the
+transform, which is what exposing correctly would have done; 2.20 EV against the user's own 2.13.
+This forced the solve to keep the **source triple at each percentile** rather than scalars,
+because RAW Exposure acts *before* the measurement and moves the numbers it stands on.
+
+**It declines more than it acts, and every decline names itself** (`not a face` · `face too large
+to be one` · `subject is black, not dark` · `subject unplaceable` · `highlight blown`). The bar is
+the north star: bad cases **impossible, not rare**. `not a face` is load-bearing — a beach frame
+whose subject came back VEGETATION was destroyed by a face's midtone (neon cyan sky, red pinned
+flat at zero) while the solve met every condition it was given.
+
+**Bias moves the TARGETS and re-solves**, never the parameters — the three conditions hold
+together, so nudging one breaks all three ("if I touch the bias slider we kill the grade").
+Crushing is now structurally impossible rather than guarded. The anchor is re-armed at the END of
+`applyMagicGrade`; armed halfway, the first touch snapped back to an intermediate grade (third
+discontinuity-at-its-own-default here, after Rolloff at 0 and RAW Temp at 6500).
+
+**Every tone target came from ONE hand-graded interview.** Placeholders with the right shape, all
+exposed as bench flags. Extending past faces is a DATA question — see `docs/ROADMAP.md`.
+
+**DEAD ENDS, do not retry:** making subject *spread* a direct target (Lift and Gamma both move
+it, the 3x3 stopped being diagonally dominant, every control ran to a bound) · backing the
+subject floor off in steps (fought the ceiling fallback, ended up declining the frame at black
+0.002) · solving the black point post-LUT (flattened every landscape, floors 0.05 -> 0.13-0.38;
+it was chasing `crushed%`, which the user had already said flags intended silhouette as a defect
+— same lesson as `hot` vs `pin`).
+
 **A SOLVE HAS A SPACE — the bug that crushed every Creative/Magic grade (2026-08-07).**
 `probeAnalyze` measures the Display row in a display-referred encode, falling back to Gamma 2.2
 when the effective encode isn't one (a film LUT forces Cineon). Correct for `hot`/saturation/skin,
