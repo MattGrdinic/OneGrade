@@ -20,7 +20,8 @@ sampling, built-ins) · `FILM-EMULATION.md` (Cineon → print-stock path + prese
 `CREATING-LUTS.md` (authoring new built-in looks) · `GROUPS.md` (Node Role, the
 pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed) ·
 `AUTO-GRADE.md` (frame measurement, the Gain/Rolloff fits and the footage behind them,
-what is deliberately not set, and the traps found on the way). ·
+what is deliberately not set, the traps found on the way, and §9 the scene descriptors +
+control Jacobian). ·
 `ROADMAP.md` (deferred work with the reasoning kept: Match Clip and why adjacent
 clips aren't reachable, gamut compression for exact LUT export, declaring OFX 1.5 colour
 management).
@@ -230,6 +231,35 @@ it needed Rolloff 0.5 to stop practicals clipping neon — under PQ decode the s
 built in, so presets set rolloff 0). Values are starting points — expect on-footage
 tuning requests.
 
+## The bench — USE THIS, not Resolve, for anything numeric (2026-08-07)
+`experiments/bench/` grades log stills offline and prints what it did. **Every constant in Auto
+Grade and Magic Grade was fitted at roughly one observation per minute** — build, install,
+restart Resolve, press a button, squint — which is why so few of them have any evidence behind
+them. The bench turns that into a second.
+
+```bash
+./experiments/bench/run.sh ~/Desktop/onegrade-training                  # grade a folder of PNGs
+./experiments/bench/run.sh ~/Desktop/onegrade-training --unit=3 --black=0.08
+```
+Flags: `--gain-base --gain-per-key --gain-min --gain-max --black --unit --sep --wb --camera
+--encode --lut=`. Graded PNGs land in `<folder>/out`. Columns: `key`, the solved
+`gain/lift/roll`, the ACHIEVED `blk`/`mid`, the Magic decision and its magnitude, then a second
+line with the **post-LUT** black point and what share of the frame is crushed at or below 1/255.
+
+**Input is CAMERA LOG, not a graded export** — that is what the plugin gets from OFX. The tell
+that an export really is log: it never reaches 1.0 (Blackmagic peaks near 0.75). 16-bit PNG from
+the Deliver page is much better than an 8-bit Gallery still; log in 8 bits has 256 levels across
+the whole range and the shadows band once graded.
+
+**It calls the plugin's own code and must keep doing so.** `src/OneGradeCreative.h` holds the
+grade solve (`solve_creative`) and the Magic magnitude (`solve_magic_base`) precisely so the
+bench cannot drift from the plugin. **Every bug on Magic Grade that survived more than a few
+minutes was a paraphrase** of something that already existed — a neutral render standing in for
+a graded one, a pre-LUT render for the real one, a Python threshold never ported, a bench that
+reported the Magic decision without applying it. All four produced plausible output while being
+wrong, and all four were caught only by comparing two implementations on one frame. If something
+has to be reimplemented to test it, extract it to a header instead.
+
 ## Build / test / install (macOS, the dev machine)
 ```bash
 make                 # -> OneGrade.ofx.bundle (universal arm64+x86_64)
@@ -348,6 +378,29 @@ d8ef1d8 went straight to main; user OK'd it that time, pre-release, but never ag
   real toolkit); do NOT expand it from `CMAKE_CUDA_ARCHITECTURES_ALL_MAJOR`, which is baked
   into CMake and lags it (3.31 still lists CUDA 13's removed `compute_50`, stops at 90).
   Separable compilation must stay OFF or the `-dlink` strips the fatbinary's PTX.
+- **SIGNED AXES STEER, MAGNITUDES DO NOT** (2026-08-06, measured on the beach sunset — the rule
+  that reshaped the descriptor set; `docs/AUTO-GRADE.md` §9, pinned by test 24). Linear
+  prediction vs measurement, neutral → grade: `b*` (signed axis) **5%**, `C*` (magnitude
+  √(a²+b²)) **37–57%**, `sep` (distance between centroids) **the wrong sign** — +1.1 predicted
+  against −3.8 measured. A distance is built from squares, so a linear model cannot express
+  "apart in a" cancelling "together in b". Anything intended as a *solve target* must be a
+  signed component; magnitudes are fine as diagnostics. `kSteerableDescN` enforces it
+  structurally. Separation is consequently three signed Lab components between two regions
+  (`dL*` tone, `da*`/`db*` hue), not one distance — which also gave it the TONE axis the user's
+  own definition named and the first version lacked entirely.
+- **Two controls are discontinuous at their own defaults** (found 2026-08-06 by the descriptor
+  Jacobian, not looked for; both pinned by test 20, both explained in `docs/AUTO-GRADE.md` §9).
+  **Rolloff at 0**: `softclip()` early-outs at `amt<=0` but asymptotes hard at 1.0 for any
+  `amt>0`, so `softclip(1.26)` goes 1.26 → 1.00000 between 0 and 0.0001 — the slider's first
+  nudge is a step, not a ramp (same shape as the LUT-encode dead end). Probably intended; it
+  IS a soft clip to 1.0. **RAW Temp at 6500 K**: `white_balance()` forces identity on
+  6499<T<6501, but the Kim Planckian locus at 6500 K is (0.31349, 0.32366) vs D65's
+  (0.31270, 0.32900) — D65 is a *daylight* illuminant and sits above the blackbody locus, so
+  the skipped adaptation isn't an identity and 1 K off default jumps neutral grey by a* +2.06
+  (visible green cast from nowhere). Looks like a plain defect; the fix is to adapt to
+  blackbody(6500) rather than D65, which makes "identity at 6500" true by construction — but
+  it's a **4-file colour-math edit** and it moves every saved grade with RAW Temp ≠ 6500, so
+  it's the user's call, not a drive-by.
 - **Camera matrices** other than Blackmagic are published/approx — flagged for on-footage validation.
 - **Resolve's LUT folder is per-platform** (`filmLutDir()`): Windows adds a `Support` level
   (`%PROGRAMDATA%\Blackmagic Design\DaVinci Resolve\Support\LUT`), macOS doesn't
@@ -573,6 +626,77 @@ interior. This is single-frame analysis meeting a multi-stop change, and the rig
 is to split the clip, which the user reached independently. **Frame-based is a feature
 here, not a defect** — the user picks which moment it optimises for by parking the
 playhead. Say that rather than trying to engineer around it.
+
+## Magic Tone — the subject-legibility solve (2026-08-08/09, the current shape)
+Full explainer: `docs/AUTO-GRADE.md` §10. The short version for resuming work:
+
+**Magic Grade was Creative + a tint** (mean 7/255 difference on one frame) until this landed, so
+all the subject detection was spent choosing a cast. It now places the subject: **three
+conditions on three controls** — subject shadows 0.125 (Lift) · subject midtone 0.278 (Gamma) ·
+frame highlight 0.968 (Gain) — solved **post-LUT** by coordinate passes. Two of three are about
+the subject because legibility is a property of the thing being looked at; the old anti-crush
+guard never helped because it protects the *frame's* black point while the face sat at p10 0.078.
+
+**Priority when they conflict, and it is not negotiable:** (1) the ceiling gives way to the
+subject — a bright window is editorial, a face is not; (2) the frame's floor caps what placing
+the subject may cost — Lift is global, so a dark subject dragged its frame's black to 0.151 where
+healthy frames sit 0.04-0.08, and Lift then serves the frame's floor while Gamma keeps the
+subject's midtone.
+
+**Underexposed ≠ low key, and the subject is how you tell them apart.** `key` cannot: a fine car
+interior is +2.58 against an underexposed frame's +2.38. *Reach* separates them (neutral p99
+0.699 vs 0.395). The correction is **RAW Exposure, not Gain** — scene-linear, before the
+transform, which is what exposing correctly would have done; 2.20 EV against the user's own 2.13.
+This forced the solve to keep the **source triple at each percentile** rather than scalars,
+because RAW Exposure acts *before* the measurement and moves the numbers it stands on.
+
+**It declines more than it acts, and every decline names itself** (`not a face` · `face too large
+to be one` · `subject is black, not dark` · `subject unplaceable` · `highlight blown`). The bar is
+the north star: bad cases **impossible, not rare**. `not a face` is load-bearing — a beach frame
+whose subject came back VEGETATION was destroyed by a face's midtone (neon cyan sky, red pinned
+flat at zero) while the solve met every condition it was given.
+
+**Bias moves the TARGETS and re-solves**, never the parameters — the three conditions hold
+together, so nudging one breaks all three ("if I touch the bias slider we kill the grade").
+Crushing is now structurally impossible rather than guarded. The anchor is re-armed at the END of
+`applyMagicGrade`; armed halfway, the first touch snapped back to an intermediate grade (third
+discontinuity-at-its-own-default here, after Rolloff at 0 and RAW Temp at 6500).
+
+**Every tone target came from ONE hand-graded interview.** Placeholders with the right shape, all
+exposed as bench flags. Extending past faces is a DATA question — see `docs/ROADMAP.md`.
+
+**DEAD ENDS, do not retry:** making subject *spread* a direct target (Lift and Gamma both move
+it, the 3x3 stopped being diagonally dominant, every control ran to a bound) · backing the
+subject floor off in steps (fought the ceiling fallback, ended up declining the frame at black
+0.002) · solving the black point post-LUT (flattened every landscape, floors 0.05 -> 0.13-0.38;
+it was chasing `crushed%`, which the user had already said flags intended silhouette as a defect
+— same lesson as `hot` vs `pin`).
+
+**A SOLVE HAS A SPACE — the bug that crushed every Creative/Magic grade (2026-08-07).**
+`probeAnalyze` measures the Display row in a display-referred encode, falling back to Gamma 2.2
+when the effective encode isn't one (a film LUT forces Cineon). Correct for `hot`/saturation/skin,
+which are **thresholds**. Wrong for the black point, which is **solved**: LGG runs in whatever
+curve the output encode selects, so "place p0.1 at 0.050" means pushing p0.1 through `og_lgg`
+*in that curve*. Creative always forces Cineon, so the solve ran in Cineon on a 2.2 number —
+Lift -0.025 where the render's own space wanted +0.034, achieved black 0.000 against a 0.050
+target, shadow separation 0.024 vs 0.070. **The panel reported "(blk 0.050)" the whole time**,
+truthfully, because the solve had hit the target it was given. Fix: `m_LastR01`, the same p0.1 in
+the render encode, consumed by the three solves that call `og_lgg` (Creative black point, Base
+lift, `applyBias` floor); `m_LastD01` stays for thresholds. **The rule: a number compared against
+a constant needs the space that constant was chosen in; a number pushed through the pipeline
+needs the space the pipeline runs in.** The bench had the identical defect from the identical
+cause (one encode passed to both roles) — which is how it was caught, and why it must keep
+mirroring the split.
+
+**The bench (`experiments/bench/`) is how constants get fitted now** — log PNGs in, graded PNGs
++ chosen parameters out, every tunable a flag. Full usage in `experiments/bench/README.md`; the
+solve itself lives in `src/OneGradeCreative.h` so the bench calls plugin code rather than
+paraphrasing it (four bugs on this feature were paraphrases). **Input must be 16-bit from
+Deliver, not an 8-bit Gallery still**: the first five stills were 8-bit, and the frame under
+investigation for crushed blacks spanned 0.098-0.412 — ~80 code values total, its darkest tenth
+in about ten. The bench called it the healthiest of the five while Resolve visibly crushed it,
+and both were right about their own input. **Check the floor, not just the ceiling** — the
+"never reaches 1.0" log tell says nothing about whether the shadows survived the export.
 
 **Fit to the USER's grades, not to a convention.** Every textbook target tried before this
 (median -> 18% grey) contradicted what the user actually does. Four shots of ground truth
