@@ -4,6 +4,24 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
 
 ---
 
+## v1.4.1 — install and first-press fixes
+
+Two bugs that only appear on a machine that has never run OneGrade before, which is why
+neither showed up in testing: both of us only ever installed builds we had compiled
+ourselves.
+
+- **macOS: the plugin would not appear in Resolve after installing from a release zip.**
+  A bundle downloaded through a browser is quarantined by macOS, the installer copied that
+  flag along with the plugin, and Gatekeeper then refused to let Resolve load it — with no
+  error anywhere, which is indistinguishable from a broken build. The installer now clears
+  it. If you hit this on 1.4.0, re-running the new installer is enough.
+- **Magic Grade could produce a dark, crushed first result** on a node that had not yet
+  rendered, snapping correct as soon as any slider moved. The grade is solved against the
+  film LUT, and the LUT was only loaded by the render path — so the very first press could
+  solve against a LUT that was not in memory yet.
+
+---
+
 ## v1.4.0 — Magic Grade
 
 One button that reads the frame, finds what the shot is *of*, and grades for that.
