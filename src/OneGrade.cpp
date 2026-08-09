@@ -41,7 +41,7 @@
                            "Set Output Encode to Cineon Log to feed a film-look LUT node."
 #define kPluginIdentifier  "com.mattgrdinic.OneGrade"
 #define kPluginVersionMajor 1
-#define kPluginVersionMinor 3
+#define kPluginVersionMinor 4
 
 #define kSupportsTiles              false
 #define kSupportsMultiResolution    false
@@ -59,7 +59,7 @@
 // way the Gain and Rolloff rows produced their fits, and a measurement nobody can see is worth
 // nothing. Revert to false when merging into the release branch. One character, no other
 // consequence — the params are unaffected either way. See docs/AUTO-GRADE.md.
-static const bool kAnalysisDebugUI = true;
+static const bool kAnalysisDebugUI = false;
 
 #define kParamCount 13 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff
 
