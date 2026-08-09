@@ -4,23 +4,43 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
 
 ---
 
-## v1.4.1 — install and first-press fixes
+## v1.4.1 — the macOS installer actually installs
 
-Two bugs that only appear on a machine that has never run OneGrade before, which is why
-neither showed up in testing: both of us only ever installed builds we had compiled
-ourselves.
+**If you use OneGrade on macOS, this release is not optional.** The v1.4.0 installer could not
+successfully install the plugin, and failing left Resolve in a state that ignored every later
+attempt.
 
-- **macOS: the plugin would not appear in Resolve after installing from a release zip.**
-  A bundle downloaded through a browser is quarantined by macOS, the installer copied that
-  flag along with the plugin, and Gatekeeper then refused to let Resolve load it — with no
-  error anywhere, which is indistinguishable from a broken build. The installer now clears
-  it. If you hit this on 1.4.0, re-running the new installer is enough.
+Three macOS protections sat between a downloaded zip and a loaded plugin. Each one hid the
+next, and none of them announced itself:
+
+- **Quarantine.** A bundle downloaded through a browser is flagged by macOS, the installer
+  copied that flag along with the plugin, and Gatekeeper refused to let Resolve load it. No
+  error, no plugin in the Effects list — indistinguishable from a broken build.
+- **File access.** With the flag cleared, the install failed with `Operation not permitted`.
+  The installer's privileged step runs as root, and root does not inherit your permission to
+  read `~/Downloads` — so the refusal was at the *source*, which reads like a problem with the
+  destination and cannot be fixed by granting more privilege.
+- **Resolve's plugin cache.** Worst of the three. Resolve records a verdict per plugin, and a
+  failed load is written with no file size or timestamp — so it cannot tell the plugin has
+  since changed, and never tries again. **A single failed install made the plugin permanently
+  invisible, no matter how many times you reinstalled.**
+
+The installer now handles all three, including clearing that cache entry, so anyone stuck on
+1.4.0 is unstuck by running it. It also verifies the plugin is really on disk before reporting
+success, and explains each failure instead of stopping on a raw system error.
+
+None of this was visible to us: a locally compiled bundle is never quarantined, never lives in
+Downloads, and never fails to load, and those were the only builds either of us had installed.
+
+### Also fixed
+
 - **Magic Grade could produce a dark, crushed first result** on a node that had not yet
-  rendered, snapping correct as soon as any slider moved. The grade is solved against the
-  film LUT, and the LUT was only loaded by the render path — so the very first press could
-  solve against a LUT that was not in memory yet.
+  rendered, snapping correct as soon as any slider moved. The grade is solved against the film
+  LUT, and the LUT was only loaded by the render path — so the very first press could solve
+  against a LUT that was not in memory yet.
 
 ---
+
 
 ## v1.4.0 — Magic Grade
 
