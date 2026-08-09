@@ -852,5 +852,123 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     return r;
 }
 
+// ---------------------------------------------------------------------------------------
+// THE WHOLE MAGIC SEQUENCE, so the plugin and the bench cannot run it in different orders.
+//
+// Every individual solve was already shared, and it was not enough. What stayed duplicated was
+// the ORDER, written out once in applyMagicGrade and once in bench.cpp, and that is what drifted:
+// the bench gained a re-solve after the colour move and the plugin did not, so the two produced
+// different pictures from the same still -- the one failure an offline harness exists to prevent.
+//
+// Extracting the steps fixed the arithmetic and left the choreography to be kept in step by hand.
+// This extracts the choreography. The callers no longer know the order; they supply pixels and a
+// way to segment, and receive a filled parameter array.
+//
+// Writing it down immediately exposed a second live divergence nobody had noticed: the plugin
+// balanced BEFORE Creative and the bench balanced after, so Creative solved its black point at
+// 6500 K in one and at the corrected temperature in the other. Before is right -- white balance
+// is a scene-referred correction and everything downstream should see the balanced picture -- and
+// now there is only one answer to be right or wrong.
+//
+// Segmentation arrives as a callback rather than a dependency, so this header stays free of ncnn
+// and the caller keeps ownership of the model.
+using SegmentFn = std::function<bool(const unsigned char* rgb, int w, int h,
+                                     std::vector<unsigned char>& regions512)>;
+
+struct MagicResult {
+    float P[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    analysis::MagicChoice choice;
+    MagicTone     tone;
+    WhiteBalance  wb;
+    double        magicBase = 0.0;   // the colour move before Separation scales it
+    bool          wbRan = false;
+    bool          ok = false;
+};
+
+// thumbSrc: 512*512*3 camera log, top-down. S must already hold the frame's samples; its region
+// labels are filled in here. `click` cycles the subject, `sep` scales the colour move.
+static inline MagicResult solve_magic(analysis::SampleSet& S,
+                                      const std::vector<float>& thumbSrc,
+                                      const Measurements& m, int cam, int enc,
+                                      const float* lut, int lutSize,
+                                      const Tunables& t, int click, double sep,
+                                      bool wbFirst, const SegmentFn& segment)
+{
+    MagicResult out;
+    creative_preset(out.P);
+
+    // Render thumbSrc through the current parameters, for the model. Display-referred and 8-bit,
+    // because the checkpoint was trained on photographs -- the same reason the analysis measures
+    // display values rather than log.
+    auto thumb = [&](const float* P, bool withLut, std::vector<unsigned char>& dst) {
+        const size_t n = thumbSrc.size() / 3;
+        dst.assign(n * 3, 0);
+        for (size_t i = 0; i < n; ++i) {
+            float r, g, b;
+            og::process(cam, enc, P, thumbSrc[i*3], thumbSrc[i*3+1], thumbSrc[i*3+2], r, g, b);
+            if (withLut && lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
+            og::apply_trim(P[8], P[9], r, g, b);
+            dst[i*3+0] = (unsigned char)(og::clamp01(r) * 255.f + 0.5f);
+            dst[i*3+1] = (unsigned char)(og::clamp01(g) * 255.f + 0.5f);
+            dst[i*3+2] = (unsigned char)(og::clamp01(b) * 255.f + 0.5f);
+        }
+    };
+
+    // 1. WHITE BALANCE, on a NEUTRAL render: the cast is what we are here to measure, so it has
+    //    to still be in the picture. Before everything else, so the rest sees a balanced frame.
+    if (wbFirst && thumbSrc.size() == (size_t)512 * 512 * 3) {
+        float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+        std::vector<unsigned char> t0, regions;
+        thumb(Pn, /*withLut=*/false, t0);
+        if (segment(t0.data(), 512, 512, regions)) {
+            out.wb = solve_white_balance(thumbSrc, regions, cam, enc, lut, lutSize,
+                                         out.P[8], out.P[9]);
+            out.wbRan = true;
+            if (out.wb.ok) out.P[11] = (float)out.wb.kelvin;
+        }
+    }
+
+    // 2. CREATIVE: exposure from key, rolloff from clipping, black point on real pixels.
+    solve_creative_px(S, cam, enc, m, t, out.P, nullptr, 0);
+
+    // 3. SEGMENT THE PICTURE AS CREATIVE LEFT IT, not a neutral render -- the model reads the
+    //    graded frame because that is the one that looks like a photograph.
+    std::vector<unsigned char> th, mask;
+    thumb(out.P, /*withLut=*/true, th);
+    if (!segment(th.data(), 512, 512, mask)) return out;
+    if (!analysis::assign_regions(S, mask, 512, 512)) return out;
+
+    // 4. DECIDE: rank the regions, pick a subject, pick a control and a direction.
+    const int dispEnc = (enc <= 2) ? enc : 1;
+    analysis::RegionStat st[analysis::kRegionN];
+    analysis::region_stats(S, cam, dispEnc, out.P, st);
+    out.choice = analysis::magic_decide(st, click);
+    if (!out.choice.ok) return out;
+
+    // 5. TONE, then 6. COLOUR, then 7. TONE AGAIN -- the last two because Offset Temp is additive
+    //    and Gain Temp multiplicative, so either shifts the channels the tone was placed on. A
+    //    grade has to be solved for the configuration it ends in, not one it passed through.
+    auto applyTone = [&]() {
+        const MagicTone tn = solve_magic_tone(S, out.choice.subject, cam, enc, lut, lutSize,
+                                              out.P, t);
+        if (tn.ok) {
+            out.P[3] = tn.lift; out.P[4] = tn.gamma; out.P[5] = tn.gain;
+            if (tn.rawExp > 0.f) out.P[10] = tn.rawExp;
+        }
+        out.tone = tn;
+    };
+    applyTone();
+
+    out.magicBase = solve_magic_base(S, cam, dispEnc, out.choice, st, t);
+    out.P[out.choice.param] = (float)std::min(1.0, std::max(-1.0,
+        (double)out.P[out.choice.param] + out.magicBase * sep));
+
+    solve_black_px(S, cam, enc, out.P, t.blackTarget, nullptr, 0);
+    applyTone();
+
+    out.ok = true;
+    return out;
+}
+
 } // namespace grade
 } // namespace og
