@@ -41,7 +41,7 @@
                            "Set Output Encode to Cineon Log to feed a film-look LUT node."
 #define kPluginIdentifier  "com.mattgrdinic.OneGrade"
 #define kPluginVersionMajor 1
-#define kPluginVersionMinor 3
+#define kPluginVersionMinor 4
 
 #define kSupportsTiles              false
 #define kSupportsMultiResolution    false
@@ -59,7 +59,7 @@
 // way the Gain and Rolloff rows produced their fits, and a measurement nobody can see is worth
 // nothing. Revert to false when merging into the release branch. One character, no other
 // consequence — the params are unaffected either way. See docs/AUTO-GRADE.md.
-static const bool kAnalysisDebugUI = true;
+static const bool kAnalysisDebugUI = false;
 
 #define kParamCount 13 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff
 
@@ -455,7 +455,6 @@ public:
     std::vector<float> m_LastThumbSrc;   // 512x512 RGB, SOURCE values, top-down
     // Render the stored source thumbnail through a parameter set. The model wants a
     // normally exposed picture, so callers pass the grade that is actually in effect.
-    void renderThumb(const RenderConfig& cfg, std::vector<unsigned char>& out) const;
     // Solve Scene White Balance so the frame's neutral-expectation regions read neutral.
     std::vector<uint8_t> m_LastRegions;   // 512x512 region map from the last segmentation
     int         m_LastCam = 0;      // the camera/encode the samples were classified under:
@@ -1766,53 +1765,15 @@ void OneGrade::applyBias()
 // already known to work.
 void OneGrade::applyMagicGrade(double p_Time)
 {
-    // WHITE BALANCE FIRST, optionally. It has to happen before applyAutoGrade because every
-    // measurement downstream -- exposure key, black point, and the subject comparison itself --
-    // reads a frame whose cast this removes. Costs one extra analyse and one extra segmentation,
-    // which is why it is a checkbox rather than unconditional.
-    bool wbFirst = false;
-    m_WbFirst->getValue(wbFirst);
-    char wbNote[64] = {0};
-    if (wbFirst) {
-        probeAnalyze(p_Time, /*forCreative=*/true);  // fetch + source thumbnail
-        if (m_LastThumbSrc.size() == (size_t)512 * 512 * 3 && s_seg_ready()) {
-            RenderConfig neutral{};                 // segment the UNGRADED frame: the cast is
-            neutral.camera = m_LastCam;             // what we are here to measure, so it must
-            neutral.encode = m_LastEnc;             // still be in the picture
-            neutral.params[4] = 1.f; neutral.params[5] = 1.f;
-            neutral.params[9] = 1.f; neutral.params[11] = 6500.f;
-            std::vector<unsigned char> t0;
-            renderThumb(neutral, t0);
-            std::vector<unsigned char> m0; int w0 = 0, h0 = 0;
-            if (s_segmenter().run(t0.data(), 512, 512, m0, w0, h0)) {
-                m_LastRegions.assign((size_t)512 * 512, (uint8_t)oga::R_OTHER);
-                for (int y = 0; y < 512; ++y)
-                    for (int x = 0; x < 512; ++x)
-                        m_LastRegions[(size_t)y * 512 + x] =
-                            m0[(size_t)(y * h0 / 512) * w0 + (x * w0 / 512)];
-                // SOLVED IN OneGradeCreative.h so the bench runs this exact code. It used to
-                // live here, which is why the bench's --wb flag printed "wb on" and did nothing.
-                const og::grade::WhiteBalance wb =
-                    og::grade::solve_white_balance(m_LastThumbSrc, m_LastRegions,
-                        og::grade::kCreativeCamera, og::grade::kCreativeEncode,
-                        (lutSelected() && m_Lut.size >= 2) ? m_Lut.data.data() : nullptr,
-                        (lutSelected() && m_Lut.size >= 2) ? m_Lut.size : 0,
-                        0.55f, 1.0f);   // Creative's trim, which the picture is judged through
-                const float cover = wb.cover;
-                if (wb.ok) {
-                    m_RawTemp->setValue(wb.kelvin);
-                    snprintf(wbNote, sizeof wbNote, "  WB %.0fK", wb.kelvin);
-                } else {
-                    // Two different declines, and the difference is worth showing: "no
-                    // reference" is a sunset with no neutral surface in it, "not neutral" is the
-                    // reference itself looking wrong.
-                    snprintf(wbNote, sizeof wbNote, "  WB none (%.0f%% ref)", cover);
-                }
-            }
-        }
-    }
-
-    applyAutoGrade(p_Time);            // Creative Grade: exposure, black point, the look.
+    // THE ORDER LIVES IN ONE PLACE NOW. Everything from here to the panel notes used to be
+    // spelled out twice -- once here and once in the bench -- and it drifted: a re-solve after
+    // the colour move landed in one and not the other, and the two produced different pictures
+    // from the same still. og::grade::solve_magic owns the sequence; this owns the panel.
+    //
+    // Writing it down exposed a second live divergence: the plugin balanced BEFORE Creative and
+    // the bench balanced after, so Creative solved its black point at 6500 K in one and at the
+    // corrected temperature in the other. Before is right, and now there is only one answer.
+    probeAnalyze(p_Time, /*forCreative=*/true);
     if (!m_HaveKey || m_LastSamples.size() < 512) {
         m_MagicNote->setValue("No frame to analyse");
         m_MagicWhy->setValue("");
@@ -1820,200 +1781,100 @@ void OneGrade::applyMagicGrade(double p_Time)
         return;
     }
 
-    // REGION SOURCE. The model is allowed to be absent -- Magic Grade is explicitly not a
-    // fail-safe tool, and a plugin that refuses to work because a resource is missing is worse
-    // than one that does less. What it must not do is degrade SILENTLY, so which source was
-    // used is reported in the panel: that exact failure (a missing resource quietly changing
-    // behaviour) is the most repeated bug in this project's history.
+    // Camera, the film LUT and the film tint -- the parts of Creative that are not in P[] and so
+    // cannot come back from the solve. It must run before the solve, because the LUT it selects
+    // is the one the solve places its targets against.
+    applyPreset(1);
+
+    bool wbFirst = false; m_WbFirst->getValue(wbFirst);
+    int  cycle   = 0;     m_MagicCycle->getValue(cycle);
+    og::grade::Tunables tun;
+    m_CreativeLow->getValue(tun.blackTarget);
+    const bool lutOk = lutSelected() && m_Lut.size >= 2;
+
+    // REGION SOURCE. The model is allowed to be absent -- Magic Grade is explicitly not fail-safe,
+    // and a plugin that refuses to work because a resource is missing is worse than one that does
+    // less. What it must not do is degrade SILENTLY, so the panel reports which source was used.
+    const char* src = s_seg_ready() ? "model" : "heuristic";
+    og::grade::SegmentFn segfn = [](const unsigned char* rgb, int w, int h,
+                                    std::vector<unsigned char>& regions) {
+        if (!s_seg_ready()) return false;
+        std::vector<unsigned char> mk; int mw = 0, mh = 0;
+        if (!s_segmenter().run(rgb, w, h, mk, mw, mh)) return false;
+        regions.assign((size_t)512 * 512, (unsigned char)oga::R_OTHER);
+        for (int y = 0; y < 512; ++y)
+            for (int x = 0; x < 512; ++x)
+                regions[(size_t)y * 512 + x] = mk[(size_t)(y * mh / 512) * mw + (x * mw / 512)];
+        return true;
+    };
+
+    og::grade::Measurements meas;
+    meas.key = m_LastKey; meas.pin = m_LastPin; meas.hot = m_LastHot;
+    meas.d01 = m_LastR01; meas.d50 = m_LastD50; meas.d99 = m_LastD99;
+    meas.valid = true;
+
     oga::SampleSet& S = m_LastSamples;
-    og::seg::Segmenter& s_seg = s_segmenter();
-    const char* src = "heuristic";
-    bool got = false;
-    if (s_seg.ready() && m_LastThumbSrc.size() == (size_t)512 * 512 * 3) {
-        // Segment the picture as CREATIVE GRADE LEFT IT, not a neutral render. applyAutoGrade
-        // has already run, so these are the parameters actually in effect, and the result is a
-        // normally exposed image -- which is what the model was trained on and what every frame
-        // in the offline validation set was.
-        // resolveConfig gives the parameters the RENDER will use -- role overrides, bypasses,
-        // the LUT-driven encode override, and the loaded cube itself. It does file I/O to load
-        // the LUT, which is why it is called here on a button press rather than from
-        // setEnabledness, where it would run constantly.
-        const RenderConfig cfg = resolveConfig(p_Time);
-        std::vector<unsigned char> thumb;
-        renderThumb(cfg, thumb);
-        std::vector<unsigned char> mask; int mw = 0, mh = 0;
-        if (s_seg.run(thumb.data(), 512, 512, mask, mw, mh) &&
-            oga::assign_regions(S, mask, mw, mh)) {
-            // Kept at thumbnail resolution for the white-balance estimator, which needs to pick
-            // reference PIXELS rather than the sparse sample set the descriptors use.
-            m_LastRegions.assign((size_t)512 * 512, (uint8_t)oga::R_OTHER);
-            for (int y = 0; y < 512; ++y)
-                for (int x = 0; x < 512; ++x)
-                    m_LastRegions[(size_t)y * 512 + x] =
-                        mask[(size_t)(y * mh / 512) * mw + (x * mw / 512)];
-            got = true;
-            src = "model";
-        }
+    const og::grade::MagicResult R = og::grade::solve_magic(
+        S, m_LastThumbSrc, meas, og::grade::kCreativeCamera, og::grade::kCreativeEncode,
+        lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0,
+        tun, cycle, 1.0, wbFirst, segfn);
+
+    // P[] IS THE WHOLE GRADE. Writing it wholesale rather than parameter by parameter is what
+    // stops the two implementations diverging again -- there is no step here that could be
+    // forgotten, because there are no steps.
+    m_Temp->setValue(R.P[0]);     m_Tint->setValue(R.P[1]);
+    m_Density->setValue(R.P[2]);  m_Lift->setValue(R.P[3]);
+    m_Gamma->setValue(R.P[4]);    m_Gain->setValue(R.P[5]);
+    m_OffTemp->setValue(R.P[6]);  m_OffTint->setValue(R.P[7]);
+    m_PostExp->setValue(R.P[8]);  m_PostCon->setValue(R.P[9]);
+    m_RawExp->setValue(R.P[10]);  m_RawTemp->setValue(R.P[11]);
+    m_Rolloff->setValue(R.P[12]);
+    m_LastGain = R.P[5];
+
+    char wbNote[64] = {0};
+    if (R.wbRan) {
+        if (R.wb.ok) snprintf(wbNote, sizeof wbNote, "  WB %.0fK", R.wb.kelvin);
+        else         snprintf(wbNote, sizeof wbNote, "  WB none: %s", R.wb.why);
     }
-    // The heuristic stand-in when the model is absent or anything about it failed. Everything
-    // downstream consumes SampleSet::region and nothing else, so the two are interchangeable
-    // from here on -- which is what let the whole chain be built and tested before the model
-    // existed.
-    if (!got) oga::stub_regions(S, m_LastCam, m_LastEnc);
 
-    // Regions are read at NEUTRAL, like every other measurement here: they describe the footage,
-    // not the grade that was just applied on top of it.
-    float Pn[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
-    oga::RegionStat st[oga::kRegionN];
-    oga::region_stats(S, m_LastCam, m_LastEnc, Pn, st);
+    // Bias re-solves from these; cleared when the tone solve declined, so a drag cannot re-solve
+    // against a previous shot's subject.
+    if (R.tone.ok) {
+        m_ToneLo->setValue(R.tone.sLo);   m_ToneMid->setValue(R.tone.sMid);
+        m_ToneShi->setValue(R.tone.sHi);  m_ToneHi->setValue(R.tone.fHi);
+        m_ToneFLo->setValue(R.tone.fLo);
+    } else {
+        m_ToneLo->setValue(-1.0);  m_ToneMid->setValue(-1.0);
+        m_ToneShi->setValue(-1.0); m_ToneHi->setValue(-1.0); m_ToneFLo->setValue(-1.0);
+    }
 
-    int cycle = 0; m_MagicCycle->getValue(cycle);
-    const oga::MagicChoice c = oga::magic_decide(st, cycle);
+    const oga::MagicChoice& c = R.choice;
+    char msg[160];
     if (!c.ok) {
-        // SAY WHAT WAS ACTUALLY FOUND. "No subject to separate" is true and useless: it cannot
-        // be argued with, and it gives no way to tell a correct decline on a genuinely flat
-        // frame from a bad segmentation on a frame that plainly has two halves. Both look
-        // identical from the outside, and the difference is the entire question.
-        //
-        // The coverage list makes the decline falsifiable. A frame reading BUILT 96% / GROUND 3%
-        // really is one region and the answer is right; one reading BUILT 52% / OTHER 44% is the
-        // model failing, and that is worth knowing without a debug build.
-        int order[oga::kRegionN];
-        for (int i = 0; i < oga::kRegionN; ++i) order[i] = i;
-        std::sort(order, order + oga::kRegionN,
-                  [&](int a, int b) { return st[a].cover > st[b].cover; });
-        char cov[160]; int off = 0;
-        for (int i = 0; i < 3 && off < (int)sizeof cov - 1; ++i) {
-            if (st[order[i]].cover < 0.5f) break;
-            off += snprintf(cov + off, sizeof cov - off, "%s%s %.0f%%", i ? " " : "",
-                            oga::region_name(order[i]), st[order[i]].cover);
-        }
         m_MagicNote->setValue("No subject to separate - this is Creative Grade");
-        char why[160];
-        snprintf(why, sizeof why, "%s - need 2 over %d%% [%s]",
-                 off ? cov : "nothing found", oga::kMagicMinCover, src);
-        m_MagicWhy->setValue(why);
+        snprintf(msg, sizeof msg, "%s [%s]",
+                 R.tone.why[0] ? R.tone.why : "need 2 regions over the floor", src);
+        m_MagicWhy->setValue(msg);
         m_MagicParam->setValue(-1);
         m_MagicBase->setValue(0.0);
+        armBias(true);
+        setEnabledness();
         return;
     }
     m_MagicCycle->setValue(cycle + 1);          // next press offers the next distinct move
 
-    // MAGNITUDE COMES FROM MEASURING, NOT FROM A CONSTANT. Nudge the chosen control and see how
-    // far the SUBJECT's b* actually travels on this shot, then scale to the target. Same idea as
-    // the Jacobian, restricted to one control and one region, so it costs two passes.
-    //
-    // Measured rather than fitted because the response is wildly shot-dependent -- Offset Temp
-    // moved b* by 2.63 per step on the beach and 3.96 on the car -- so any fixed slider value
-    // would be a different move on every piece of footage, which is the exact defect that made
-    // Creative's stamped Lift wrong.
-    og::grade::Tunables mt;
-
-    // MAGIC TONE, before the colour move so the colour is chosen against the tone the picture
-    // will actually have. This is what separates Magic Grade from Creative: Creative makes the
-    // pronounced grade, Magic makes a legible subject and leaves Bias somewhere to go. Creative's
-    // picture was pinned at both ends -- floor on target, ceiling at 0.993 with 1.12% of the frame
-    // already clipped -- so any Bias move destroyed something immediately.
-    //
-    // Uses the RENDER encode and the real LUT, because the targets are post-LUT: a print stock's
-    // toe and shoulder move both ends, and a floor solved pre-LUT is a floor the stock then takes
-    // away. m_LastEnc is the display-referred fallback and is deliberately NOT used here.
-    {
-        float Pc[oga::kParamN];
-        Pc[0] = (float)m_Temp->getValue();     Pc[1] = (float)m_Tint->getValue();
-        Pc[2] = (float)m_Density->getValue();  Pc[3] = (float)m_Lift->getValue();
-        Pc[4] = (float)m_Gamma->getValue();    Pc[5] = (float)m_Gain->getValue();
-        Pc[6] = (float)m_OffTemp->getValue();  Pc[7] = (float)m_OffTint->getValue();
-        Pc[8] = (float)m_PostExp->getValue();  Pc[9] = (float)m_PostCon->getValue();
-        Pc[10]= (float)m_RawExp->getValue();   Pc[11]= (float)m_RawTemp->getValue();
-        Pc[12]= (float)m_Rolloff->getValue();
-        const bool lutOk = lutSelected() && m_Lut.size >= 2;
-        const og::grade::MagicTone tone = og::grade::solve_magic_tone(
-            S, c.subject, og::grade::kCreativeCamera, og::grade::kCreativeEncode,
-            lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0, Pc, mt);
-        if (tone.ok) {
-            m_Lift->setValue(tone.lift);
-            m_Gamma->setValue(tone.gamma);
-            m_Gain->setValue(tone.gain);
-            if (tone.rawExp > 0.f) m_RawExp->setValue(tone.rawExp);
-            m_LastGain = tone.gain;
-            // Hand the neutral percentiles to Bias so a drag re-solves rather than nudging.
-            m_ToneLo->setValue(tone.sLo);
-            m_ToneMid->setValue(tone.sMid);
-            m_ToneShi->setValue(tone.sHi);
-            m_ToneHi->setValue(tone.fHi);
-        } else {
-            // CLEARED ON DECLINE, so Bias falls back to the coefficient path rather than
-            // re-solving against a previous shot's subject. Stale cached state that silently
-            // keeps working is the shape of most of this feature's bugs.
-            m_ToneLo->setValue(-1.0); m_ToneMid->setValue(-1.0);
-            m_ToneShi->setValue(-1.0); m_ToneHi->setValue(-1.0); m_ToneFLo->setValue(-1.0);
-        }
-    }
-
-    const double base = og::grade::solve_magic_base(S, m_LastCam, m_LastEnc, c, st, mt);
-    double sep = 1.0; m_Separation->getValue(sep);
-
-    const double anchor = (c.param == 6) ? m_OffTemp->getValue() : m_Temp->getValue();
+    // The Separation slider rescales the stored move, so its anchor is the parameter WITHOUT it.
+    // solve_magic already applied the move at Separation 1.0, so subtracting it recovers the
+    // anchor exactly rather than re-deriving it.
+    const double base   = R.magicBase;
+    const double sep    = 1.0;
+    const double anchor = (double)R.P[c.param] - base;
     m_MagicParam->setValue(c.param);
     m_MagicBase->setValue(base);
     m_MagicAnchor->setValue(anchor);
     m_MagicSepAt->setValue(0.0);       // a fresh decision: Separation 1.0 means the full move
     m_Separation->setValue(1.0);
-    sep = 1.0;
-    applySeparation();
 
-    // RE-SOLVE THE TONE AFTER THE COLOUR MOVE, which the bench has been doing and this had not.
-    //
-    // Offset Temp is additive and Gain Temp multiplicative, so either shifts the channels the
-    // black point and the subject were just placed on -- and it is a CHANNEL that crushes. The
-    // same argument as the first-press bug: a grade has to be solved for the configuration it
-    // ends in, not one it passed through.
-    //
-    // It was fixed in the bench and not here, which made the harness disagree with Resolve on the
-    // same frame -- the one failure mode the bench exists to make impossible, introduced by the
-    // commit that was fixing exactly this. Whatever the bench does after the colour move, this
-    // must do too; the two orderings are the thing being kept in step.
-    {
-        og::grade::Tunables tn;
-        const bool lutOkR = lutSelected() && m_Lut.size >= 2;
-        const float* lp = lutOkR ? m_Lut.data.data() : nullptr;
-        const int    ls = lutOkR ? m_Lut.size : 0;
-
-        m_CreativeLow->getValue(tn.blackTarget);
-
-        float Pr[oga::kParamN];
-        Pr[0]=(float)m_Temp->getValue();    Pr[1]=(float)m_Tint->getValue();
-        Pr[2]=(float)m_Density->getValue(); Pr[3]=(float)m_Lift->getValue();
-        Pr[4]=(float)m_Gamma->getValue();   Pr[5]=(float)m_Gain->getValue();
-        Pr[6]=(float)m_OffTemp->getValue(); Pr[7]=(float)m_OffTint->getValue();
-        Pr[8]=(float)m_PostExp->getValue(); Pr[9]=(float)m_PostCon->getValue();
-        Pr[10]=(float)m_RawExp->getValue(); Pr[11]=(float)m_RawTemp->getValue();
-        Pr[12]=(float)m_Rolloff->getValue();
-
-        // solve_black_px, NOT solve_creative_px: the latter starts with creative_preset() and
-        // would erase the colour move applied a few lines above.
-        og::grade::solve_black_px(S, kCreativeCam(), kCreativeEnc(), Pr, tn.blackTarget, nullptr, 0);
-        m_Lift->setValue(Pr[3]);
-
-        const og::grade::MagicTone t2 = og::grade::solve_magic_tone(
-            S, c.subject, kCreativeCam(), kCreativeEnc(), lp, ls, Pr, tn);
-        if (t2.ok) {
-            m_Lift->setValue(t2.lift);
-            m_Gamma->setValue(t2.gamma);
-            m_Gain->setValue(t2.gain);
-            if (t2.rawExp > 0.f) m_RawExp->setValue(t2.rawExp);
-            m_LastGain = t2.gain;
-            m_ToneLo->setValue(t2.sLo);  m_ToneMid->setValue(t2.sMid);
-            m_ToneShi->setValue(t2.sHi); m_ToneHi->setValue(t2.fHi);
-            m_ToneFLo->setValue(t2.fLo);
-        } else {
-            m_ToneLo->setValue(-1.0); m_ToneMid->setValue(-1.0);
-            m_ToneShi->setValue(-1.0); m_ToneHi->setValue(-1.0); m_ToneFLo->setValue(-1.0);
-        }
-    }
-
-    char msg[160];
     snprintf(msg, sizeof msg, "%d/%d  %s %.0f%% -> %s %+.3f  [%s]",
              c.option + 1, c.options, oga::region_name(c.subject), c.cover,
              (c.param == 6) ? "Offset Temp" : "Gain Temp", base * sep, src);
@@ -2076,60 +1937,6 @@ void OneGrade::applySeparation()
     m_MagicSepAt->getValue(sepAt);
     const double v = std::min(1.0, std::max(-1.0, anchor + base * (sep - sepAt)));
     if (which == 6) m_OffTemp->setValue(v); else m_Temp->setValue(v);
-}
-
-// THE MODEL MUST SEE WHAT THE VIEWER SEES, so this goes through og_full_chain -- the single
-// definition of the complete render -- rather than reimplementing part of it.
-//
-// The first version called og::process() plus trim and skipped the LUT, which made it a third
-// copy of a chain whose own comment says "everything that reads og::process() mirrors this".
-// The consequence was not subtle: with a film stock selected the pre-LUT encode is Cineon, so
-// the model was being handed a flat log picture while the viewer saw a graded one. On a
-// downward city view the plugin reported BUILT 100% where the same frame, exported after
-// Creative Grade, segments as BUILT 92.9% / GROUND 7.1%.
-//
-// Third time this feature has fed the model a different picture than the one it was validated
-// on. The fix each time is the same: stop paraphrasing the render.
-// WHITE BALANCE FIRST — remove the cast before anything reads the frame's colour.
-//
-// WHY IT MATTERS HERE SPECIFICALLY. magic_decide() picks a direction from the subject's lean
-// RELATIVE to the rest of the scene. A global cast is indistinguishable from scene content to
-// that comparison, so a cool room reads as "the subject leans cool" and the move pushes further
-// along an error the camera made. Correct it first and every remaining difference is the room.
-//
-// GREY WORLD WOULD BE WRONG. Averaging the whole frame to neutral turns a beach sunset grey --
-// it cannot tell a colour that is a mistake from a colour that is the entire point. The
-// classifier answers exactly that: balance on the regions with a defensible neutral expectation
-// and ignore the ones that are legitimately coloured.
-//
-//   reference   BUILT, GROUND      walls, floors, roads, pavement -- painted or poured, and
-//                                  near neutral far more often than not
-//   ignored     SKY, WATER, VEG    blue, blue-green and green ON PURPOSE
-//   ignored     TERRAIN            sand and earth are warm by nature, not by error
-//   ignored     SKIN               a strong reference, but its target is NOT neutral; wiring it
-//                                  in needs a skin chromaticity target rather than zero
-//
-// With no reference it declines, which is the honest answer on a sunset over water: there is no
-// neutral surface in the frame, and inventing one is how you get a grey sunset.
-//
-// Solves TEMPERATURE ONLY, driving the reference regions' b* to zero -- the warm/cool axis is
-// what a temperature control moves, and it is what the user corrected by hand (6500 -> 8301).
-// Tint would need its own control and its own evidence.
-void OneGrade::renderThumb(const RenderConfig& cfg, std::vector<unsigned char>& out) const
-{
-    const float* lut  = cfg.lutOk ? m_Lut.data.data() : nullptr;
-    const int lutSize = cfg.lutOk ? m_Lut.size : 0;
-    const float mix   = cfg.lutOk ? cfg.lutMix : 0.0f;
-    const size_t n = m_LastThumbSrc.size() / 3;
-    out.assign(n * 3, 0);
-    for (size_t i = 0; i < n; ++i) {
-        float r, g, b;
-        og_full_chain(cfg.camera, cfg.encode, cfg.params, lut, lutSize, mix,
-                      m_LastThumbSrc[i*3], m_LastThumbSrc[i*3+1], m_LastThumbSrc[i*3+2], r, g, b);
-        out[i*3+0] = (unsigned char)(og::clamp01(r) * 255.f + 0.5f);
-        out[i*3+1] = (unsigned char)(og::clamp01(g) * 255.f + 0.5f);
-        out[i*3+2] = (unsigned char)(og::clamp01(b) * 255.f + 0.5f);
-    }
 }
 
 void OneGrade::setEnabledness()

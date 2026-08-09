@@ -21,4 +21,17 @@ experiments/segmentation/verify
 
 # offline bench binary and its outputs
 experiments/bench/bench
+# Compiled probes in experiments/ -- these were tracked as Mach-O arm64 binaries, 9 MB of
+# build output that only ever worked on one machine.
+experiments/segmentation/e2e
+experiments/segmentation/wbtest
+experiments/segmentation/rawclasses
+experiments/segmentation/verify
+# Conversion intermediates. Regenerate with convert_paddle.py; see that directory's README.
+experiments/segmentation/converted-paddle/*.onnx
+experiments/segmentation/converted-paddle/*.pdparams
+experiments/segmentation/converted-paddle/*.pnnx.*
+experiments/segmentation/converted-paddle/*_pnnx.py
+experiments/segmentation/converted-paddle/*.ncnn.*
+experiments/segmentation/converted-paddle/*_ncnn.py
 experiments/bench/out/

@@ -4,6 +4,62 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
 
 ---
 
+## v1.4.0 — Magic Grade
+
+One button that reads the frame, finds what the shot is *of*, and grades for that.
+
+### Magic Grade
+
+- **A segmentation model finds the subject.** PP-MobileSeg-Base (Apache-2.0) runs on the CPU
+  in about 100 ms, sorting the frame into sky, water, skin, vegetation, terrain, ground,
+  built and other. It ships inside the plugin bundle — nothing to download, works on any
+  render machine.
+- **The grade places that subject to be legible**, rather than stamping a preset: its
+  shadows, its midtone and the frame's highlight are solved together, after the film LUT,
+  because that is the picture you are looking at.
+- **It knows underexposed from deliberately low-key**, which nothing measuring the whole
+  frame can do — a moody interior and a missed exposure have almost the same median. A face
+  too dark to read settles it, and the fix is scene exposure, applied before everything
+  else, the way exposing the shot correctly would have.
+- **It declines more often than it acts, and says why.** The targets were fitted on faces,
+  so a landscape gets Creative Grade and a note explaining that rather than a confident
+  wrong answer.
+- **Press again for a different subject.** Each press offers a distinct move, and the panel
+  shows which region it chose, how much of the frame it covers, and why that control and
+  that direction.
+
+### White Balance First (optional)
+
+- Balances on the surfaces that ought to be neutral — walls, floors, ground — and **declines
+  when there are none**, which on a sunset is the right answer. Light sources are excluded:
+  a blown window is not a grey card, and using one as a reference put a blue cast over
+  whole interiors.
+
+### Bias
+
+- Now moves the grade's **targets** and re-solves, instead of nudging sliders. Contrast can
+  be added or taken away from a neutral starting point, the subject's brightness never
+  moves, and crushing the blacks is no longer possible rather than merely guarded against.
+
+### Fixes
+
+- **Creative Grade no longer crushes the blacks.** The black point was solved in one colour
+  space and rendered in another, so it hit its target exactly while the picture on screen
+  went to zero. Shadow separation on a test frame went from 0.024 to 0.070.
+- **The first press is now the right one.** Magic Grade used to read the node's state before
+  the preset that changes it, so a fresh node crushed on press one, recovered on press two,
+  and found its white balance on press three.
+
+### For developers
+
+- An offline bench (`experiments/bench`) grades log stills and prints every decision, so
+  constants get fitted in seconds instead of one Resolve restart at a time. It calls the
+  plugin's own code — including the order the steps run in — so the two cannot disagree.
+- The repo is 140 MB lighter: model-conversion intermediates and stray binaries are gone,
+  regenerable from `experiments/segmentation/convert_paddle.py`.
+
+---
+
 ## v1.3.0 — the feedback release
 
 Almost everything here came from other people telling us what was wrong with the plugin,

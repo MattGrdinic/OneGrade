@@ -230,115 +230,65 @@ int main(int argc, char** argv)
         }
 
         oga::SampleSet S;
-        const int dispEnc = (enc <= 2) ? enc : 1;
         og::grade::Measurements m = measure(f, cam, enc, S);
-        float P[oga::kParamN];
-        og::grade::solve_creative_px(S, cam, enc, m, tun, P, nullptr, 0);
 
-        // WHITE BALANCE FIRST. --wb used to be parsed, printed as "wb on", and never acted on.
-        // Mirrors the plugin: segment a NEUTRAL thumbnail, solve on the surfaces that should be
-        // neutral, then stamp the result into Scene White Balance after the grade solve, which
-        // is the order applyMagicGrade() uses.
-        char wbNote[48] = "";
-        char toneNote[96] = "";
-        if (wb && seg.ready()) {
-            std::vector<float>         wsrc((size_t)512 * 512 * 3);
-            std::vector<unsigned char> wthumb((size_t)512 * 512 * 3);
-            float Nn[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
-            for (int y = 0; y < 512; ++y)
-                for (int x = 0; x < 512; ++x) {
-                    const float* q = &f.px[(((size_t)(y * f.h / 512) * f.w) + (x * f.w / 512)) * 3];
-                    const size_t o = ((size_t)y * 512 + x) * 3;
-                    wsrc[o] = q[0]; wsrc[o+1] = q[1]; wsrc[o+2] = q[2];
-                    float r, g, b;
-                    og::process(cam, dispEnc, Nn, q[0], q[1], q[2], r, g, b);
-                    wthumb[o+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
-                    wthumb[o+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
-                    wthumb[o+2] = (unsigned char)(og::clamp01(b) * 255.f + .5f);
-                }
-            std::vector<unsigned char> wmask; int ww = 0, wh = 0;
-            if (seg.run(wthumb.data(), 512, 512, wmask, ww, wh)) {
-                std::vector<unsigned char> full((size_t)512 * 512);
-                for (int y = 0; y < 512; ++y)
-                    for (int x = 0; x < 512; ++x)
-                        full[(size_t)y * 512 + x] = wmask[(size_t)(y * wh / 512) * ww + (x * ww / 512)];
-                const og::grade::WhiteBalance W =
-                    og::grade::solve_white_balance(wsrc, full, cam, enc, lutData, lutSize, P[8], P[9]);
-                if (W.ok) { P[11] = (float)W.kelvin;
-                            snprintf(wbNote, sizeof wbNote, " WB %.0fK (%.0f%% ref, b0 %+.1f)", W.kelvin, W.cover, W.b0); }
-                else      { snprintf(wbNote, sizeof wbNote, " WB declined: %s (%.0f%% ref)", W.why, W.cover); }
+        // THE WHOLE SEQUENCE COMES FROM ONE PLACE. This used to spell out the order -- creative,
+        // segment, decide, tone, colour, re-solve -- and so did applyMagicGrade, and they drifted:
+        // the re-solve after the colour move landed here and not there, and the two produced
+        // different pictures from the same still. Only the segmentation is supplied locally,
+        // because the model belongs to the caller.
+        std::vector<float> tsrc((size_t)512 * 512 * 3);
+        for (int y = 0; y < 512; ++y)
+            for (int x = 0; x < 512; ++x) {
+                const float* q = &f.px[(((size_t)(y * f.h / 512) * f.w) + (x * f.w / 512)) * 3];
+                const size_t o = ((size_t)y * 512 + x) * 3;
+                tsrc[o] = q[0]; tsrc[o+1] = q[1]; tsrc[o+2] = q[2];
             }
-        }
+        og::grade::SegmentFn segfn = [&](const unsigned char* rgb, int w, int h,
+                                         std::vector<unsigned char>& regions) {
+            if (!seg.ready()) return false;
+            std::vector<unsigned char> mk; int mw = 0, mh = 0;
+            if (!seg.run(rgb, w, h, mk, mw, mh)) return false;
+            regions.assign((size_t)512 * 512, (unsigned char)oga::R_OTHER);
+            for (int y = 0; y < 512; ++y)
+                for (int x = 0; x < 512; ++x)
+                    regions[(size_t)y * 512 + x] = mk[(size_t)(y * mh / 512) * mw + (x * mw / 512)];
+            return true;
+        };
 
-        // What the grade actually achieved, measured the same way the plugin measures it.
+        const og::grade::MagicResult R =
+            og::grade::solve_magic(S, tsrc, m, cam, enc, lutData, lutSize, tun, 0, sep, wb, segfn);
+        float P[oga::kParamN];
+        for (int k = 0; k < oga::kParamN; ++k) P[k] = R.P[k];
+        if (noTone) { P[3] = 0.11f; P[4] = 1.f; P[10] = 0.f; }
+
         oga::classify(S, cam, enc <= 2 ? enc : 1);
         oga::Desc d = oga::describe(S, cam, enc <= 2 ? enc : 1, P);
 
-        // Segment the GRADED picture, as the plugin does.
-        std::string decision = "no model";
-        if (seg.ready()) {
-            std::vector<unsigned char> th((size_t)512 * 512 * 3);
-            for (int y = 0; y < 512; ++y)
-                for (int x = 0; x < 512; ++x) {
-                    const float* q = &f.px[(((size_t)(y * f.h / 512) * f.w) + (x * f.w / 512)) * 3];
-                    float r, g, b;
-                    full_chain(cam, enc, P, lutData, lutSize, 1.f, q[0], q[1], q[2], r, g, b);
-                    unsigned char* o = &th[((size_t)y * 512 + x) * 3];
-                    o[0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
-                    o[1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
-                    o[2] = (unsigned char)(og::clamp01(b) * 255.f + .5f);
-                }
-            std::vector<unsigned char> mask; int mw = 0, mh = 0;
-            if (seg.run(th.data(), 512, 512, mask, mw, mh) && oga::assign_regions(S, mask, mw, mh)) {
-                oga::RegionStat st[oga::kRegionN];
-                oga::region_stats(S, cam, enc <= 2 ? enc : 1, P, st);
-                oga::MagicChoice c = oga::magic_decide(st, 0);
-                if (c.ok) {
-                    // APPLY IT. The bench used to render Creative Grade alone and report the
-                    // decision without making it, so anything the move itself did was invisible
-                    // -- and Offset Temp is additive, so on a dark frame it subtracts from blue
-                    // and can drive the channel through zero. Exactly the kind of thing an
-                    // offline check exists to catch.
-                    // MAGIC TONE: place the subject for legibility and leave Bias somewhere to
-                    // go. Runs before the colour move so the colour is chosen against the tone
-                    // the picture will actually have.
-                    const og::grade::MagicTone mt =
-                        og::grade::solve_magic_tone(S, c.subject, cam, enc, lutData, lutSize, P, tun);
-                    if (!mt.ok && !noTone && mt.why[0])
-                        snprintf(toneNote, sizeof toneNote, " tone declined: %s (neutral subj mid %.3f, %.2fEV)", mt.why, mt.sMidNeutral, mt.rawExp);
-                    if (mt.ok && !noTone) {
-                        P[3] = mt.lift; P[4] = mt.gamma; P[5] = mt.gain; P[10] = mt.rawExp;
-                        snprintf(toneNote, sizeof toneNote,
-                                 " tone L%+.3f G%.3f g%.3f x%.2fEV -> subj %.3f/%.3f/%.3f spread %.3f  hi %.3f",
-                                 mt.lift, mt.gamma, mt.gain, mt.rawExp, mt.subjLo, mt.mid, mt.subjHi,
-                                 mt.subjHi - mt.subjLo, mt.frameHi);
-                    }
-                    const double base = og::grade::solve_magic_base(S, cam, enc <= 2 ? enc : 1, c, st, tun);
-                    P[c.param] = (float)std::min(1.0, std::max(-1.0, (double)P[c.param] + base * sep));
-
-                    // RE-SOLVE THE FLOOR AFTER THE COLOUR MOVE. Offset Temp is additive and Gain
-                    // Temp multiplicative, so either one shifts the channels the black point was
-                    // just placed on -- and it is a CHANNEL that crushes. Solving first and
-                    // colouring second left the frame's floor somewhere nobody had checked: the
-                    // pre-LUT black read 0.375 on one shot while 7% of the picture sat at zero.
-                    //
-                    // Same shape as the first-press bug: a grade has to be solved for the
-                    // configuration it ends in, not the one it passed through.
-                    og::grade::solve_black_px(S, cam, enc, P, tun.blackTarget, nullptr, 0);
-                    if (mt.ok && !noTone) {
-                        const og::grade::MagicTone m2 =
-                            og::grade::solve_magic_tone(S, c.subject, cam, enc, lutData, lutSize, P, tun);
-                        if (m2.ok) { P[3] = m2.lift; P[4] = m2.gamma; P[5] = m2.gain; }
-                    }
-                    char buf[96];
-                    snprintf(buf, sizeof buf, "%d/%d %s %.0f%% -> %s %+.3f",
-                             c.option + 1, c.options, oga::region_name(c.subject), c.cover,
-                             c.param == 6 ? "OffTmp" : "GainTmp", base * sep);
-                    decision = buf;
-                } else {
-                    decision = "no move";
-                }
-            }
+        std::string decision = seg.ready() ? "no move" : "no model";
+        char wbNote[80] = "", toneNote[128] = "";
+        if (R.choice.ok) {
+            char buf[96];
+            snprintf(buf, sizeof buf, "%d/%d %s %.0f%% -> %s %+.3f", R.choice.option + 1,
+                     R.choice.options, oga::region_name(R.choice.subject), R.choice.cover,
+                     R.choice.param == 6 ? "OffTmp" : "GainTmp", R.magicBase * sep);
+            decision = buf;
+        }
+        if (R.wbRan) {
+            if (R.wb.ok) snprintf(wbNote, sizeof wbNote, " WB %.0fK (%.0f%% ref, b0 %+.1f)",
+                                  R.wb.kelvin, R.wb.cover, R.wb.b0);
+            else         snprintf(wbNote, sizeof wbNote, " WB declined: %s (%.0f%% ref)",
+                                  R.wb.why, R.wb.cover);
+        }
+        if (!noTone) {
+            if (R.tone.ok)
+                snprintf(toneNote, sizeof toneNote,
+                         " tone L%+.3f G%.3f g%.3f x%.2fEV -> subj %.3f/%.3f/%.3f spread %.3f  hi %.3f",
+                         R.tone.lift, R.tone.gamma, R.tone.gain, R.tone.rawExp, R.tone.subjLo,
+                         R.tone.mid, R.tone.subjHi, R.tone.subjHi - R.tone.subjLo, R.tone.frameHi);
+            else if (R.tone.why[0])
+                snprintf(toneNote, sizeof toneNote, " tone declined: %s (neutral subj mid %.3f, %.2fEV)",
+                         R.tone.why, R.tone.sMidNeutral, R.tone.rawExp);
         }
 
         const char* nm = strrchr(argv[i], '/'); nm = nm ? nm + 1 : argv[i];
