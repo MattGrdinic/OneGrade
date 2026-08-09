@@ -414,6 +414,7 @@ public:
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName);
     void setEnabledness();
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
+    bool ensureLutLoaded();     // ...and is it actually in memory? Solves need the pixels.
     // forCreative: measure in the configuration Creative Grade is about to CREATE, not the
     // one the node happens to be in. See the call in applyAutoGrade().
     void probeAnalyze(double p_Time, bool forCreative = false);   // writes m_LastKey
@@ -707,6 +708,34 @@ bool OneGrade::lutSelected()
     m_LookLut->getValue(li);
     m_FilmLut->getValue(fi);
     return !resolveLutPath(mode, gi, li, fi).empty();
+}
+
+// LOAD the LUT, not just resolve it. lutSelected() answers "is one chosen"; this answers "is one
+// IN MEMORY", which is what a solve needs.
+//
+// m_Lut is otherwise only filled by resolveConfig() on the render path, so a button pressed on a
+// node that has not yet rendered with its LUT selected solved against no LUT at all -- placing
+// every target pre-LUT and letting the print stock's toe crush them afterwards. It showed up as
+// Magic Grade producing a dark, crushed picture that snapped correct the moment Bias was touched,
+// because by then a render had loaded the LUT and Bias re-solves.
+//
+// This is deliberate file I/O from a param callback, against the rule lutSelected() follows. That
+// rule exists because setEnabledness() runs constantly and must stay cheap; a button press is
+// once, and it is already spending ~100 ms on inference. Reading a .cube is free beside that, and
+// the alternative is a confident wrong answer -- the fourth time in this project that a missing
+// resource has silently changed behaviour rather than failing.
+bool OneGrade::ensureLutLoaded()
+{
+    bool byp = false;
+    m_BypLut->getValue(byp);
+    if (byp) return false;
+    int mode = 0, gi = 0, li = 0, fi = 0;
+    m_LutMode->getValue(mode);
+    m_LookGroup->getValue(gi);
+    m_LookLut->getValue(li);
+    m_FilmLut->getValue(fi);
+    const std::string path = resolveLutPath(mode, gi, li, fi);
+    return !path.empty() && m_Lut.load(path) && m_Lut.size >= 2;
 }
 
 // SETUP CHECK — "is this node being fed what it expects?" (user's idea, 2026-08-03).
@@ -1373,7 +1402,7 @@ void OneGrade::applyAutoGrade(double p_Time)
     float Pc[og::analysis::kParamN];
     // The LUT goes in, because the black point is judged on the picture the stock produces and
     // not on the one feeding it. Without this the solve hit 0.050 while the screen showed 0.000.
-    const bool lutOkC = lutSelected() && m_Lut.size >= 2;
+    const bool lutOkC = ensureLutLoaded();
     if (m_LastSamples.size() >= 512)
         og::grade::solve_creative_px(m_LastSamples, kCreativeCam(), kCreativeEnc(), meas, tun, Pc,
                                      nullptr, 0);   // pre-LUT on purpose -- see solve_black_px
@@ -1687,7 +1716,7 @@ void OneGrade::applyBias()
         Pc[8]=(float)m_PostExp->getValue(); Pc[9]=(float)m_PostCon->getValue();
         Pc[10]=(float)m_RawExp->getValue(); Pc[11]=(float)m_RawTemp->getValue();
         Pc[12]=(float)m_Rolloff->getValue();
-        const bool lutOk = lutSelected() && m_Lut.size >= 2;
+        const bool lutOk = ensureLutLoaded();
         og::grade::Tunables tn;
         const og::grade::MagicTone mt = og::grade::solve_magic_tone_from(
             tLo, tMid, tShi, tHi, Pc, lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0,
@@ -1790,7 +1819,10 @@ void OneGrade::applyMagicGrade(double p_Time)
     int  cycle   = 0;     m_MagicCycle->getValue(cycle);
     og::grade::Tunables tun;
     m_CreativeLow->getValue(tun.blackTarget);
-    const bool lutOk = lutSelected() && m_Lut.size >= 2;
+    // LOADED, not merely selected. applyPreset(1) has just chosen the film LUT, and on a node
+    // that has not rendered since, m_Lut is still empty -- so the whole solve would place its
+    // targets pre-LUT and let the print stock's toe crush them afterwards.
+    const bool lutOk = ensureLutLoaded();
 
     // REGION SOURCE. The model is allowed to be absent -- Magic Grade is explicitly not fail-safe,
     // and a plugin that refuses to work because a resource is missing is worse than one that does
