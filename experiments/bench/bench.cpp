@@ -171,6 +171,7 @@ int main(int argc, char** argv)
     tun.subjFloor    = argd(argc, argv, "--subj-floor",    tun.subjFloor);
     tun.subjMid      = argd(argc, argv, "--subj-mid",      tun.subjMid);
     tun.rawExpMax    = argd(argc, argv, "--raw-exp-max",   tun.rawExpMax);
+    tun.subjNeutralMid = argd(argc, argv, "--subj-neutral-mid", tun.subjNeutralMid);
     tun.frameCeiling = argd(argc, argv, "--frame-ceiling", tun.frameCeiling);
     tun.magicUnit  = argd(argc, argv, "--unit",         tun.magicUnit);
     const int   cam = (int)argd(argc, argv, "--camera", og::grade::kCreativeCamera);
@@ -196,8 +197,8 @@ int main(int argc, char** argv)
     printf("gain %.2f%+.2f*key [%.2f..%.2f]  black %.3f  unit %.1f  sep %.2f  lut %s  wb %s\n",
            tun.gainBase, tun.gainPerKey, tun.gainMin, tun.gainMax,
            tun.blackTarget, tun.magicUnit, sep, lut.valid() ? "yes" : "no", wb ? "on" : "off");
-    printf("%-24s %6s %6s %6s %6s %6s %6s  %s\n",
-           "frame", "key", "gain", "lift", "roll", "blk", "mid", "decision");
+    printf("%-24s %6s %6s %6s %6s %6s %6s %6s  %s\n",
+           "frame", "key", "src99", "gain", "lift", "roll", "blk", "mid", "decision");
 
     for (int i = 3; i < argc; ++i) {
         if (argv[i][0] == '-') continue;
@@ -341,8 +342,8 @@ int main(int argc, char** argv)
         }
 
         const char* nm = strrchr(argv[i], '/'); nm = nm ? nm + 1 : argv[i];
-        printf("%-24s %+6.2f %6.3f %+6.3f %6.3f %6.3f %6.3f  %s\n",
-               nm, m.key, P[5], P[3], P[12], d.v[oga::D_BLACK], d.v[oga::D_MID],
+        printf("%-24s %+6.2f %6.3f %6.3f %+6.3f %6.3f %6.3f %6.3f  %s\n",
+               nm, m.key, m.d99, P[5], P[3], P[12], d.v[oga::D_BLACK], d.v[oga::D_MID],
                (decision + wbNote + toneNote).c_str());
 
         // Write the graded frame, and measure it ON THE WAY OUT.

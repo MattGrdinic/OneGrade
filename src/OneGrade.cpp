@@ -550,6 +550,7 @@ private:
     OFX::DoubleParam* m_ToneLo;        // Magic Tone's cached neutral percentiles; -1 = not solved
     OFX::DoubleParam* m_ToneMid;
     OFX::DoubleParam* m_ToneShi;
+    OFX::DoubleParam* m_ToneFLo;
     OFX::DoubleParam* m_ToneHi;
     OFX::DoubleParam* m_CreativeLow;   // where Creative places its black point (pre-LUT)
     OFX::StringParam* m_ProbePeak;
@@ -633,6 +634,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ToneLo       = fetchDoubleParam("toneLo");
     m_ToneMid      = fetchDoubleParam("toneMid");
     m_ToneShi      = fetchDoubleParam("toneShi");
+    m_ToneFLo      = fetchDoubleParam("toneFLo");
     m_ToneHi       = fetchDoubleParam("toneHi");
     m_BiasGain     = fetchDoubleParam("biasGain");
     m_BiasLift     = fetchDoubleParam("biasLift");
@@ -1674,10 +1676,10 @@ void OneGrade::applyBias()
     // Cheap enough to drag: the three percentiles are neutral measurements and do not depend on
     // Lift, Gamma or Gain, so a re-solve is three scalar bisections over cached scalars -- no
     // re-measuring, and no re-segmenting, which is what made this button read its own output.
-    double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0;
+    double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0, tFLo = -1.0;
     m_ToneLo->getValue(tLo); m_ToneMid->getValue(tMid);
-    m_ToneShi->getValue(tShi); m_ToneHi->getValue(tHi);
-    if (tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 && tHi >= 0.0) {
+    m_ToneShi->getValue(tShi); m_ToneHi->getValue(tHi); m_ToneFLo->getValue(tFLo);
+    if (tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 && tHi >= 0.0 && tFLo >= 0.0) {
         float Pc[oga::kParamN];
         Pc[0]=(float)m_Temp->getValue();    Pc[1]=(float)m_Tint->getValue();
         Pc[2]=(float)m_Density->getValue(); Pc[3]=(float)m_Lift->getValue();
@@ -1692,7 +1694,8 @@ void OneGrade::applyBias()
             tLo, tMid, tShi, tHi, Pc, lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0,
             std::min(0.40, std::max(0.00, tn.subjFloor    + bias * 0.06)),
             tn.subjMid,
-            std::min(1.00, std::max(0.60, tn.frameCeiling - bias * 0.03)));
+            std::min(1.00, std::max(0.60, tn.frameCeiling - bias * 0.03)),
+            tFLo, tn.frameFloorMax);
         if (mt.ok) {
             m_Lift->setValue(mt.lift);
             m_Gamma->setValue(mt.gamma);
@@ -1944,7 +1947,7 @@ void OneGrade::applyMagicGrade(double p_Time)
             // re-solving against a previous shot's subject. Stale cached state that silently
             // keeps working is the shape of most of this feature's bugs.
             m_ToneLo->setValue(-1.0); m_ToneMid->setValue(-1.0);
-            m_ToneShi->setValue(-1.0); m_ToneHi->setValue(-1.0);
+            m_ToneShi->setValue(-1.0); m_ToneHi->setValue(-1.0); m_ToneFLo->setValue(-1.0);
         }
     }
 
@@ -2003,9 +2006,10 @@ void OneGrade::applyMagicGrade(double p_Time)
             m_LastGain = t2.gain;
             m_ToneLo->setValue(t2.sLo);  m_ToneMid->setValue(t2.sMid);
             m_ToneShi->setValue(t2.sHi); m_ToneHi->setValue(t2.fHi);
+            m_ToneFLo->setValue(t2.fLo);
         } else {
             m_ToneLo->setValue(-1.0); m_ToneMid->setValue(-1.0);
-            m_ToneShi->setValue(-1.0); m_ToneHi->setValue(-1.0);
+            m_ToneShi->setValue(-1.0); m_ToneHi->setValue(-1.0); m_ToneFLo->setValue(-1.0);
         }
     }
 
@@ -2848,7 +2852,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             // saved, like the rest of the anchor, so Bias keeps re-solving after a reload rather
             // than falling back to nudging parameters.
             anch("toneLo", -1.0); anch("toneMid", -1.0);
-            anch("toneShi", -1.0); anch("toneHi", -1.0);
+            anch("toneShi", -1.0); anch("toneHi", -1.0); anch("toneFLo", -1.0);
         }
 
         PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");

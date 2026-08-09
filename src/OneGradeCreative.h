@@ -96,7 +96,16 @@ struct Tunables {
     // Where an underexposed subject's NEUTRAL midtone has to reach before the tone solve runs.
     // Read off the frames that already work: their subjects sit near this without help, so a shot
     // below it is one the grade stage cannot rescue on its own.
-    double subjNeutralMid = 0.22;
+    // Where an underexposed subject's NEUTRAL midtone has to reach before the tone solve runs.
+    // 0.28 puts the user's own test frame at 2.20 EV against the 2.13 they chose by hand.
+    double subjNeutralMid = 0.28;
+
+    // THE FRAME'S OWN FLOOR, as a ceiling on what placing the subject may cost. Satisfying a very
+    // dark subject's p10 is a global lift, and on an underexposed shot it dragged the frame's
+    // black to 0.151 where every other frame in the set sits between 0.04 and 0.08 -- the shot
+    // brightened, but "lost a good bit of its original intent". Low-key has to survive being
+    // made legible.
+    double frameFloorMax = 0.085;
     double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
 };
 
@@ -575,8 +584,9 @@ struct MagicTone {
     // The three NEUTRAL percentiles the solve was run against. They do not depend on Lift, Gamma
     // or Gain, so caching them lets Bias re-solve from three scalars instead of re-measuring
     // 200k samples -- which is what makes Bias a target move rather than a parameter drift.
-    float sLo = 0.f, sMid = 0.f, sHi = 0.f, fHi = 0.f;
+    float sLo = 0.f, sMid = 0.f, sHi = 0.f, fHi = 0.f, fLo = 0.f;
     float rawExp = 0.f;   // scene-linear stops added to rescue an underexposed subject
+    float frameLo = 0.f;  // the frame's own floor, which placing the subject must not wash out
     float sMidNeutral = 0.f;   // the subject's midtone before any of this, for diagnosis
     const char* why = "";   // which decline, when ok is false -- see solve_white_balance
     bool  ok = false;
@@ -589,7 +599,8 @@ struct MagicTone {
 static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sHi, double fHi,
                                               const float P0[analysis::kParamN],
                                               const float* lut, int lutSize,
-                                              double subjFloor, double subjMid, double frameCeiling)
+                                              double subjFloor, double subjMid, double frameCeiling,
+                                              double fLo, double frameFloorMax)
 {
     MagicTone out;
     const double pe = P0[8], con = P0[9], roll = P0[12];
@@ -603,11 +614,37 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     };
 
     double lf = P0[3], gm = P0[4], gn = P0[5];
+    auto frameLo = [&](double l, double g, double n) { return render(fLo, l, g, n); };
     for (int pass = 0; pass < kMagicTonePasses; ++pass) {
         lf = solve1d(-0.50, 0.50, subjFloor,    [&](double v) { return render(sLo,  v, gm, gn); });
         gm = solve1d( 0.30,  3.00, subjMid,     [&](double v) { return render(sMid, lf, v, gn); });
         gn = solve1d( 0.05,  3.00, frameCeiling,[&](double v) { return render(fHi,  lf, gm, v); });
     }
+    // LOW KEY HAS TO SURVIVE BEING MADE LEGIBLE.
+    //
+    // Lift is global, so dragging a dark subject's shadows onto their target takes the whole
+    // picture with it. On an underexposed frame that put the frame's own black at 0.151 where
+    // every other shot in the set sits between 0.04 and 0.08: brighter, and in the user's words
+    // it "lost a good bit of its original intent".
+    //
+    // The fix is to SWAP WHICH CONDITION BINDS rather than to back the subject floor off in
+    // steps. Lift stops serving the subject's shadows and serves the frame's instead; Gamma still
+    // places the subject's midtone and Gain still holds the ceiling, so it stays three conditions
+    // on three controls and stays well posed. Legibility survives, because legibility lives in
+    // the midtone -- what gives ground is only how far the subject's shadows come up.
+    //
+    // Stepping the floor down in a loop was tried first and was worse: it re-solved all three
+    // conditions each pass, fought the fallback below, and ended up declining the frame outright
+    // -- which handed the shot back to Creative at a black point of 0.002 and no shadow
+    // separation at all, worse than the overshoot it was fixing.
+    if (frameLo(lf, gm, gn) > frameFloorMax) {
+        for (int pass = 0; pass < kMagicTonePasses; ++pass) {
+            lf = solve1d(-0.50, 0.50, frameFloorMax, [&](double v) { return frameLo(v, gm, gn); });
+            gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
+            gn = solve1d( 0.05,  3.00, frameCeiling, [&](double v) { return render(fHi,  lf, gm, v); });
+        }
+    }
+
     // THE CEILING GIVES WAY TO THE SUBJECT, never the reverse.
     //
     // On a dark room with a bright window, holding the frame's highlight drove Gain to 0.217 and
@@ -659,7 +696,9 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     if (render(fHi, lf, gm, gn) >= 0.999) { out.why = "highlight blown"; return out; }
 
     out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
-    out.sLo = (float)sLo; out.sMid = (float)sMid; out.sHi = (float)sHi; out.fHi = (float)fHi;
+    out.sLo = (float)sLo; out.sMid = (float)sMid; out.sHi = (float)sHi;
+    out.fHi = (float)fHi; out.fLo = (float)fLo;
+    out.frameLo = (float)frameLo(lf, gm, gn);
     out.subjLo  = (float)render(sLo,  lf, gm, gn);
     out.subjHi  = (float)render(sHi,  lf, gm, gn);
     out.frameHi = (float)render(fHi,  lf, gm, gn);
@@ -741,7 +780,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         return v[k].second;
     };
     const size_t iLo = at(subjK, 0.10), iMid = at(subjK, 0.50),
-                 iHi = at(subjK, 0.90), iTop = at(allK, 0.999);
+                 iHi = at(subjK, 0.90), iTop = at(allK, 0.999), iBot = at(allK, 0.001);
 
     // UNDEREXPOSURE IS NOT LOW KEY, AND THE SUBJECT IS HOW YOU TELL THEM APART.
     //
@@ -795,13 +834,19 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
         return (double)(0.2126f*r + 0.7152f*g + 0.0722f*b);
     };
+    auto shadeMin = [&](size_t i) {
+        float r, g, b;
+        og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+        return (double)std::min(r, std::min(g, b));
+    };
     auto shadeMax = [&](size_t i) {
         float r, g, b;
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
         return (double)std::max(r, std::max(g, b));
     };
     MagicTone r = solve_magic_tone_from(shade(iLo), shade(iMid), shade(iHi), shadeMax(iTop),
-                                        Pe, lut, lutSize, t.subjFloor, t.subjMid, t.frameCeiling);
+                                        Pe, lut, lutSize, t.subjFloor, t.subjMid, t.frameCeiling,
+                                        shadeMin(iBot), t.frameFloorMax);
     r.rawExp = Pe[10];
     r.sMidNeutral = (float)neutralMid(0.0);
     return r;
