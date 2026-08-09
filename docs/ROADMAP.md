@@ -445,3 +445,34 @@ Bias already works this way and is the proof it is tractable: it calls
 **Why it was not done at the time:** it lands in the middle of an active tuning session, and
 the constants were still moving. Do it before the constants are refitted, not after, so the
 refit happens against one implementation.
+
+---
+
+## Magic Tone beyond faces
+
+`solve_magic_tone` declines every subject that is not skin, because all three of its targets came
+from one hand-graded interview and a face is the one subject whose correct lightness is not a
+matter of taste. Sky belongs near the top, foliage low, sand bright, and a beach frame whose
+subject came back VEGETATION was destroyed by being driven to a face's midtone.
+
+**It needs data, not code.** One hand-graded landscape gives the same three numbers for that
+class the interview gave for faces; the machinery already takes them per-call. The measurement
+recipe is in `docs/AUTO-GRADE.md` §10 and the probe that produced it is a few lines over the
+bench's `SampleSet`.
+
+Related and unhandled: an underexposed shot with **no** trustworthy face gets no exposure help at
+all, since the RAW Exposure rescue sits behind the face gate. That is deliberate — it must not
+fire on a landscape — but it means the underexposed-landscape case is simply not covered.
+
+---
+
+## Segment an exposure-normalised thumbnail
+
+`dark-scene00086490` declines as `subject is black, not dark`: its SKIN mask lands on hair or
+shadow, because the model is fed the **Creative-graded** thumbnail and an underexposed frame
+graded by Creative is dark and noisy — far outside what an ADE20K checkpoint was trained on. The
+segmentation degrades exactly when the shot most needs it.
+
+The fix is the same ordering argument as the RAW Exposure rescue, applied one stage earlier:
+normalise exposure *before* segmenting, so the model sees a picture it can read. Contained, and
+probably the highest-value item left on this feature.

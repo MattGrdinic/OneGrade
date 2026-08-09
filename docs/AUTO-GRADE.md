@@ -452,3 +452,132 @@ the stated "identity at 6500 K" contract true by construction and remove the ear
 entirely. **That is a colour-math change and therefore a four-file kernel edit**, and it moves
 every saved grade with RAW Temp ≠ 6500, so it is a deliberate decision rather than a fix to
 slip in. Test 20 pins both, so if either is ever changed that test fails first and says so.
+
+---
+
+## 10. Magic Tone — placing the subject
+
+Magic Grade's job, in the user's words: *"find the subject of the image and make sure its tone is
+pleasing"*, well enough that *"the user becomes scared to even move the sliders."*
+
+Before this existed, Magic Grade was Creative Grade plus a colour cast — measured at a mean
+difference of **7/255** on one frame. All the subject detection was being spent choosing the
+direction of a tint.
+
+### Three conditions, three controls
+
+They are the three moves the user made by hand on the frame the targets came from, in the order
+they made them:
+
+| condition | target | control | their words |
+|---|---|---|---|
+| subject's shadows | 0.125 | Lift | *"reduce the contrast on the face"* |
+| subject's midtone | 0.278 | Gamma | *"bring the overall contrast down"* |
+| frame's highlight | 0.968 | Gain | *"remove the hot spot"* |
+
+Two of three are about the subject, because **legibility is a property of the thing being looked
+at**. That is also why the pre-existing anti-crush guard never helped: it protects the *frame's*
+black point, and on the frame in question the face was already at p10 0.078 with every guard
+reporting success.
+
+Solved **post-LUT**, because that is the picture being judged and a print stock's toe and
+shoulder move both ends. Solved by coordinate passes, not measure-act-measure: each condition is
+monotone in its own control and the chain is closed form — the argument that retired the old loop
+in `c4ec540`. Re-measuring would also mean re-segmenting, which is how this button once came to
+read its own output and converge over three presses.
+
+### Priority, when the conditions conflict
+
+They do conflict, and the order is not negotiable:
+
+1. **The ceiling gives way to the subject.** On a dark room with a bright window, holding the
+   frame's highlight drove Gain to 0.217 and Gamma into its 3.00 bound while the face landed at
+   0.157 against a 0.278 target — crushed to protect a practical. The window is not clipped at
+   the sensor, so containing it is editorial; the face is not. The ceiling condition is dropped
+   and the two subject conditions re-solve 2×2.
+2. **The frame's floor caps what placing the subject may cost.** Lift is global, so dragging a
+   dark subject's shadows up takes the whole picture: on an underexposed frame the frame's own
+   black reached 0.151 where every other shot sits between 0.04 and 0.08. Lift then stops serving
+   the subject's shadows and serves the frame's, while Gamma keeps the subject's midtone. What
+   gives ground is only how far the subject's shadows come up — legibility lives in the midtone.
+
+> Backing the subject floor off in steps was tried for (2) and was worse: it re-solved all three
+> conditions each pass, fought the fallback in (1), and ended up declining the frame — handing it
+> to Creative at a black point of 0.002 with no shadow separation, worse than the overshoot.
+
+### Underexposed is not low key, and the subject is how you tell them apart
+
+Creative caps Gain at 0.80 so a deliberately dark shot is never pushed up — the clamp that made
+`key` descriptive rather than prescriptive. It is right about a frame median and blind to the
+difference between a moody interior and a missed exposure. **A face too dark to read settles it**,
+and being able to settle it is the entire argument for finding the subject.
+
+`key` cannot detect underexposure at all. A car interior that reads fine measures **+2.58**
+against an underexposed frame's **+2.38**. What separates them is *reach* — whether the shot uses
+the top of its range. Neutral p99: **0.699 against 0.395**.
+
+The correction is **RAW Exposure, not Gain**. Gain is a multiply in display space worth about a
+stop before the highlights go; RAW Exposure is a linear gain on scene light applied before the
+transform, which is what exposing the shot correctly would have done. It targets the subject's
+neutral midtone at 0.28, which put the test frame at **2.20 EV** against the **2.13** the user
+chose by hand. Upward only, and only behind the face gate, so it can neither pull a bright shot
+down nor fire on a landscape whose "subject" is a hillside.
+
+This required the solve to stop treating its percentiles as constants. Measuring once at neutral
+is exact for Lift, Gamma and Gain, which act afterwards, and **wrong for RAW Exposure, which acts
+before and moves the numbers being stood on**. It now keeps the source triple sitting at each
+percentile, so every stage is a function of the parameters.
+
+### It declines more often than it acts, and says why
+
+The bar is the north star: the button's bad cases must be **impossible, not rare**. Every decline
+names its cause, because a bare `false` cost an hour spent inspecting the wrong check.
+
+| decline | meaning |
+|---|---|
+| `not a face` | the targets are a face's; sky belongs near the top, foliage low, sand bright |
+| `face too large to be one` | over 35% coverage — the tell `skin_trustworthy()` already uses at 25% |
+| `subject is black, not dark` | midtone renders at 0.000; scene gain multiplies, and 0 × anything is 0 |
+| `subject unplaceable` | no arrangement of the controls reaches the midtone target |
+| `highlight blown` | the result clips at the top |
+
+`not a face` is the common one, and it is load-bearing. A beach frame whose subject came back
+VEGETATION was destroyed by driving dark foliage to a face's midtone — enough lift and gamma to
+put the sky into neon cyan, with red pinned flat at zero across the whole frame on the waveform.
+The solve met every condition it was given. **Extending beyond faces is a data question, not a
+code one**: it needs a hand-graded landscape the way these targets needed a hand-graded
+interview.
+
+### Bias moves the targets, not the parameters
+
+The three conditions are satisfied *together*, so nudging any one of Lift, Gamma or Gain breaks
+all three — which is what "if I touch the bias slider we kill the grade" was. Bias now shifts the
+targets and re-solves: opening up raises the subject's floor and lowers the frame's ceiling,
+closing down reverses it, and **the subject's midtone never moves**. Bias changes the contrast
+around the subject, never the subject's brightness.
+
+That makes crushing structurally impossible rather than guarded against — the floor is a target
+the solve hits, not a value the slider drifts toward. It is cheap enough to drag because the
+percentiles are neutral measurements independent of Lift, Gamma and Gain, so a re-solve is a few
+scalar bisections over cached scalars: no re-measuring, and no re-segmenting.
+
+The anchor is re-armed at the **end** of `applyMagicGrade`, not inside `applyAutoGrade`. It used
+to be armed halfway, so the coefficient path's `anchor + bias*0.06` — an absolute value — snapped
+the picture back to an intermediate grade on the first touch. Third
+discontinuity-at-its-own-default in this project after Rolloff at 0 and RAW Temp at 6500, with
+the same tell every time: the first nudge is a step, not a ramp.
+
+### Every constant, and what it rests on
+
+| constant | value | evidence |
+|---|---|---|
+| `subjFloor` | 0.125 | one hand-graded interview, then lowered on the user's call for more contrast |
+| `subjMid` | 0.278 | the same frame |
+| `frameCeiling` | 0.968 | the same frame; Creative's own picture sat at 0.993 with 1.12% clipped |
+| `frameFloorMax` | 0.085 | where the healthy frames' black points sit (0.04–0.08) |
+| `subjNeutralMid` | 0.28 | reproduces the user's own 2.13 EV as 2.20 EV |
+| coverage gate | 35% | above `skin_trustworthy()`'s 25%, since a label is not a hue window |
+
+**All of the tone targets come from one frame.** They are placeholders with the right shape, not
+fitted values, and every one is a bench flag: `--subj-floor --subj-mid --frame-ceiling
+--subj-neutral-mid --raw-exp-max --no-tone`.
