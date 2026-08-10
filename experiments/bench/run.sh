@@ -17,7 +17,13 @@ DIR="${1:?usage: run.sh FRAME_DIR [--flags]}"; shift || true
 LUT="/Library/Application Support/Blackmagic Design/DaVinci Resolve/LUT/Film Looks/Rec709 Kodak 2383 D60.cube"
 MODEL="$ROOT/OneGrade.ofx.bundle/Contents/Resources/Model"
 
-[ -x "$HERE/bench" ] || make -C "$HERE" >/dev/null
+# ALWAYS make, never "make if missing". This was `[ -x "$HERE/bench" ] || make`, which builds
+# once and then never again -- so an edit to bench.cpp or to any header it shares with the
+# plugin left a stale binary in place while the README promised a rebuild. A bench that silently
+# grades with last week's code is worse than no bench, because its output still looks current.
+# The Makefile already tracks bench.cpp and the three headers, so this is a no-op when nothing
+# changed.
+make -C "$HERE" >/dev/null
 mkdir -p "$DIR/out"
 
 # ncnn prints a deprecation notice per layer on load; it is noise, not a problem.
