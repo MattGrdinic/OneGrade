@@ -120,6 +120,23 @@ add_custom_command(TARGET OneGrade POST_BUILD
           "${CMAKE_SOURCE_DIR}/models/ade20k.param"
           "${CMAKE_SOURCE_DIR}/models/ade20k.bin"
           "${BUNDLE}/Contents/Resources/Model/"
+  # THE LICENCES SHIP WITH THE BINARY, because this is the bundle that actually reaches users.
+  #
+  # The Makefile copies these three and CMake did not, and it is CMake that CI packages on BOTH
+  # platforms -- so every release zip carrying ncnn and the model went out without them. ncnn is
+  # BSD-3 and asks for its copyright notice in binary redistributions; PP-MobileSeg is Apache-2.0
+  # and asks for a copy of the licence. Neither is optional once a compiled bundle is downloaded
+  # by someone else, and the Makefile bundle is a dev artefact that never leaves this machine.
+  #
+  # Same shape as the Windows LUT directory and the CUDA fallback: the local path was fine, the
+  # shipped path was not, and nothing failed to say so.
+  COMMAND ${CMAKE_COMMAND} -E copy
+          "${CMAKE_SOURCE_DIR}/THIRD-PARTY-NOTICES.md"
+          "${CMAKE_SOURCE_DIR}/models/LICENSE-Apache-2.0.txt"
+          "${BUNDLE}/Contents/Resources/"
+  COMMAND ${CMAKE_COMMAND} -E copy
+          "${CMAKE_SOURCE_DIR}/third_party/ncnn/LICENSE.txt"
+          "${BUNDLE}/Contents/Resources/LICENSE-ncnn.txt"
   COMMENT "Assembling OneGrade.ofx.bundle")
 
 # ---- CPU unit tests ----

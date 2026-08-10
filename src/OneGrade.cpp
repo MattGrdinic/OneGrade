@@ -983,11 +983,26 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
         // means and cluster centroids, which converge far faster than a 0.1st percentile does.
         // Source values only — describe() re-renders them itself for whatever parameters it is
         // asked about, which is exactly what makes it a function of P rather than a snapshot.
+        // ONE SAMPLING RULE, because the bench has to be able to predict this.
+        //
+        // This kept only every descStride'th grid sample (~40k of the ~200k walked) while the
+        // bench kept all of them, and that was a PARAPHRASE of the same kind the arithmetic was
+        // extracted to OneGradeCreative.h to prevent: the numbers were shared, the sampling was
+        // written twice, and it drifted.
+        //
+        // It is not a rounding difference. Region coverage moves ~0.5 percentage points between
+        // the two counts, and magic_decide() ranks subjects by cover * salience -- on a dark
+        // interview that margin was 1.5%, so the plugin picked BUILT 78% where the bench picked
+        // SKIN 16%. BUILT declines the tone solve as "not a face", which drops the RAW Exposure
+        // rescue and lands the frame at midtone 0.339 against the bench's 0.632. A visibly
+        // darker picture out of a sample count.
+        //
+        // The descriptors were what the decimation was for, and they still get it where it
+        // actually costs: jacobian() runs describe() 27 times and decimates to 12k itself, just
+        // below. classify() and describe() run ONCE each, so a full-grid pass is two linear
+        // walks against ~100 ms of inference -- free, beside a wrong answer.
         oga::SampleSet SS;
-        const long long expect = (long long)((w + step - 1)/step) * (long long)((h + step - 1)/step);
-        const int descStride = (int)std::max(1LL, expect / 40000);
-        long long kept = 0;
-        SS.rgb.reserve(120000); SS.band.reserve(40000);
+        SS.rgb.reserve(660000); SS.band.reserve(220000);
 
         for (int y = b.y1; y < b.y2; y += step) {
             const float* row = static_cast<const float*>(src->getPixelAddress(b.x1, y));
@@ -999,7 +1014,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
 
                 // Vertical band, the one piece of geometry the descriptors need. OFX hands over
                 // bottom-up rows, so the HIGHEST y is the top of the frame and band 2 is sky.
-                if ((kept++ % descStride) == 0) {
+                {
                     SS.rgb.push_back(p[0]); SS.rgb.push_back(p[1]); SS.rgb.push_back(p[2]);
                     const int bd = (int)(((long long)(y - b.y1) * 3) / h);
                     SS.band.push_back((uint8_t)std::min(2, std::max(0, bd)));

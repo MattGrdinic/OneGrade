@@ -4,6 +4,25 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
 
 ---
 
+## v1.4.2 — Magic Grade picks the face
+
+- **Magic Grade could land visibly too dark on a shot with a face in it.** Where a frame held
+  a modest face against a large wall or interior, the subject was chosen by weighing how much
+  of the frame each covered — and the two came out within 1.5% of each other. Landing on the
+  wall meant the grade declined to place a subject at all, so a dark shot kept no exposure
+  correction and came out around half as bright as it should have. A believable face now takes
+  the subject slot outright rather than competing on square footage; a skin region too large to
+  be a face (sand, foliage, a whole beach) still falls through to the old ranking.
+- **The measurement no longer depends on frame size.** The analysis pass sampled the frame more
+  coarsely than the offline tools it is checked against, which is what let the above sit
+  undetected: the two disagreed about region coverage by about half a percentage point, and on
+  a close call that was the whole decision. Both now read the same samples.
+- **Licences ship with the plugin.** The release builds omitted the ncnn and model licence
+  texts that the bundle is supposed to carry. They are in the bundle again, under
+  `Contents/Resources`.
+
+---
+
 ## v1.4.0 — Magic Grade
 
 One button that reads the frame, finds what the shot is *of*, and grades for that.

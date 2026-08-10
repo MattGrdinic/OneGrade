@@ -266,9 +266,14 @@ struct RegionStat { float cover = 0.f, L = 0.f, a = 0.f, b = 0.f; };
 // The 25% ceiling separates every case measured so far: real faces came in at 3.4% and 10.3%,
 // false positives at 39.7% (desert sand), 46.5% (cactus), 46% (this beach) and 72.2%. It is
 // fitted to those six observations, so widen it if a genuine tight close-up ever lands above.
+// The ceiling is a named constant because magic_decide() needs the SAME band to decide whether
+// a skin region is a face or a false positive, and two copies of 0.25 would be one more pair of
+// numbers meant to agree.
+static const double kSkinMaxCover = 0.25;
+
 static inline bool skin_trustworthy(long long skinN, size_t n)
 {
-    return skinN >= 200 && (double)skinN <= 0.25 * (double)n;
+    return skinN >= 200 && (double)skinN <= kSkinMaxCover * (double)n;
 }
 
 // Thin the set for the Jacobian, which pays 2 x kParamN describe() passes and does not need
@@ -660,7 +665,33 @@ static inline MagicChoice magic_decide(const RegionStat* st, int click)
     for (int i = 0; i < nb; ++i) biggest = std::max(biggest, st[idx[i]].cover);
     if (biggest >= kMagicDominant) return out;   // one region is the whole frame
 
+    // A BELIEVABLE FACE IS THE SUBJECT. It does not compete for the slot on square footage.
+    //
+    // Ranking on cover * salience alone put SKIN 15.7% x 3.0 = 47.1 against BUILT 77.3% x 0.6 =
+    // 46.4 on a dark interview -- a 1.5% margin deciding whether the frame gets a tone solve at
+    // all. Half a percentage point of coverage flips it, and the two answers are not neighbours:
+    // the face branch places the subject (RAW Exposure +2.29 EV, midtone 0.632) while the wall
+    // branch declines as "not a face" and leaves the shot at 0.339. Changing nothing but the
+    // number of samples measured was enough to swap them, so the button was picking between two
+    // completely different pictures on noise.
+    //
+    // This is not a new opinion about faces. region_protected() already refuses to push skin,
+    // and two of Magic Tone's three conditions are already about the subject because legibility
+    // is a property of the thing being looked at. All that changes is that the point stops being
+    // re-argued against a wall's coverage on every press.
+    //
+    // Only inside the band skin_trustworthy() already vouches for: above it the mask is not a
+    // face at all -- sand at 39.7%, a cactus at 46.5%, a beach at 46% -- and those fall through
+    // to the score, which is the case the ceiling was fitted for in the first place. The floor
+    // is the same kMagicMinCover every candidate here has already cleared.
+    //
+    // Ordering only. Press-again still cycles through every candidate.
+    auto believable_face = [&](int r) {
+        return r == R_SKIN && st[r].cover <= (float)(kSkinMaxCover * 100.0);
+    };
     std::sort(idx, idx + nb, [&](int A, int B) {
+        const bool fa = believable_face(A), fb = believable_face(B);
+        if (fa != fb) return fa;
         return st[A].cover * region_salience(A) > st[B].cover * region_salience(B);
     });
 
