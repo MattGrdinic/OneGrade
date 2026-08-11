@@ -4,6 +4,38 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
 
 ---
 
+## v1.4.3 — the Bias slider behaves
+
+- **Bias is predictable now.** It could previously jump: the picture inverting partway through a
+  drag, alternating between two looks every other step, or switching permanently to a washed-out
+  version with the blacks lifted off the floor and staying there. Four separate causes, all
+  fixed. Dragging it now moves the grade smoothly across its whole range on every shot we have,
+  and where a shot genuinely runs out of room the slider simply stops rather than falling off a
+  step.
+- **Your own adjustments survive it.** Nudging Lift, Gamma or Gain by hand after a Magic Grade
+  used to be undone the moment you touched Bias. Your edit now becomes the thing Bias leans away
+  from. The exception is an edit that blows the frame's highlight — Bias needs somewhere to go,
+  so it will not adopt a picture that is already clipped.
+- **Bias tells you which way it is working.** After a Magic Grade it re-solves the grade around
+  your subject, so Lift, Gamma and Gain move by different amounts and in different directions to
+  keep that subject where it was put — the numbers look busy while the picture stays coherent,
+  because they are results rather than settings. Without a Magic grade it is a plain offset and
+  all three move together. A line under the slider now says which.
+
+### Press Magic Grade again for a different subject
+
+Worth knowing, because it decides how much room Bias has to work with. Each press picks a
+different subject out of the frame, and the grades that follow can be very different pictures.
+On a beach shot of a child, one press reads the child (**skin, 13% of frame**) and the next reads
+the sand (**terrain, 43%**). The terrain version is looser and takes Bias across a wide range; the
+skin version holds the face in place and so allows less movement before it runs out of road.
+
+Neither is wrong, and **which one is more pleasing is a judgement the plugin does not make** — on
+that shot the skin version has better skin tones and an unblown sky, and nothing measurable says
+so. If the first press did not pick the subject you care about, press again.
+
+---
+
 ## v1.4.2 — Magic Grade picks the face
 
 - **Magic Grade could land visibly too dark on a shot with a face in it.** Where a frame held
