@@ -189,6 +189,15 @@ int main(int argc, char** argv)
     const bool  biasSweep = argf(argc, argv, "--bias-sweep");
     // How often the sweep writes a frame. 0 prints the table and writes nothing.
     const double biasStep = argd(argc, argv, "--bias-step", 0.5);
+    const double biasInc  = argd(argc, argv, "--bias-inc",  0.1);
+    // Walk the slider out from zero in each direction, the way a hand moves it, which is the
+    // only way direction-dependent behaviour shows up at all.
+    const bool  biasDrag  = argf(argc, argv, "--bias-drag");
+    // ...and feed each result forward as the next solve's starting point, which is what
+    // applyBias used to do by reading the live sliders. This reproduces the 2-cycle that
+    // caused: it is the hazard probe, NOT what the plugin does now. Keep it, because a sweep
+    // from a fixed reference cannot show hysteresis and this is what found it.
+    const bool  biasFeedback = argf(argc, argv, "--bias-feedback");
     const char* lutPath = nullptr;
     for (int i = 1; i < argc; ++i) if (!strncmp(argv[i], "--lut=", 6)) lutPath = argv[i] + 6;
 
@@ -318,8 +327,36 @@ int main(int argc, char** argv)
             // the feasibility limit, so it passed with the hold-at-limit logic deleted.
             printf("    tone inputs: sLo %.4f sMid %.4f sHi %.4f fHi %.4f fLo %.4f\n",
                    R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, R.tone.fLo);
+            // DRAG MODE: out from zero in each direction, the way a hand moves the slider, with
+            // the previous result fed forward. Direction matters for hysteresis, so a sweep that
+            // runs +2 -> -2 would miss it even with feedback.
+            if (biasDrag) {
+                printf(biasFeedback
+                       ? "    (drag WITH FEEDBACK: the pre-fix hazard, results fed forward)\n"
+                       : "    (drag from the armed anchor, as the plugin does)\n");
+                printf("    bias     lift   gamma    gain   d(lift)\n");
+                for (int dir = 0; dir < 2; ++dir) {
+                    float Pf[oga::kParamN];
+                    for (int k = 0; k < oga::kParamN; ++k) Pf[k] = P[k];
+                    double prevL = P[3];
+                    for (double bs = 0.0; dir ? (bs >= -2.0001) : (bs <= 2.0001);
+                         bs += dir ? -biasInc : biasInc) {
+                        const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                            R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, Pf,
+                            lutData, lutSize, tn, R.tone.fLo, bs);
+                        if (!t.ok) { printf("   %+5.3f   NOT ARMED: %s\n", bs, t.why); break; }
+                        const double d = t.lift - prevL;
+                        printf("   %+5.3f  %+7.3f %7.3f %7.3f  %+7.3f%s\n",
+                               bs, t.lift, t.gamma, t.gain, d,
+                               std::fabs(d) > 0.02 ? "   <-- JUMP" : "");
+                        if (biasFeedback) { Pf[3] = t.lift; Pf[4] = t.gamma; Pf[5] = t.gain; }
+                        prevL = t.lift;
+                    }
+                }
+                continue;
+            }
             printf("    bias   subjFloor  ceiling     lift   gamma    gain   result\n");
-            for (double bs = 2.0; bs >= -2.001; bs -= 0.1) {
+            for (double bs = 2.0; bs >= -2.001; bs -= biasInc) {
                 const double sf = std::min(0.40, std::max(0.00,
                                       tn.subjFloor + bs * og::grade::kBiasSubjFloorPer));
                 const double fc = std::min(og::grade::kFrameCeilingMax, std::max(0.60,

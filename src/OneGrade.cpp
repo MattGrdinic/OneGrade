@@ -1725,8 +1725,30 @@ void OneGrade::applyBias()
     if (tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 && tHi >= 0.0 && tFLo >= 0.0) {
         float Pc[oga::kParamN];
         Pc[0]=(float)m_Temp->getValue();    Pc[1]=(float)m_Tint->getValue();
-        Pc[2]=(float)m_Density->getValue(); Pc[3]=(float)m_Lift->getValue();
-        Pc[4]=(float)m_Gamma->getValue();   Pc[5]=(float)m_Gain->getValue();
+        Pc[2]=(float)m_Density->getValue();
+        // THE SOLVE STARTS FROM THE ARMED GRADE, NEVER FROM THE LIVE SLIDERS.
+        //
+        // These three used to be read straight off the node -- which are the PREVIOUS bias
+        // solve's own output, so every drag event started where the last one finished and the
+        // slider was reading itself. solve_magic_tone_from is path-dependent by design (its
+        // ceiling fallback deliberately restores Creative's gamma from P0[4], and the coordinate
+        // passes start where they are told), so feeding results forward turned the drag into a
+        // 2-CYCLE: on one frame Lift alternated 0.087 / 0.000 and Gain 0.29 / 0.55 on every
+        // other 0.002 of slider, from about +0.9 upward. On screen that is the picture flipping
+        // between lifted and normal over and over as the slider moves -- reported as an
+        // inversion, and the second thing this slider has done that looked like one.
+        //
+        // The anchor armBias() stores is exactly the stable reference this needs, and it was
+        // already sitting there being used only by the coefficient path below. With it, the same
+        // slider position always produces the same grade no matter how it was reached.
+        //
+        // Third time in this project a control has read its own output: Auto Grade's first press
+        // measured the node it was about to change, White Balance settled over three presses,
+        // and now this. The tell is the same every time -- the answer depends on the history
+        // rather than on the footage.
+        double aL = 0.0, aG = 1.0, aN = 1.0;
+        m_BiasLift->getValue(aL); m_BiasGamma->getValue(aG); m_BiasGain->getValue(aN);
+        Pc[3]=(float)aL; Pc[4]=(float)aG; Pc[5]=(float)aN;
         Pc[6]=(float)m_OffTemp->getValue(); Pc[7]=(float)m_OffTint->getValue();
         Pc[8]=(float)m_PostExp->getValue(); Pc[9]=(float)m_PostCon->getValue();
         Pc[10]=(float)m_RawExp->getValue(); Pc[11]=(float)m_RawTemp->getValue();

@@ -37,6 +37,9 @@ It rebuilds itself if the source changed, so there is no separate build step.
 | `--sep` | 1.0 | the Separation slider |
 | `--cycle` | 0 | which press. Magic Grade offers a different subject each time, and this is the only way to reproduce a grade the user reached on press two |
 | `--bias-sweep` | off | walk the Bias slider from +2 to -2 and print the tone re-solve at each stop. `held` marks where the targets stop being reachable and the slider stops moving — which is what a discontinuity looks like before it becomes "the picture jumped" |
+| `--bias-drag` | off | walk the slider **out from zero in each direction**, the way a hand moves it. Direction matters, so a +2→−2 sweep cannot show direction-dependent behaviour |
+| `--bias-feedback` | off | with `--bias-drag`, feed each result forward as the next solve's starting point — what `applyBias` used to do by reading the live sliders. **The hazard probe, not what the plugin does.** It is what found the 2-cycle, and it still reproduces it: 89 jumps on one frame against 1 from the anchor |
+| `--bias-inc` | 0.1 | slider resolution for the sweep and the drag. Use 0.002 to catch an oscillation; a jump every other step is invisible at 0.1 |
 | `--bias-step` | 0.5 | how often the sweep **writes a frame**, as `<name>-biasp0150.png` / `-biasm0150.png` (p/m for sign, hundredths, so they sort in slider order). `0` prints the table and writes nothing. Use one frame at a time — at 0.25 a 4K still becomes 17 PNGs |
 | `--wb` | off | White Balance First |
 | `--camera` / `--encode` | 11 / 3 | Rec.2100 PQ decode, Cineon out (what the film LUT forces) |

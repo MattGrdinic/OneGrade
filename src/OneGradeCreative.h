@@ -609,6 +609,11 @@ struct MagicTone {
     float frameLo = 0.f;  // the frame's own floor, which placing the subject must not wash out
     float sMidNeutral = 0.f;   // the subject's midtone before any of this, for diagnosis
     const char* why = "";   // which decline, when ok is false -- see solve_white_balance
+    // WHICH CONDITIONS BOUND, as a bitmask: 1 = the frame's floor took Lift off the subject,
+    // 2 = the ceiling gave way and Gain carries the midtone. Reported because a change of
+    // branch is a change of WHICH CONTROL DOES WHAT, and that is a step change in the picture
+    // however smoothly the targets were moved -- Bias has to be able to see one coming.
+    int   branch = 0;
     bool  ok = false;
 };
 
@@ -657,7 +662,9 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     // conditions each pass, fought the fallback below, and ended up declining the frame outright
     // -- which handed the shot back to Creative at a black point of 0.002 and no shadow
     // separation at all, worse than the overshoot it was fixing.
+    int branch = 0;
     if (frameLo(lf, gm, gn) > frameFloorMax) {
+        branch |= 1;
         for (int pass = 0; pass < kMagicTonePasses; ++pass) {
             lf = solve1d(-0.50, 0.50, frameFloorMax, [&](double v) { return frameLo(v, gm, gn); });
             gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
@@ -678,6 +685,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     // legitimately. The fallback drops the ceiling condition entirely and re-solves the two
     // subject conditions against Creative's gain, which converges because it is then 2x2.
     if (std::fabs(render(sMid, lf, gm, gn) - subjMid) > 0.01) {
+        branch |= 2;
         // GAIN CARRIES THE MIDTONE HERE, not Gamma, and it is allowed past Creative's ceiling.
         //
         // That ceiling (gainMax 0.80) exists so a deliberately low-key shot is never pushed up --
@@ -723,6 +731,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     out.subjHi  = (float)render(sHi,  lf, gm, gn);
     out.frameHi = (float)render(fHi,  lf, gm, gn);
     out.mid     = (float)render(sMid, lf, gm, gn);
+    out.branch  = branch;
     out.ok = true;
     return out;
 }
@@ -757,11 +766,25 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
             std::min(kFrameCeilingMax, std::max(0.60, t.frameCeiling - b * kBiasCeilingPer)),
             fLo, t.frameFloorMax);
     };
+    MagicTone feasible = at(0.0);
+    if (!feasible.ok) return at(bias);   // never armed by Magic Tone -- let the caller fall back
+
+    // A CHANGE OF BRANCH IS ALSO A STEP, AND HOLDING ON IT IS NOT THE ANSWER. Measured, because
+    // it looked obviously right: the three conditions get REASSIGNED across the branch (the
+    // ceiling gives way and Gain takes the midtone off Gamma), which moved Lift 0.003 -> 0.081
+    // and Gain 0.555 -> 0.282 between neighbouring slider positions on one frame. Holding there
+    // -- the same bisection used above, on `branch` instead of `ok` -- removed every jump across
+    // all 14 frames and KILLED THE SLIDER doing it: the positive half went dead on every
+    // tone-solved frame, and one went dead below -0.05. Zero jumps because nothing moved.
+    //
+    // A dead control is a worse bug than a step, so the step stays for now and `branch` is
+    // reported instead. Carrying the solved gamma into the fallback rather than restoring
+    // Creative's was also tried and did not move the step: the discontinuity is the
+    // reassignment itself, not the value it starts from. Smoothing it means blending the two
+    // branches, which is a real piece of work and wants its own footage pass.
     MagicTone mt = at(bias);
     if (mt.ok) return mt;
 
-    MagicTone feasible = at(0.0);
-    if (!feasible.ok) return mt;         // never armed by Magic Tone -- let the caller fall back
     double lo = 0.0, hi = bias;          // lo solves, hi does not
     for (int i = 0; i < 18; ++i) {
         const double mid = 0.5 * (lo + hi);
