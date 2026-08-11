@@ -769,27 +769,38 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
     MagicTone feasible = at(0.0);
     if (!feasible.ok) return at(bias);   // never armed by Magic Tone -- let the caller fall back
 
-    // A CHANGE OF BRANCH IS ALSO A STEP, AND HOLDING ON IT IS NOT THE ANSWER. Measured, because
-    // it looked obviously right: the three conditions get REASSIGNED across the branch (the
-    // ceiling gives way and Gain takes the midtone off Gamma), which moved Lift 0.003 -> 0.081
-    // and Gain 0.555 -> 0.282 between neighbouring slider positions on one frame. Holding there
-    // -- the same bisection used above, on `branch` instead of `ok` -- removed every jump across
-    // all 14 frames and KILLED THE SLIDER doing it: the positive half went dead on every
-    // tone-solved frame, and one went dead below -0.05. Zero jumps because nothing moved.
+    // THE CEILING GIVING WAY IS A STEP IN THE PICTURE, so it bounds the slider like a decline.
     //
-    // A dead control is a worse bug than a step, so the step stays for now and `branch` is
-    // reported instead. Carrying the solved gamma into the fallback rather than restoring
-    // Creative's was also tried and did not move the step: the discontinuity is the
-    // reassignment itself, not the value it starts from. Smoothing it means blending the two
-    // branches, which is a real piece of work and wants its own footage pass.
-    MagicTone mt = at(bias);
-    if (mt.ok) return mt;
+    // Bit 2 is the fallback that DROPS the ceiling condition and lets Gain take the midtone off
+    // Gamma. Crossing it changes which control does what, and that is discontinuous by nature:
+    // on one frame it moved Lift 0.003 -> 0.081 and Gain 0.555 -> 0.282 between two neighbouring
+    // slider positions. Rendered either side, the far side is not a different look -- it is a
+    // washed-out picture with the blacks lifted off the floor, which is what the user saw and
+    // called broken.
+    //
+    // ONLY BIT 2, and that distinction is the whole fix. Holding on ANY branch change was tried
+    // first and was far too blunt: the frame-floor bit comes and goes SMOOTHLY -- one frame runs
+    // Lift 0.122 -> 0.083 -> -0.019 straight through it -- so holding there capped that frame at
+    // -0.06 and left the positive half inert on every tone-solved frame. Zero jumps because
+    // nothing moved, which is a worse bug than the step it removed. The question is not "did the
+    // branch change" but "did the assignment of conditions to controls change".
+    //
+    // Carrying the solved gamma into the fallback rather than restoring Creative's was also
+    // tried; the step did not move, because the step IS the reassignment and not the value it
+    // starts from. Smoothing it properly means blending the two branches, which wants its own
+    // footage pass. Until then the slider runs out of road rather than driving off it.
+    auto sameShape = [&](const MagicTone& s) {
+        return s.ok && ((s.branch & 2) == (feasible.branch & 2));
+    };
 
-    double lo = 0.0, hi = bias;          // lo solves, hi does not
+    MagicTone mt = at(bias);
+    if (sameShape(mt)) return mt;
+
+    double lo = 0.0, hi = bias;          // lo keeps the assignment, hi does not
     for (int i = 0; i < 18; ++i) {
         const double mid = 0.5 * (lo + hi);
         const MagicTone s = at(mid);
-        if (s.ok) { lo = mid; feasible = s; } else hi = mid;
+        if (sameShape(s)) { lo = mid; feasible = s; } else hi = mid;
     }
     return feasible;
 }

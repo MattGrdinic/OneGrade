@@ -198,6 +198,9 @@ int main(int argc, char** argv)
     // caused: it is the hazard probe, NOT what the plugin does now. Keep it, because a sweep
     // from a fixed reference cannot show hysteresis and this is what found it.
     const bool  biasFeedback = argf(argc, argv, "--bias-feedback");
+    // Render ONE frame at exactly this slider position. For looking at either side of a step,
+    // where a sweep's fixed stops will not land where you need them.
+    const double biasAt = argd(argc, argv, "--bias-at", -999.0);
     const char* lutPath = nullptr;
     for (int i = 1; i < argc; ++i) if (!strncmp(argv[i], "--lut=", 6)) lutPath = argv[i] + 6;
 
@@ -319,6 +322,36 @@ int main(int argc, char** argv)
         // returns at each stop, so a discontinuity is visible as a number rather than as "the
         // picture jumped". Mirrors applyBias()'s target arithmetic exactly -- the two shifted
         // targets and the same clamps -- because that arithmetic is the thing under test.
+        if (biasAt > -998.0 && R.tone.ok) {
+            const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
+                lutData, lutSize, tun, R.tone.fLo, biasAt);
+            printf("    bias %+0.3f -> lift %+0.3f gamma %.3f gain %.3f  branch %d  %s\n",
+                   biasAt, t.lift, t.gamma, t.gain, t.branch, t.ok ? "ok" : t.why);
+            if (t.ok) {
+                float Pb[oga::kParamN];
+                for (int k = 0; k < oga::kParamN; ++k) Pb[k] = P[k];
+                Pb[3] = t.lift; Pb[4] = t.gamma; Pb[5] = t.gain;
+                std::vector<unsigned char> ob((size_t)f.w * f.h * 3);
+                for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
+                    float r, g, b;
+                    full_chain(cam, enc, Pb, lutData, lutSize, 1.f,
+                               f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+                    ob[k*3+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
+                    ob[k*3+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
+                    ob[k*3+2] = (unsigned char)(og::clamp01(b) * 255.f + .5f);
+                }
+                const char* nm1 = strrchr(argv[i], '/'); nm1 = nm1 ? nm1 + 1 : argv[i];
+                std::string st(nm1);
+                const size_t d1 = st.rfind('.');
+                if (d1 != std::string::npos) st = st.substr(0, d1);
+                char bp[64];
+                snprintf(bp, sizeof bp, "-at%c%04d.png", biasAt < 0 ? 'm' : 'p',
+                         (int)std::llround(std::fabs(biasAt) * 1000.0));
+                const std::string op3 = outDir + "/" + st + bp;
+                stbi_write_png(op3.c_str(), f.w, f.h, 3, ob.data(), f.w * 3);
+            }
+        }
         if (biasSweep && R.tone.ok) {
             og::grade::Tunables tn = tun;
             // The tone triple this frame stands on, printed so a real configuration can be

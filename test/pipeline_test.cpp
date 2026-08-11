@@ -956,6 +956,51 @@ int main() {
         check(ok, "Bias is continuous over its full range and holds at the feasible limit");
     }
 
+    // 31. BIAS NEVER CROSSES THE CEILING-GIVES-WAY FALLBACK.
+    //
+    //     Bit 2 of MagicTone::branch is the fallback that drops the ceiling condition and lets
+    //     Gain take the midtone off Gamma. Crossing it changes WHICH CONTROL DOES WHAT, which is
+    //     a step in the picture however smoothly the targets moved: on real footage it went Lift
+    //     0.003 -> 0.081 and Gain 0.555 -> 0.282 between two neighbouring slider positions, and
+    //     the far side was not a different look -- it was a washed-out frame with the blacks off
+    //     the floor. Reported twice as the plugin looking broken.
+    //
+    //     Bit 0 is deliberately NOT included. The frame-floor condition comes and goes smoothly
+    //     (one frame runs Lift 0.122 -> 0.083 -> -0.019 straight through it), and holding on any
+    //     branch change at all capped that frame at -0.06 -- zero jumps because nothing moved.
+    {
+        float P0[13]; neutral13(P0);
+        P0[8] = 0.55f;
+        og::grade::Tunables tn;
+        // Found by searching for a configuration where bit 2 actually engages, rather than by
+        // reasoning about one -- the same lesson as test 30, which was a no-op until it was
+        // pointed at a case that reaches its limit. Here bit 2 wants to engage at about +0.40.
+        const double sLo = 0.18, sMid = 0.24, sHi = 0.295, fHi = 0.35, fLo = 0.162;
+
+        const og::grade::MagicTone base = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, 0.0);
+        bool ok = base.ok;
+        const int shape0 = base.branch & 2;
+
+        bool wouldHaveCrossed = false;
+        for (double b = -2.0; b <= 2.0001; b += 0.02) {
+            const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, b);
+            if (!t.ok) { ok = false; break; }
+            ok &= ((t.branch & 2) == shape0);          // the invariant
+            const og::grade::MagicTone raw = og::grade::solve_magic_tone_from(
+                sLo, sMid, sHi, fHi, P0, nullptr, 0,
+                std::min(0.40, std::max(0.00, tn.subjFloor + b * og::grade::kBiasSubjFloorPer)),
+                tn.subjMid,
+                std::min(og::grade::kFrameCeilingMax,
+                         std::max(0.60, tn.frameCeiling - b * og::grade::kBiasCeilingPer)),
+                fLo, tn.frameFloorMax);
+            if (raw.ok && (raw.branch & 2) != shape0) wouldHaveCrossed = true;
+        }
+        ok &= wouldHaveCrossed;     // self-checking: this case must still exercise the hold
+        check(ok, "Bias never crosses the ceiling-gives-way fallback");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }
