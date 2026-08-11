@@ -179,6 +179,14 @@ int main(int argc, char** argv)
     const double sep = argd(argc, argv, "--sep", 1.0);
     const bool  wb  = argf(argc, argv, "--wb");
     const bool  noTone = argf(argc, argv, "--no-tone");
+    // Which press. Magic Grade offers a different subject each time it is pressed, and until
+    // now the bench could only ever see press one -- so a grade the user reached on press two
+    // could not be reproduced here at all.
+    const int   cycle = (int)argd(argc, argv, "--cycle", 0);
+    // BIAS, swept. The slider re-solves the tone targets rather than nudging sliders, and that
+    // re-solve is shared code -- so the bench can walk it and show where it stops converging,
+    // which is the only way to see a discontinuity without dragging a slider in Resolve.
+    const bool  biasSweep = argf(argc, argv, "--bias-sweep");
     const char* lutPath = nullptr;
     for (int i = 1; i < argc; ++i) if (!strncmp(argv[i], "--lut=", 6)) lutPath = argv[i] + 6;
 
@@ -257,7 +265,7 @@ int main(int argc, char** argv)
         };
 
         const og::grade::MagicResult R =
-            og::grade::solve_magic(S, tsrc, m, cam, enc, lutData, lutSize, tun, 0, sep, wb, segfn);
+            og::grade::solve_magic(S, tsrc, m, cam, enc, lutData, lutSize, tun, cycle, sep, wb, segfn);
         float P[oga::kParamN];
         for (int k = 0; k < oga::kParamN; ++k) P[k] = R.P[k];
         if (noTone) { P[3] = 0.11f; P[4] = 1.f; P[10] = 0.f; }
@@ -295,6 +303,36 @@ int main(int argc, char** argv)
         printf("%-24s %+6.2f %6.3f %6.3f %+6.3f %6.3f %6.3f %6.3f  %s\n",
                nm, m.key, m.d99, P[5], P[3], P[12], d.v[oga::D_BLACK], d.v[oga::D_MID],
                (decision + wbNote + toneNote).c_str());
+
+        // BIAS SWEEP. Walks the slider the way a drag does and prints what the tone re-solve
+        // returns at each stop, so a discontinuity is visible as a number rather than as "the
+        // picture jumped". Mirrors applyBias()'s target arithmetic exactly -- the two shifted
+        // targets and the same clamps -- because that arithmetic is the thing under test.
+        if (biasSweep && R.tone.ok) {
+            og::grade::Tunables tn = tun;
+            printf("    bias   subjFloor  ceiling     lift   gamma    gain   result\n");
+            for (double bs = 2.0; bs >= -2.001; bs -= 0.1) {
+                const double sf = std::min(0.40, std::max(0.00,
+                                      tn.subjFloor + bs * og::grade::kBiasSubjFloorPer));
+                const double fc = std::min(og::grade::kFrameCeilingMax, std::max(0.60,
+                                      tn.frameCeiling - bs * og::grade::kBiasCeilingPer));
+                // The SAME call applyBias() makes, holding included -- so "held" below is what
+                // the slider actually does, not what a copy of it would do.
+                const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                    R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
+                    lutData, lutSize, tn, R.tone.fLo, bs);
+                const og::grade::MagicTone raw = og::grade::solve_magic_tone_from(
+                    R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
+                    lutData, lutSize, sf, tn.subjMid, fc, R.tone.fLo, tn.frameFloorMax);
+                if (!t.ok)
+                    printf("   %+5.2f   %7.3f  %7.3f        -       -       -   NOT ARMED: %s\n",
+                           bs, sf, fc, t.why);
+                else
+                    printf("   %+5.2f   %7.3f  %7.3f  %+7.3f %7.3f %7.3f   %s\n",
+                           bs, sf, fc, t.lift, t.gamma, t.gain,
+                           raw.ok ? "ok" : "held (targets unreachable)");
+            }
+        }
 
         // Write the graded frame, and measure it ON THE WAY OUT.
         //

@@ -671,6 +671,23 @@ Crushing is now structurally impossible rather than guarded. The anchor is re-ar
 `applyMagicGrade`; armed halfway, the first touch snapped back to an intermediate grade (third
 discontinuity-at-its-own-default here, after Rolloff at 0 and RAW Temp at 6500).
 
+**A TARGET MAY NEVER ASK FOR WHAT THE ACCEPTANCE TEST REJECTS** (2026-08-10, `extreme-settings00098434`).
+Bias shifts the ceiling target by `-bias*0.03`, so NEGATIVE bias walks it *up* — and it used to
+clamp at **1.000**, while the decline check on the very next line rejects any result `>= 0.999`.
+So from about **bias -1.07 down, on every frame**, the solve was asked for precisely the thing it
+was then refused for delivering. It could not succeed on any footage. `applyBias` treated that
+decline as "not armed" and fell through to its **coefficient path**, which is a different control
+law — Lift went `-0.134` solved to `+0.162` coefficient at neighbouring slider positions, a 0.30
+step the user saw as the image inverting: very contrasty, then saturated, then normal, "making
+the plugin look broken". Fixes: `kFrameCeilingMax = 0.990` sits below `kFrameBlown = 0.999` and
+lives beside it in `OneGradeCreative.h`, and `solve_magic_tone_bias()` now owns the whole slider
+law — it **bisects back to the last feasible bias and holds there** instead of declining.
+Bisecting rather than keeping the last value is deliberate: keeping it makes the grade depend on
+how fast the slider was dragged. **Fourth discontinuity in this project** after Rolloff at 0, RAW
+Temp at 6500 and the halfway-armed anchor — and the first at a *feasibility* boundary rather than
+at a default. Walk the whole slider with `--bias-sweep`, which was added to find this and prints
+`held` where the targets stop being reachable.
+
 **Every tone target came from ONE hand-graded interview.** Placeholders with the right shape, all
 exposed as bench flags. Extending past faces is a DATA question — see `docs/ROADMAP.md`.
 

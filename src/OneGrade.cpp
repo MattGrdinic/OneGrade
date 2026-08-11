@@ -1733,12 +1733,12 @@ void OneGrade::applyBias()
         Pc[12]=(float)m_Rolloff->getValue();
         const bool lutOk = ensureLutLoaded();
         og::grade::Tunables tn;
-        const og::grade::MagicTone mt = og::grade::solve_magic_tone_from(
+        // THE WHOLE SLIDER LAW IS IN THE HEADER, so the bench walks the same curve this does.
+        // It holds at the last feasible bias rather than declining, which is what stops the
+        // picture jumping when the targets stop being reachable -- see solve_magic_tone_bias.
+        const og::grade::MagicTone mt = og::grade::solve_magic_tone_bias(
             tLo, tMid, tShi, tHi, Pc, lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0,
-            std::min(0.40, std::max(0.00, tn.subjFloor    + bias * 0.06)),
-            tn.subjMid,
-            std::min(1.00, std::max(0.60, tn.frameCeiling - bias * 0.03)),
-            tFLo, tn.frameFloorMax);
+            tn, tFLo, bias);
         if (mt.ok) {
             m_Lift->setValue(mt.lift);
             m_Gamma->setValue(mt.gamma);

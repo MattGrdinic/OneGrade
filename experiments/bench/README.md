@@ -35,6 +35,8 @@ It rebuilds itself if the source changed, so there is no separate build step.
 | `--black` | 0.050 | where the black point is placed, measured pre-LUT |
 | `--unit` | 6.0 | how far Magic Grade pushes the chosen region, in Lab units |
 | `--sep` | 1.0 | the Separation slider |
+| `--cycle` | 0 | which press. Magic Grade offers a different subject each time, and this is the only way to reproduce a grade the user reached on press two |
+| `--bias-sweep` | off | walk the Bias slider from +2 to -2 and print the tone re-solve at each stop. `held` marks where the targets stop being reachable and the slider stops moving — which is what a discontinuity looks like before it becomes "the picture jumped" |
 | `--wb` | off | White Balance First |
 | `--camera` / `--encode` | 11 / 3 | Rec.2100 PQ decode, Cineon out (what the film LUT forces) |
 | `--lut=` | Kodak 2383 D60 | print stock; `run.sh` fills this in |

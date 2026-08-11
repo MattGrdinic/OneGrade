@@ -109,6 +109,26 @@ struct Tunables {
     double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
 };
 
+// A TARGET MAY NEVER ASK FOR WHAT THE ACCEPTANCE TEST REJECTS.
+//
+// solve_magic_tone_from() declines a result whose frame highlight reaches kFrameBlown, and Bias
+// shifts the ceiling TARGET by -bias*0.03 -- so negative Bias walked the target upward until it
+// clamped at 1.000, which is above the blown threshold. From about bias -1.07 down, on EVERY
+// frame, the solve was being asked for precisely the thing the next line then refused, so it
+// could not succeed no matter what the footage looked like. applyBias() then fell through to its
+// coefficient path and the picture jumped.
+//
+// The clamp belongs here, next to the test it has to stay under, rather than at the two call
+// sites that shift the target. Same lesson as the encode split: a number compared against a
+// constant has to live in the same space as that constant -- here, on the same side of it.
+static const double kFrameBlown      = 0.999;   // render(fHi) at or above this is blown
+static const double kFrameCeilingMax = 0.990;   // ...so never TARGET above this
+
+// How far one unit of Bias moves each target. Taste, unlike the two above, but they belong
+// together: these are what walk the ceiling into the clamp.
+static const double kBiasSubjFloorPer = 0.06;
+static const double kBiasCeilingPer   = 0.03;
+
 // The Cinematic Film Emulation recipe, which Creative Grade starts from. User-validated, and the
 // tint in particular (Gain Temp -0.22 / Gain Tint 0.09) is what gives the look its character --
 // it was identical across all four shots the Gain fit came from.
@@ -693,7 +713,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     // Checked on the RESULT, not on whether a control sits at a bound. A bound can be reached
     // legitimately, and a solve can fail without reaching one.
     if (std::fabs(render(sMid, lf, gm, gn) - subjMid) > 0.02) { out.why = "subject unplaceable"; return out; }
-    if (render(fHi, lf, gm, gn) >= 0.999) { out.why = "highlight blown"; return out; }
+    if (render(fHi, lf, gm, gn) >= kFrameBlown) { out.why = "highlight blown"; return out; }
 
     out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
     out.sLo = (float)sLo; out.sMid = (float)sMid; out.sHi = (float)sHi;
@@ -707,6 +727,49 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     return out;
 }
 
+
+// BIAS: move the targets, re-solve, and HOLD AT THE LAST FEASIBLE BIAS.
+//
+// Lives here rather than in applyBias() because the bench has to be able to walk this exact
+// curve -- a discontinuity in it is invisible from the outside until someone drags a slider in
+// Resolve and the picture jumps, which is how it was found. Reimplementing it to test it is the
+// mistake this header exists to prevent.
+//
+// Holding matters as much as the arithmetic. A declined solve used to fall through to a
+// coefficient path, and the two do not meet: neighbouring slider positions gave Lift -0.134 and
+// +0.162 on one frame, a 0.30 step that read as the image inverting. Bisecting to the limit
+// rather than keeping the last value is deliberate -- keeping the last value makes the result
+// depend on how fast the slider was dragged, so two users stop at two different grades. The
+// limit is a property of the frame and should be found, not remembered.
+//
+// Returns !ok only when bias 0 itself does not solve, which means the node was never armed by
+// Magic Tone; the caller's own fallback is right in that case and only that case.
+static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sHi, double fHi,
+                                              const float P0[analysis::kParamN],
+                                              const float* lut, int lutSize,
+                                              const Tunables& t, double fLo, double bias)
+{
+    auto at = [&](double b) {
+        return solve_magic_tone_from(
+            sLo, sMid, sHi, fHi, P0, lut, lutSize,
+            std::min(0.40, std::max(0.00, t.subjFloor    + b * kBiasSubjFloorPer)),
+            t.subjMid,
+            std::min(kFrameCeilingMax, std::max(0.60, t.frameCeiling - b * kBiasCeilingPer)),
+            fLo, t.frameFloorMax);
+    };
+    MagicTone mt = at(bias);
+    if (mt.ok) return mt;
+
+    MagicTone feasible = at(0.0);
+    if (!feasible.ok) return mt;         // never armed by Magic Tone -- let the caller fall back
+    double lo = 0.0, hi = bias;          // lo solves, hi does not
+    for (int i = 0; i < 18; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        const MagicTone s = at(mid);
+        if (s.ok) { lo = mid; feasible = s; } else hi = mid;
+    }
+    return feasible;
+}
 
 static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subject,
                                          int cam, int enc,
