@@ -567,6 +567,77 @@ the picture back to an intermediate grade on the first touch. Third
 discontinuity-at-its-own-default in this project after Rolloff at 0 and RAW Temp at 6500, with
 the same tell every time: the first nudge is a step, not a ramp.
 
+### Four ways one slider looked broken (2026-08-10/11)
+
+Moving the targets is right, and it took four separate defects to make it behave. They are worth
+keeping together because three of the four were **invisible to a sweep from a fixed reference**
+and only appeared when the slider was walked the way a hand walks it.
+
+**1. A target asked for what the acceptance test forbids.** Bias shifts the ceiling by
+`-bias*0.03`, so negative Bias walks it *up*, and it clamped at 1.000 — while `solve_magic_tone_from`
+declines any result reaching `kFrameBlown` (0.999). From about **bias −1.07 down, on every frame**,
+the solve was asked for precisely what the next line refused it for delivering. It could not
+succeed on any footage. `applyBias` read that decline as "not armed" and fell through to its
+coefficient path, so Lift stepped −0.134 → +0.162 between neighbouring positions. Fixed with
+`kFrameCeilingMax` (0.990), which lives *next to* `kFrameBlown` rather than at the call sites —
+same lesson as the encode split: a number measured against a constant has to stay on the right
+side of it.
+
+**2. The slider read its own output.** `applyBias` seeded the solve from the live Lift/Gamma/Gain,
+which are the *previous* solve's result, so every drag event started where the last finished.
+`solve_magic_tone_from` is path-dependent by design, so feeding results forward turned a drag into
+a **2-cycle**: Lift alternating 0.087 / 0.000 and Gain 0.29 / 0.55 on every other 0.002 of slider,
+89 jumps across one drag. Seeded from the armed anchor instead: 89 → 1. **Third time a control here
+has read its own output**, after Auto Grade's first press and White Balance settling over three
+presses; the tell is always that the answer depends on the history rather than the footage.
+
+**3. Crossing the ceiling-gives-way fallback.** That branch drops the ceiling condition and lets
+Gain take the midtone off Gamma — a change in *which control does what*, discontinuous by nature:
+Lift 0.003 → 0.081 and Gain 0.555 → 0.282 at one slider position, and the far side was not a
+different look but a washed-out frame with the blacks off the floor. Bias now bisects back and
+**holds at the last position that keeps the same assignment**. Only that branch (`branch & 2`):
+holding on *any* branch change was tried and was far too blunt, because the frame-floor bit comes
+and goes smoothly (one frame runs Lift 0.122 → 0.083 → −0.019 straight through it) — that version
+capped a frame at −0.06 and scored zero jumps because nothing moved. Carrying the solved gamma
+into the fallback was also tried; the step did not move, because the step *is* the reassignment.
+
+**4. Hand edits were solved away.** `armBias` re-anchors on a manual edit, which preserves it on
+the offset path and cannot on the solving path — that one drives back to stored conditions, and
+the anchor is only a solve seed. So the **conditions** move instead: `tone_targets_of()` re-derives
+what the grade currently meets, and Bias offsets from there. At bias 0 the solve is asked for what
+is already on screen and returns it. **The frame-floor cap is part of that answer** — the bench
+caught re-solving an *untouched* grade moving Lift 0.084 → 0.066, because the cap was still the
+fitted 0.085 and a grade above it gets its Lift reassigned. It is derived too, never tighter than
+the fitted value.
+
+An edit that **blows the frame highlight is deliberately not preserved** (above ~Gamma 1.2 or Gain
+0.75 on the test frame, where the ceiling hits 1.000): honouring that would leave Bias nowhere to
+go, which is the condition `frameCeiling` exists to prevent.
+
+**Two laws behind one control.** With targets armed Bias re-solves; without them it offsets all
+three together, which is what people learn first. Both are defensible, but the mode was invisible,
+so a `biasNote` label states which is in effect — driven from `setEnabledness()` using the same
+armed-targets test `applyBias` makes, so it cannot drift from what it describes.
+
+**Still imperfect.** Some shots remain unpredictable under Bias (user, 2026-08-11: "the majority
+work, so good enough for now"). Known reachable roughness: the ceiling-gives-way branch is out of
+reach *from Bias* but a hand edit can still land you on it, and gamma is restored from the anchor
+there rather than solved, so a gamma edit may behave differently on that branch than elsewhere.
+Smoothing the reassignment properly means blending the two branches, which wants its own footage
+pass.
+
+**How to look at any of this**, without a slider in Resolve — see `experiments/bench/README.md`:
+
+```bash
+./experiments/bench/run.sh <dir> --bias-sweep --bias-inc=0.002 --bias-step=0   # the curve
+./experiments/bench/run.sh <dir> --bias-drag --bias-feedback                   # the 2-cycle
+./experiments/bench/run.sh <dir> --bias-at=0.906                               # one frame, exactly there
+./experiments/bench/run.sh <dir> --hand-gamma=1.05                             # does an edit survive
+```
+
+A jump every other step is **invisible at the default 0.1 increment**, which is why the first
+sweep looked clean.
+
 ### Every constant, and what it rests on
 
 | constant | value | evidence |
