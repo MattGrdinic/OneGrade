@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../src/OneGradePipeline.h"
 #include "../src/OneGradeAnalysis.h"
+#include "../src/OneGradeCreative.h"
 #include <cstdio>
 #include <cmath>
 #include <cstdint>
@@ -884,6 +885,185 @@ int main() {
         for (int r = 0; r < oga::kRegionN; ++r) dcover += d[r].cover;
         ok &= close(dcover, 100.f, 0.01f);
         check(ok, "region stats: membership fixed, coverage sums to 100, survives decimation");
+    }
+
+    // 30. BIAS IS CONTINUOUS ACROSS ITS WHOLE RANGE, and holds rather than declining.
+    //
+    //     The fourth discontinuity in this project, and the first at a FEASIBILITY boundary
+    //     rather than at a control's own default. Bias shifts the ceiling target by
+    //     -bias*kBiasCeilingPer, so negative Bias walks it upward; it used to clamp at 1.000
+    //     while solve_magic_tone_from declines anything reaching kFrameBlown (0.999). From
+    //     about bias -1.07 down, ON EVERY FRAME, the solve was asked for exactly what the next
+    //     line then refused it for delivering. applyBias() read that decline as "not armed" and
+    //     fell through to its coefficient path -- a different control law -- so Lift stepped
+    //     -0.134 -> +0.162 between neighbouring slider positions and the picture inverted.
+    //
+    //     Pinned as CONTINUITY rather than as specific values, because the values are taste and
+    //     will move; what must never come back is a step in the middle of a drag.
+    {
+        float P0[13]; neutral13(P0);
+        P0[8] = 0.55f;                       // Creative's post-exposure, which render() applies
+        og::grade::Tunables tn;
+        // A FLAT FRAME, chosen because it actually reaches the limit. The first version of this
+        // test used comfortable percentiles, and they stayed solvable across the whole slider --
+        // so it passed with the hold-at-limit logic deleted, testing nothing. These are close
+        // together on purpose: a hazy, low-contrast shot is where negative Bias runs out of room
+        // first, and it starts declining at about -1.2.
+        const double sLo = 0.22, sMid = 0.24, sHi = 0.33, fHi = 0.42, fLo = 0.198;
+
+        bool ok = og::grade::kFrameCeilingMax < og::grade::kFrameBlown;   // the structural fix
+
+        // The contradiction is real, and this is what makes the clamp load-bearing: ask for the
+        // ceiling the unclamped code used to ask for and the solve refuses its own answer. If
+        // someone raises kFrameCeilingMax to 1.0, this line fails rather than the bug returning.
+        const og::grade::MagicTone blown = og::grade::solve_magic_tone_from(
+            sLo, sMid, sHi, fHi, P0, nullptr, 0,
+            tn.subjFloor, tn.subjMid, 1.000, fLo, tn.frameFloorMax);
+        ok &= !blown.ok;
+
+        og::grade::MagicTone prev = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, 2.0);
+        ok &= prev.ok;                       // bias 0 solves, so every bias must return a grade
+        double worstLift = 0.0, worstGamma = 0.0, worstGain = 0.0;
+        bool held = false;                   // did the limit actually get exercised?
+        for (double b = 2.0 - 0.02; b >= -2.0001; b -= 0.02) {
+            const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, b);
+            if (!t.ok) { ok = false; break; }
+            // The raw solve at this same bias: where IT declines and the line above still
+            // returns a grade is precisely the hold doing its job.
+            const og::grade::MagicTone raw = og::grade::solve_magic_tone_from(
+                sLo, sMid, sHi, fHi, P0, nullptr, 0,
+                std::min(0.40, std::max(0.00, tn.subjFloor + b * og::grade::kBiasSubjFloorPer)),
+                tn.subjMid,
+                std::min(og::grade::kFrameCeilingMax,
+                         std::max(0.60, tn.frameCeiling - b * og::grade::kBiasCeilingPer)),
+                fLo, tn.frameFloorMax);
+            if (!raw.ok) held = true;
+            worstLift  = std::max(worstLift,  (double)std::fabs(t.lift  - prev.lift));
+            worstGamma = std::max(worstGamma, (double)std::fabs(t.gamma - prev.gamma));
+            worstGain  = std::max(worstGain,  (double)std::fabs(t.gain  - prev.gain));
+            prev = t;
+        }
+        // SELF-CHECKING, so this cannot quietly become a no-op again. If a future change makes
+        // this configuration solvable everywhere, the continuity assertion below would still
+        // pass while testing none of the holding -- which is exactly how the first draft of this
+        // test survived having the hold deleted.
+        ok &= held;
+        // Generous next to a 0.02 step of the slider, and an order of magnitude under the 0.296
+        // jump the bug produced -- this is a cliff detector, not a smoothness assertion.
+        ok &= (worstLift < 0.05) && (worstGamma < 0.15) && (worstGain < 0.05);
+        check(ok, "Bias is continuous over its full range and holds at the feasible limit");
+    }
+
+    // 31. BIAS NEVER CROSSES THE CEILING-GIVES-WAY FALLBACK.
+    //
+    //     Bit 2 of MagicTone::branch is the fallback that drops the ceiling condition and lets
+    //     Gain take the midtone off Gamma. Crossing it changes WHICH CONTROL DOES WHAT, which is
+    //     a step in the picture however smoothly the targets moved: on real footage it went Lift
+    //     0.003 -> 0.081 and Gain 0.555 -> 0.282 between two neighbouring slider positions, and
+    //     the far side was not a different look -- it was a washed-out frame with the blacks off
+    //     the floor. Reported twice as the plugin looking broken.
+    //
+    //     Bit 0 is deliberately NOT included. The frame-floor condition comes and goes smoothly
+    //     (one frame runs Lift 0.122 -> 0.083 -> -0.019 straight through it), and holding on any
+    //     branch change at all capped that frame at -0.06 -- zero jumps because nothing moved.
+    {
+        float P0[13]; neutral13(P0);
+        P0[8] = 0.55f;
+        og::grade::Tunables tn;
+        // Found by searching for a configuration where bit 2 actually engages, rather than by
+        // reasoning about one -- the same lesson as test 30, which was a no-op until it was
+        // pointed at a case that reaches its limit. Here bit 2 wants to engage at about +0.40.
+        const double sLo = 0.18, sMid = 0.24, sHi = 0.295, fHi = 0.35, fLo = 0.162;
+
+        const og::grade::MagicTone base = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, 0.0);
+        bool ok = base.ok;
+        const int shape0 = base.branch & 2;
+
+        bool wouldHaveCrossed = false;
+        for (double b = -2.0; b <= 2.0001; b += 0.02) {
+            const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, b);
+            if (!t.ok) { ok = false; break; }
+            ok &= ((t.branch & 2) == shape0);          // the invariant
+            const og::grade::MagicTone raw = og::grade::solve_magic_tone_from(
+                sLo, sMid, sHi, fHi, P0, nullptr, 0,
+                std::min(0.40, std::max(0.00, tn.subjFloor + b * og::grade::kBiasSubjFloorPer)),
+                tn.subjMid,
+                std::min(og::grade::kFrameCeilingMax,
+                         std::max(0.60, tn.frameCeiling - b * og::grade::kBiasCeilingPer)),
+                fLo, tn.frameFloorMax);
+            if (raw.ok && (raw.branch & 2) != shape0) wouldHaveCrossed = true;
+        }
+        ok &= wouldHaveCrossed;     // self-checking: this case must still exercise the hold
+        check(ok, "Bias never crosses the ceiling-gives-way fallback");
+    }
+
+    // 32. A HAND EDIT BECOMES THE THING BIAS LEANS AWAY FROM, instead of being solved away.
+    //
+    //     Re-anchoring preserves a manual Lift/Gamma/Gain edit on the offset path and CANNOT on
+    //     the solving path, which drives back to conditions stored when the button was pressed --
+    //     the anchor is only the seed for a bracketed solve. So the conditions move instead.
+    //
+    //     The identity case is the one that matters most and is the one that failed first: solve
+    //     to the conditions a grade ALREADY meets and you must get that grade back. It did not,
+    //     because the frame-floor cap is also a constraint and it was still the fitted value, so
+    //     re-solving an untouched grade reassigned Lift. Both halves are checked here.
+    {
+        float P0[13]; neutral13(P0);
+        P0[8] = 0.55f;
+        og::grade::Tunables tn;
+        const double sLo = 0.22, sMid = 0.24, sHi = 0.33, fHi = 0.42, fLo = 0.198;
+
+        const og::grade::MagicTone m0 = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, 0.0);
+        bool ok = m0.ok;
+
+        // The grade as armed, then asked for itself.
+        float Pm[13]; for (int k = 0; k < 13; ++k) Pm[k] = P0[k];
+        Pm[3] = m0.lift; Pm[4] = m0.gamma; Pm[5] = m0.gain;
+        const og::grade::ToneTargets idt =
+            og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Pm, nullptr, 0);
+        const og::grade::MagicTone idb = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, Pm, nullptr, 0, tn, fLo, 0.0, idt);
+        ok &= idb.ok && close(idb.lift, Pm[3], 0.005f)
+                     && close(idb.gamma, Pm[4], 0.02f)
+                     && close(idb.gain,  Pm[5], 0.01f);
+
+        // Now a real edit: darker mids, which keeps the highlight where it was. An edit that
+        // BLOWS the frame highlight is deliberately not preserved -- honouring it would leave
+        // Bias with nowhere to go, which is the whole reason a ceiling condition exists.
+        float Ph[13]; for (int k = 0; k < 13; ++k) Ph[k] = Pm[k];
+        Ph[4] = Pm[4] * 0.85f;
+        const og::grade::ToneTargets hnd =
+            og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Ph, nullptr, 0);
+        const og::grade::MagicTone back = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, Ph, nullptr, 0, tn, fLo, 0.0, hnd);
+        ok &= back.ok && close(back.lift, Ph[3], 0.005f)
+                      && close(back.gamma, Ph[4], 0.02f)
+                      && close(back.gain,  Ph[5], 0.01f);
+        ok &= (std::fabs(hnd.mid - idt.mid) > 0.005);   // the edit really did change something
+
+        // AN EDIT THAT LIFTS THE FRAME'S FLOOR PAST THE FITTED CAP. This is the case that makes
+        // the frame-floor derivation load-bearing: the cap is a constraint like any other, so a
+        // grade sitting above it gets its Lift reassigned and the round trip fails. Checked with
+        // a value that clears the cap (0.085) while keeping the highlight under the ceiling
+        // clamp, because a blown highlight is refused for its own separate and correct reason.
+        float Pf[13]; for (int k = 0; k < 13; ++k) Pf[k] = Pm[k];
+        Pf[3] = Pm[3] + 0.04f;
+        const og::grade::ToneTargets flr =
+            og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Pf, nullptr, 0);
+        ok &= (flr.floorMax > tn.frameFloorMax);        // ...it really is over the cap
+        ok &= (flr.ceil < og::grade::kFrameCeilingMax); // ...and not refused for the other reason
+        const og::grade::MagicTone fb = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, Pf, nullptr, 0, tn, fLo, 0.0, flr);
+        ok &= fb.ok && close(fb.lift, Pf[3], 0.005f)
+                    && close(fb.gamma, Pf[4], 0.02f)
+                    && close(fb.gain,  Pf[5], 0.01f);
+
+        check(ok, "a hand edit re-bases Bias instead of being solved away");
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");

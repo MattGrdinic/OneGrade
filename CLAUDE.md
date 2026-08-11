@@ -671,6 +671,55 @@ Crushing is now structurally impossible rather than guarded. The anchor is re-ar
 `applyMagicGrade`; armed halfway, the first touch snapped back to an intermediate grade (third
 discontinuity-at-its-own-default here, after Rolloff at 0 and RAW Temp at 6500).
 
+**A TARGET MAY NEVER ASK FOR WHAT THE ACCEPTANCE TEST REJECTS** (2026-08-10, `extreme-settings00098434`).
+Bias shifts the ceiling target by `-bias*0.03`, so NEGATIVE bias walks it *up* — and it used to
+clamp at **1.000**, while the decline check on the very next line rejects any result `>= 0.999`.
+So from about **bias -1.07 down, on every frame**, the solve was asked for precisely the thing it
+was then refused for delivering. It could not succeed on any footage. `applyBias` treated that
+decline as "not armed" and fell through to its **coefficient path**, which is a different control
+law — Lift went `-0.134` solved to `+0.162` coefficient at neighbouring slider positions, a 0.30
+step the user saw as the image inverting: very contrasty, then saturated, then normal, "making
+the plugin look broken". Fixes: `kFrameCeilingMax = 0.990` sits below `kFrameBlown = 0.999` and
+lives beside it in `OneGradeCreative.h`, and `solve_magic_tone_bias()` now owns the whole slider
+law — it **bisects back to the last feasible bias and holds there** instead of declining.
+Bisecting rather than keeping the last value is deliberate: keeping it makes the grade depend on
+how fast the slider was dragged. **Fourth discontinuity in this project** after Rolloff at 0, RAW
+Temp at 6500 and the halfway-armed anchor — and the first at a *feasibility* boundary rather than
+at a default. Walk the whole slider with `--bias-sweep`, which was added to find this and prints
+`held` where the targets stop being reachable.
+
+**THE BIAS SLIDER TOOK FOUR FIXES AND IS STILL NOT PERFECT** (2026-08-10/11; full write-up
+`docs/AUTO-GRADE.md` §10 "Four ways one slider looked broken"). All four looked like "an
+inversion" on footage and three were **invisible to a sweep from a fixed reference** — they only
+appear when the slider is walked the way a hand walks it. In order:
+1. **A target asked for what the acceptance test forbids.** Ceiling shifted by `-bias*0.03`
+   clamped at 1.000 while the decline check rejects `>= kFrameBlown` (0.999) → below bias ≈ −1.07
+   the solve could not succeed **on any frame**. `kFrameCeilingMax = 0.990` now lives next to
+   `kFrameBlown`, not at the call sites.
+2. **The slider read its own output.** `applyBias` seeded the solve from the live L/G/G — the
+   previous solve's result — and the solve is path-dependent, so a drag became a **2-cycle** (89
+   jumps on one frame). Seeded from the armed anchor: 89 → 1. **Third control here to read its own
+   output**, after Auto Grade's first press and WB settling over three presses.
+3. **Crossing the ceiling-gives-way branch** (`branch & 2`) reassigns which control carries the
+   midtone — inherently a step, and the far side is a washed-out picture. Bias bisects back and
+   **holds**. ONLY that bit: holding on any branch change capped a frame at −0.06 (the frame-floor
+   bit comes and goes *smoothly*) — zero jumps because nothing moved.
+4. **Hand edits were solved away.** Fixed by moving the CONDITIONS, not by remembering parameters:
+   `tone_targets_of()` re-derives what the grade meets, Bias offsets from there, so bias 0 asks for
+   what is on screen. **The frame-floor cap is part of that** — without deriving it too, re-solving
+   an *untouched* grade moved Lift 0.084 → 0.066. Edits that blow the highlight are deliberately
+   NOT preserved (Bias would have nowhere to go).
+
+**Still imperfect — user's call to ship anyway** ("some shots still cause unpredictable results,
+but the majority work, so good enough for now", 2026-08-11). Known: a hand edit can still land you
+on the ceiling-gives-way branch, where gamma is restored from the anchor rather than solved.
+**Two laws behind one control** (re-solve when armed, offset otherwise) — now stated by the
+`biasNote` label, driven from `setEnabledness()` with the same test `applyBias` makes.
+
+**The bench flags that found all of it** (`--bias-sweep --bias-drag --bias-feedback --bias-inc
+--bias-at --hand-lift/gamma/gain`). **A jump every other step is invisible at the default 0.1
+increment** — use `--bias-inc=0.002`. `--bias-feedback` reproduces defect 2 on demand.
+
 **Every tone target came from ONE hand-graded interview.** Placeholders with the right shape, all
 exposed as bench flags. Extending past faces is a DATA question — see `docs/ROADMAP.md`.
 

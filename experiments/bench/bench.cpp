@@ -179,6 +179,34 @@ int main(int argc, char** argv)
     const double sep = argd(argc, argv, "--sep", 1.0);
     const bool  wb  = argf(argc, argv, "--wb");
     const bool  noTone = argf(argc, argv, "--no-tone");
+    // Which press. Magic Grade offers a different subject each time it is pressed, and until
+    // now the bench could only ever see press one -- so a grade the user reached on press two
+    // could not be reproduced here at all.
+    const int   cycle = (int)argd(argc, argv, "--cycle", 0);
+    // BIAS, swept. The slider re-solves the tone targets rather than nudging sliders, and that
+    // re-solve is shared code -- so the bench can walk it and show where it stops converging,
+    // which is the only way to see a discontinuity without dragging a slider in Resolve.
+    const bool  biasSweep = argf(argc, argv, "--bias-sweep");
+    // How often the sweep writes a frame. 0 prints the table and writes nothing.
+    const double biasStep = argd(argc, argv, "--bias-step", 0.5);
+    const double biasInc  = argd(argc, argv, "--bias-inc",  0.1);
+    // Walk the slider out from zero in each direction, the way a hand moves it, which is the
+    // only way direction-dependent behaviour shows up at all.
+    const bool  biasDrag  = argf(argc, argv, "--bias-drag");
+    // ...and feed each result forward as the next solve's starting point, which is what
+    // applyBias used to do by reading the live sliders. This reproduces the 2-cycle that
+    // caused: it is the hazard probe, NOT what the plugin does now. Keep it, because a sweep
+    // from a fixed reference cannot show hysteresis and this is what found it.
+    const bool  biasFeedback = argf(argc, argv, "--bias-feedback");
+    // Render ONE frame at exactly this slider position. For looking at either side of a step,
+    // where a sweep's fixed stops will not land where you need them.
+    const double biasAt = argd(argc, argv, "--bias-at", -999.0);
+    // SIMULATE A HAND EDIT after Magic Grade: set one of the three to a value of your choosing,
+    // re-derive the conditions the grade now meets, and sweep Bias from there. What this is
+    // checking is that bias 0 gives the edit back rather than solving it away.
+    const double handLift  = argd(argc, argv, "--hand-lift",  -999.0);
+    const double handGamma = argd(argc, argv, "--hand-gamma", -999.0);
+    const double handGain  = argd(argc, argv, "--hand-gain",  -999.0);
     const char* lutPath = nullptr;
     for (int i = 1; i < argc; ++i) if (!strncmp(argv[i], "--lut=", 6)) lutPath = argv[i] + 6;
 
@@ -257,7 +285,7 @@ int main(int argc, char** argv)
         };
 
         const og::grade::MagicResult R =
-            og::grade::solve_magic(S, tsrc, m, cam, enc, lutData, lutSize, tun, 0, sep, wb, segfn);
+            og::grade::solve_magic(S, tsrc, m, cam, enc, lutData, lutSize, tun, cycle, sep, wb, segfn);
         float P[oga::kParamN];
         for (int k = 0; k < oga::kParamN; ++k) P[k] = R.P[k];
         if (noTone) { P[3] = 0.11f; P[4] = 1.f; P[10] = 0.f; }
@@ -295,6 +323,154 @@ int main(int argc, char** argv)
         printf("%-24s %+6.2f %6.3f %6.3f %+6.3f %6.3f %6.3f %6.3f  %s\n",
                nm, m.key, m.d99, P[5], P[3], P[12], d.v[oga::D_BLACK], d.v[oga::D_MID],
                (decision + wbNote + toneNote).c_str());
+
+        // BIAS SWEEP. Walks the slider the way a drag does and prints what the tone re-solve
+        // returns at each stop, so a discontinuity is visible as a number rather than as "the
+        // picture jumped". Mirrors applyBias()'s target arithmetic exactly -- the two shifted
+        // targets and the same clamps -- because that arithmetic is the thing under test.
+        // HAND EDIT, then Bias. Mirrors what the plugin does on a manual Lift/Gamma/Gain move:
+        // re-derive the conditions from the edited grade so Bias leans away from THAT.
+        og::grade::ToneTargets handBase;
+        if (R.tone.ok && (handLift > -998.0 || handGamma > -998.0 || handGain > -998.0)) {
+            float Ph[oga::kParamN];
+            for (int k = 0; k < oga::kParamN; ++k) Ph[k] = P[k];
+            if (handLift  > -998.0) Ph[3] = (float)handLift;
+            if (handGamma > -998.0) Ph[4] = (float)handGamma;
+            if (handGain  > -998.0) Ph[5] = (float)handGain;
+            handBase = og::grade::tone_targets_of(R.tone.sLo, R.tone.sMid, R.tone.fHi,
+                                                  R.tone.fLo, Ph, lutData, lutSize);
+            const og::grade::MagicTone back = og::grade::solve_magic_tone_bias(
+                R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, Ph,
+                lutData, lutSize, tun, R.tone.fLo, 0.0, handBase);
+            printf("    hand edit  L%+.3f G%.3f g%.3f  -> conditions %.3f/%.3f/%.3f\n",
+                   Ph[3], Ph[4], Ph[5], handBase.floor, handBase.mid, handBase.ceil);
+            printf("    bias 0     L%+.3f G%.3f g%.3f  %s\n", back.lift, back.gamma, back.gain,
+                   (std::fabs(back.lift - Ph[3]) < 0.005 &&
+                    std::fabs(back.gamma - Ph[4]) < 0.02 &&
+                    std::fabs(back.gain - Ph[5]) < 0.01) ? "<- PRESERVED" : "<- LOST");
+            for (int k = 0; k < oga::kParamN; ++k) P[k] = Ph[k];   // sweep from the edited grade
+        }
+
+        if (biasAt > -998.0 && R.tone.ok) {
+            const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
+                lutData, lutSize, tun, R.tone.fLo, biasAt);
+            printf("    bias %+0.3f -> lift %+0.3f gamma %.3f gain %.3f  branch %d  %s\n",
+                   biasAt, t.lift, t.gamma, t.gain, t.branch, t.ok ? "ok" : t.why);
+            if (t.ok) {
+                float Pb[oga::kParamN];
+                for (int k = 0; k < oga::kParamN; ++k) Pb[k] = P[k];
+                Pb[3] = t.lift; Pb[4] = t.gamma; Pb[5] = t.gain;
+                std::vector<unsigned char> ob((size_t)f.w * f.h * 3);
+                for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
+                    float r, g, b;
+                    full_chain(cam, enc, Pb, lutData, lutSize, 1.f,
+                               f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+                    ob[k*3+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
+                    ob[k*3+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
+                    ob[k*3+2] = (unsigned char)(og::clamp01(b) * 255.f + .5f);
+                }
+                const char* nm1 = strrchr(argv[i], '/'); nm1 = nm1 ? nm1 + 1 : argv[i];
+                std::string st(nm1);
+                const size_t d1 = st.rfind('.');
+                if (d1 != std::string::npos) st = st.substr(0, d1);
+                char bp[64];
+                snprintf(bp, sizeof bp, "-at%c%04d.png", biasAt < 0 ? 'm' : 'p',
+                         (int)std::llround(std::fabs(biasAt) * 1000.0));
+                const std::string op3 = outDir + "/" + st + bp;
+                stbi_write_png(op3.c_str(), f.w, f.h, 3, ob.data(), f.w * 3);
+            }
+        }
+        if (biasSweep && R.tone.ok) {
+            og::grade::Tunables tn = tun;
+            // The tone triple this frame stands on, printed so a real configuration can be
+            // lifted straight into a unit test. A synthetic one is not good enough here: the
+            // first version of the continuity test used made-up percentiles that never reached
+            // the feasibility limit, so it passed with the hold-at-limit logic deleted.
+            printf("    tone inputs: sLo %.4f sMid %.4f sHi %.4f fHi %.4f fLo %.4f\n",
+                   R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, R.tone.fLo);
+            // DRAG MODE: out from zero in each direction, the way a hand moves the slider, with
+            // the previous result fed forward. Direction matters for hysteresis, so a sweep that
+            // runs +2 -> -2 would miss it even with feedback.
+            if (biasDrag) {
+                printf(biasFeedback
+                       ? "    (drag WITH FEEDBACK: the pre-fix hazard, results fed forward)\n"
+                       : "    (drag from the armed anchor, as the plugin does)\n");
+                printf("    bias     lift   gamma    gain   d(lift)\n");
+                for (int dir = 0; dir < 2; ++dir) {
+                    float Pf[oga::kParamN];
+                    for (int k = 0; k < oga::kParamN; ++k) Pf[k] = P[k];
+                    double prevL = P[3];
+                    for (double bs = 0.0; dir ? (bs >= -2.0001) : (bs <= 2.0001);
+                         bs += dir ? -biasInc : biasInc) {
+                        const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                            R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, Pf,
+                            lutData, lutSize, tn, R.tone.fLo, bs);
+                        if (!t.ok) { printf("   %+5.3f   NOT ARMED: %s\n", bs, t.why); break; }
+                        const double d = t.lift - prevL;
+                        printf("   %+5.3f  %+7.3f %7.3f %7.3f  %+7.3f%s\n",
+                               bs, t.lift, t.gamma, t.gain, d,
+                               std::fabs(d) > 0.02 ? "   <-- JUMP" : "");
+                        if (biasFeedback) { Pf[3] = t.lift; Pf[4] = t.gamma; Pf[5] = t.gain; }
+                        prevL = t.lift;
+                    }
+                }
+                continue;
+            }
+            printf("    bias   subjFloor  ceiling     lift   gamma    gain   result\n");
+            for (double bs = 2.0; bs >= -2.001; bs -= biasInc) {
+                const double sf = std::min(0.40, std::max(0.00,
+                                      tn.subjFloor + bs * og::grade::kBiasSubjFloorPer));
+                const double fc = std::min(og::grade::kFrameCeilingMax, std::max(0.60,
+                                      tn.frameCeiling - bs * og::grade::kBiasCeilingPer));
+                // The SAME call applyBias() makes, holding included -- so "held" below is what
+                // the slider actually does, not what a copy of it would do.
+                const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                    R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
+                    lutData, lutSize, tn, R.tone.fLo, bs);
+                const og::grade::MagicTone raw = og::grade::solve_magic_tone_from(
+                    R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
+                    lutData, lutSize, sf, tn.subjMid, fc, R.tone.fLo, tn.frameFloorMax);
+                if (!t.ok) {
+                    printf("   %+5.2f   %7.3f  %7.3f        -       -       -   NOT ARMED: %s\n",
+                           bs, sf, fc, t.why);
+                    continue;
+                }
+                printf("   %+5.2f   %7.3f  %7.3f  %+7.3f %7.3f %7.3f   %s\n",
+                       bs, sf, fc, t.lift, t.gamma, t.gain,
+                       raw.ok ? "ok" : "held (targets unreachable)");
+
+                // AND WRITE THE PICTURE. Numbers say the curve is continuous; only the frames
+                // say whether the grade at each stop is one anybody would want. Written at
+                // --bias-step so a sweep is a contact sheet you can flip through in order,
+                // rather than 41 versions of a 4K still.
+                if (biasStep > 0.0 &&
+                    std::fabs(bs / biasStep - std::floor(bs / biasStep + 0.5)) < 1e-6) {
+                    float Pb[oga::kParamN];
+                    for (int k = 0; k < oga::kParamN; ++k) Pb[k] = P[k];
+                    Pb[3] = t.lift; Pb[4] = t.gamma; Pb[5] = t.gain;
+                    std::vector<unsigned char> ob((size_t)f.w * f.h * 3);
+                    for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
+                        float r, g, b;
+                        full_chain(cam, enc, Pb, lutData, lutSize, 1.f,
+                                   f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+                        ob[k*3+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
+                        ob[k*3+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
+                        ob[k*3+2] = (unsigned char)(og::clamp01(b) * 255.f + .5f);
+                    }
+                    const char* nm0 = strrchr(argv[i], '/'); nm0 = nm0 ? nm0 + 1 : argv[i];
+                    std::string stem(nm0);
+                    const size_t dot = stem.rfind('.');
+                    if (dot != std::string::npos) stem = stem.substr(0, dot);
+                    char bp[64];
+                    // Sortable, so the contact sheet reads in slider order: p10 is +1.0.
+                    snprintf(bp, sizeof bp, "-bias%c%04d.png", bs < 0 ? 'm' : 'p',
+                             (int)std::llround(std::fabs(bs) * 100.0));
+                    const std::string op2 = outDir + "/" + stem + bp;
+                    stbi_write_png(op2.c_str(), f.w, f.h, 3, ob.data(), f.w * 3);
+                }
+            }
+        }
 
         // Write the graded frame, and measure it ON THE WAY OUT.
         //
