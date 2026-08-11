@@ -1021,6 +1021,11 @@ using SegmentFn = std::function<bool(const unsigned char* rgb, int w, int h,
 
 struct MagicResult {
     float P[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    // The grade as Creative left it, BEFORE a subject was chosen. Kept so switching subjects
+    // starts from the same place every time -- re-running from the graded result would compound
+    // one subject's colour move onto the next, and the answer would depend on the order they
+    // were tried in.
+    float Pcreative[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
     analysis::MagicChoice choice;
     MagicTone     tone;
     WhiteBalance  wb;
@@ -1031,6 +1036,78 @@ struct MagicResult {
 
 // thumbSrc: 512*512*3 camera log, top-down. S must already hold the frame's samples; its region
 // labels are filled in here. `click` cycles the subject, `sep` scales the colour move.
+// STEPS 4-7, GIVEN A SEGMENTATION THAT ALREADY EXISTS: decide, tone, colour, re-solve.
+//
+// Split out of solve_magic() so the choice of subject can be revisited for free. Segmentation is
+// the whole cost of the button (~100 ms of inference); everything here is arithmetic over a
+// SampleSet whose regions are already assigned, so offering every option the frame supports costs
+// nothing next to offering one.
+//
+// `creativeP` is the grade as Creative left it -- BEFORE any subject was chosen. Re-running from
+// the graded result instead would compound one subject's colour move onto the next, so switching
+// options would depend on which order they were tried in.
+static inline MagicResult solve_magic_from_regions(analysis::SampleSet& S,
+                                                   const float creativeP[analysis::kParamN],
+                                                   const Measurements& m, int cam, int enc,
+                                                   const float* lut, int lutSize,
+                                                   const Tunables& t, int click, double sep)
+{
+    (void)m;
+    MagicResult out;
+    for (int k = 0; k < analysis::kParamN; ++k) out.P[k] = creativeP[k];
+    for (int k = 0; k < analysis::kParamN; ++k) out.Pcreative[k] = creativeP[k];
+
+    const int dispEnc = (enc <= 2) ? enc : 1;
+    analysis::RegionStat st[analysis::kRegionN];
+    analysis::region_stats(S, cam, dispEnc, out.P, st);
+    out.choice = analysis::magic_decide(st, click);
+    if (!out.choice.ok) return out;
+
+    // TONE, then COLOUR, then TONE AGAIN -- the last two because Offset Temp is additive and Gain
+    // Temp multiplicative, so either shifts the channels the tone was placed on. A grade has to be
+    // solved for the configuration it ends in, not one it passed through.
+    auto applyTone = [&]() {
+        const MagicTone tn = solve_magic_tone(S, out.choice.subject, cam, enc, lut, lutSize,
+                                              out.P, t);
+        if (tn.ok) {
+            out.P[3] = tn.lift; out.P[4] = tn.gamma; out.P[5] = tn.gain;
+            if (tn.rawExp > 0.f) out.P[10] = tn.rawExp;
+        }
+        out.tone = tn;
+    };
+    applyTone();
+
+    out.magicBase = solve_magic_base(S, cam, dispEnc, out.choice, st, t);
+    out.P[out.choice.param] = (float)std::min(1.0, std::max(-1.0,
+        (double)out.P[out.choice.param] + out.magicBase * sep));
+
+    solve_black_px(S, cam, enc, out.P, t.blackTarget, nullptr, 0);
+    applyTone();
+
+    out.ok = true;
+    return out;
+}
+
+// HOW MANY DISTINCT SUBJECTS THIS FRAME OFFERS, and what they are. magic_decide() already builds
+// the deduped candidate list and reports its size, so asking it for each index in turn enumerates
+// them with no new logic to keep in step.
+static inline int magic_option_count(const analysis::SampleSet& S, int cam, int enc,
+                                     const float* P)
+{
+    analysis::RegionStat st[analysis::kRegionN];
+    analysis::region_stats(S, cam, (enc <= 2) ? enc : 1, P, st);
+    const analysis::MagicChoice c = analysis::magic_decide(st, 0);
+    return c.ok ? c.options : 0;
+}
+
+static inline analysis::MagicChoice magic_option_at(const analysis::SampleSet& S, int cam, int enc,
+                                                    const float* P, int k)
+{
+    analysis::RegionStat st[analysis::kRegionN];
+    analysis::region_stats(S, cam, (enc <= 2) ? enc : 1, P, st);
+    return analysis::magic_decide(st, k);
+}
+
 static inline MagicResult solve_magic(analysis::SampleSet& S,
                                       const std::vector<float>& thumbSrc,
                                       const Measurements& m, int cam, int enc,
@@ -1082,35 +1159,16 @@ static inline MagicResult solve_magic(analysis::SampleSet& S,
     if (!segment(th.data(), 512, 512, mask)) return out;
     if (!analysis::assign_regions(S, mask, 512, 512)) return out;
 
-    // 4. DECIDE: rank the regions, pick a subject, pick a control and a direction.
-    const int dispEnc = (enc <= 2) ? enc : 1;
-    analysis::RegionStat st[analysis::kRegionN];
-    analysis::region_stats(S, cam, dispEnc, out.P, st);
-    out.choice = analysis::magic_decide(st, click);
-    if (!out.choice.ok) return out;
-
-    // 5. TONE, then 6. COLOUR, then 7. TONE AGAIN -- the last two because Offset Temp is additive
-    //    and Gain Temp multiplicative, so either shifts the channels the tone was placed on. A
-    //    grade has to be solved for the configuration it ends in, not one it passed through.
-    auto applyTone = [&]() {
-        const MagicTone tn = solve_magic_tone(S, out.choice.subject, cam, enc, lut, lutSize,
-                                              out.P, t);
-        if (tn.ok) {
-            out.P[3] = tn.lift; out.P[4] = tn.gamma; out.P[5] = tn.gain;
-            if (tn.rawExp > 0.f) out.P[10] = tn.rawExp;
-        }
-        out.tone = tn;
-    };
-    applyTone();
-
-    out.magicBase = solve_magic_base(S, cam, dispEnc, out.choice, st, t);
-    out.P[out.choice.param] = (float)std::min(1.0, std::max(-1.0,
-        (double)out.P[out.choice.param] + out.magicBase * sep));
-
-    solve_black_px(S, cam, enc, out.P, t.blackTarget, nullptr, 0);
-    applyTone();
-
-    out.ok = true;
+    // 4-7 live in solve_magic_from_regions() so they can be re-run WITHOUT the model. Steps 1-3
+    // are the ~100 ms; choosing a different subject out of the same segmentation is arithmetic,
+    // which is what lets the panel offer the alternatives instead of making the user press the
+    // button again and hope.
+    for (int k = 0; k < analysis::kParamN; ++k) out.Pcreative[k] = out.P[k];
+    const MagicResult tail = solve_magic_from_regions(S, out.P, m, cam, enc, lut, lutSize,
+                                                     t, click, sep);
+    for (int k = 0; k < analysis::kParamN; ++k) out.P[k] = tail.P[k];
+    out.choice = tail.choice; out.tone = tail.tone; out.magicBase = tail.magicBase;
+    out.ok = tail.ok;
     return out;
 }
 

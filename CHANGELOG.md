@@ -22,17 +22,26 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
   because they are results rather than settings. Without a Magic grade it is a plain offset and
   all three move together. A line under the slider now says which.
 
-### Press Magic Grade again for a different subject
+### New: pick the subject, instead of pressing until you get it
 
-Worth knowing, because it decides how much room Bias has to work with. Each press picks a
-different subject out of the frame, and the grades that follow can be very different pictures.
-On a beach shot of a child, one press reads the child (**skin, 13% of frame**) and the next reads
+Magic Grade used to cycle — press again for a different subject, with no way to see what the
+alternatives were or to get back to one you liked. It now **looks once and lists what it found**
+in a **Subject** dropdown. Selecting a different subject re-grades immediately: the expensive part
+is looking at the frame, and that is already done.
+
+This matters more than it sounds, because the subject decides how much room the rest of the grade
+has. On a beach shot of a child, one option is the child (**skin, 13% of frame**) and the other is
 the sand (**terrain, 43%**). The terrain version is looser and takes Bias across a wide range; the
-skin version holds the face in place and so allows less movement before it runs out of road.
+skin version holds the face in place and allows less movement before it runs out of road.
 
 Neither is wrong, and **which one is more pleasing is a judgement the plugin does not make** — on
-that shot the skin version has better skin tones and an unblown sky, and nothing measurable says
-so. If the first press did not pick the subject you care about, press again.
+that shot the skin version has the better skin tones and an unblown sky, and nothing measurable
+says so. That is exactly why the alternatives are now offered rather than hidden behind another
+press.
+
+The list is rebuilt each time you press Magic Grade, and is empty until you do — it describes the
+frame that was analysed, so a reopened project asks you to press the button rather than showing a
+subject it can no longer stand behind.
 
 ---
 
