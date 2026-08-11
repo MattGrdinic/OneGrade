@@ -124,6 +124,44 @@ struct Tunables {
 static const double kFrameBlown      = 0.999;   // render(fHi) at or above this is blown
 static const double kFrameCeilingMax = 0.990;   // ...so never TARGET above this
 
+// WHERE A SOURCE VALUE LANDS under a grade, through the LUT and the trim -- the picture the
+// viewer is actually judging. The tone solve places its targets with this, and callers ask it
+// "where is the subject NOW?" with the same function, so the question and the answer cannot
+// drift apart. It was a lambda inside the solve until a caller needed to ask.
+static inline double tone_render(double v, double lf, double gm, double gn,
+                                 double pe, double con, double roll,
+                                 const float* lut, int lutSize)
+{
+    float x = og::lgg_core((float)v, (float)lf, (float)gm, (float)gn);
+    float r = x, g = x, b = x;
+    if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
+    og::apply_trim((float)pe, (float)con, r, g, b);
+    if (roll > 0.f) g = og::softclip(g, (float)roll);
+    return (double)g;
+}
+
+// The three conditions a grade currently MEETS, in the order the solve names them. This is what
+// lets a hand edit become the thing Bias leans away from: measure what the hand did, and Bias
+// offsets from there instead of from the constants the button was solved to.
+struct ToneTargets { double floor = -1.0, mid = -1.0, ceil = -1.0, floorMax = -1.0; };
+
+// floorMax IS PART OF THE ANSWER, not a detail. Solving to the conditions a grade already meets
+// only gives that grade back if EVERY constraint agrees it is acceptable, and the frame-floor cap
+// is a constraint: a grade sitting above it gets its Lift taken away and reassigned, so the round
+// trip lands somewhere else entirely. Caught by the bench refusing to preserve an edit of exactly
+// zero -- re-solving the untouched grade moved Lift 0.084 -> 0.066 and Gamma 1.199 -> 1.264.
+static inline ToneTargets tone_targets_of(double sLo, double sMid, double fHi, double fLo,
+                                          const float P[analysis::kParamN],
+                                          const float* lut, int lutSize)
+{
+    ToneTargets t;
+    t.floor    = tone_render(sLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+    t.mid      = tone_render(sMid, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+    t.ceil     = tone_render(fHi,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+    t.floorMax = tone_render(fLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+    return t;
+}
+
 // How far one unit of Bias moves each target. Taste, unlike the two above, but they belong
 // together: these are what walk the ceiling into the clamp.
 static const double kBiasSubjFloorPer = 0.06;
@@ -630,12 +668,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     MagicTone out;
     const double pe = P0[8], con = P0[9], roll = P0[12];
     auto render = [&](double v, double lf, double gm, double gn) {
-        float x = og::lgg_core((float)v, (float)lf, (float)gm, (float)gn);
-        float r = x, g = x, b = x;
-        if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
-        og::apply_trim((float)pe, (float)con, r, g, b);
-        if (roll > 0.f) g = og::softclip(g, (float)roll);
-        return (double)g;
+        return tone_render(v, lf, gm, gn, pe, con, roll, lut, lutSize);
     };
 
     double lf = P0[3], gm = P0[4], gn = P0[5];
@@ -756,15 +789,29 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
 static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sHi, double fHi,
                                               const float P0[analysis::kParamN],
                                               const float* lut, int lutSize,
-                                              const Tunables& t, double fLo, double bias)
+                                              const Tunables& t, double fLo, double bias,
+                                              ToneTargets base = ToneTargets())
 {
+    // BIAS LEANS AWAY FROM WHATEVER THE GRADE CURRENTLY MEETS, not from the constants the button
+    // was solved to. Pass the conditions a hand edit achieved and the edit survives by
+    // construction: at bias 0 the solve is asked for exactly what is already on screen, so it
+    // returns it. Default-constructed (-1) means "use the fitted targets", which is what a fresh
+    // Magic grade wants and what every existing caller got before.
+    const double bFloor = (base.floor >= 0.0) ? base.floor : t.subjFloor;
+    const double bMid   = (base.mid   >= 0.0) ? base.mid   : t.subjMid;
+    const double bCeil  = (base.ceil  >= 0.0) ? base.ceil  : t.frameCeiling;
+    // ...and the frame floor has to admit the grade it is being asked to reproduce, or the cap
+    // reassigns Lift and the round trip fails. Never TIGHTER than the fitted value, so this can
+    // only ever let an existing grade through -- it cannot license a new one to wash out.
+    const double bFFMax = (base.floorMax >= 0.0) ? std::max(t.frameFloorMax, base.floorMax)
+                                                 : t.frameFloorMax;
     auto at = [&](double b) {
         return solve_magic_tone_from(
             sLo, sMid, sHi, fHi, P0, lut, lutSize,
-            std::min(0.40, std::max(0.00, t.subjFloor    + b * kBiasSubjFloorPer)),
-            t.subjMid,
-            std::min(kFrameCeilingMax, std::max(0.60, t.frameCeiling - b * kBiasCeilingPer)),
-            fLo, t.frameFloorMax);
+            std::min(0.40, std::max(0.00, bFloor + b * kBiasSubjFloorPer)),
+            bMid,
+            std::min(kFrameCeilingMax, std::max(0.60, bCeil - b * kBiasCeilingPer)),
+            fLo, bFFMax);
     };
     MagicTone feasible = at(0.0);
     if (!feasible.ok) return at(bias);   // never armed by Magic Tone -- let the caller fall back

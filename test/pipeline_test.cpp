@@ -1001,6 +1001,71 @@ int main() {
         check(ok, "Bias never crosses the ceiling-gives-way fallback");
     }
 
+    // 32. A HAND EDIT BECOMES THE THING BIAS LEANS AWAY FROM, instead of being solved away.
+    //
+    //     Re-anchoring preserves a manual Lift/Gamma/Gain edit on the offset path and CANNOT on
+    //     the solving path, which drives back to conditions stored when the button was pressed --
+    //     the anchor is only the seed for a bracketed solve. So the conditions move instead.
+    //
+    //     The identity case is the one that matters most and is the one that failed first: solve
+    //     to the conditions a grade ALREADY meets and you must get that grade back. It did not,
+    //     because the frame-floor cap is also a constraint and it was still the fitted value, so
+    //     re-solving an untouched grade reassigned Lift. Both halves are checked here.
+    {
+        float P0[13]; neutral13(P0);
+        P0[8] = 0.55f;
+        og::grade::Tunables tn;
+        const double sLo = 0.22, sMid = 0.24, sHi = 0.33, fHi = 0.42, fLo = 0.198;
+
+        const og::grade::MagicTone m0 = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, 0.0);
+        bool ok = m0.ok;
+
+        // The grade as armed, then asked for itself.
+        float Pm[13]; for (int k = 0; k < 13; ++k) Pm[k] = P0[k];
+        Pm[3] = m0.lift; Pm[4] = m0.gamma; Pm[5] = m0.gain;
+        const og::grade::ToneTargets idt =
+            og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Pm, nullptr, 0);
+        const og::grade::MagicTone idb = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, Pm, nullptr, 0, tn, fLo, 0.0, idt);
+        ok &= idb.ok && close(idb.lift, Pm[3], 0.005f)
+                     && close(idb.gamma, Pm[4], 0.02f)
+                     && close(idb.gain,  Pm[5], 0.01f);
+
+        // Now a real edit: darker mids, which keeps the highlight where it was. An edit that
+        // BLOWS the frame highlight is deliberately not preserved -- honouring it would leave
+        // Bias with nowhere to go, which is the whole reason a ceiling condition exists.
+        float Ph[13]; for (int k = 0; k < 13; ++k) Ph[k] = Pm[k];
+        Ph[4] = Pm[4] * 0.85f;
+        const og::grade::ToneTargets hnd =
+            og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Ph, nullptr, 0);
+        const og::grade::MagicTone back = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, Ph, nullptr, 0, tn, fLo, 0.0, hnd);
+        ok &= back.ok && close(back.lift, Ph[3], 0.005f)
+                      && close(back.gamma, Ph[4], 0.02f)
+                      && close(back.gain,  Ph[5], 0.01f);
+        ok &= (std::fabs(hnd.mid - idt.mid) > 0.005);   // the edit really did change something
+
+        // AN EDIT THAT LIFTS THE FRAME'S FLOOR PAST THE FITTED CAP. This is the case that makes
+        // the frame-floor derivation load-bearing: the cap is a constraint like any other, so a
+        // grade sitting above it gets its Lift reassigned and the round trip fails. Checked with
+        // a value that clears the cap (0.085) while keeping the highlight under the ceiling
+        // clamp, because a blown highlight is refused for its own separate and correct reason.
+        float Pf[13]; for (int k = 0; k < 13; ++k) Pf[k] = Pm[k];
+        Pf[3] = Pm[3] + 0.04f;
+        const og::grade::ToneTargets flr =
+            og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Pf, nullptr, 0);
+        ok &= (flr.floorMax > tn.frameFloorMax);        // ...it really is over the cap
+        ok &= (flr.ceil < og::grade::kFrameCeilingMax); // ...and not refused for the other reason
+        const og::grade::MagicTone fb = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, Pf, nullptr, 0, tn, fLo, 0.0, flr);
+        ok &= fb.ok && close(fb.lift, Pf[3], 0.005f)
+                    && close(fb.gamma, Pf[4], 0.02f)
+                    && close(fb.gain,  Pf[5], 0.01f);
+
+        check(ok, "a hand edit re-bases Bias instead of being solved away");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

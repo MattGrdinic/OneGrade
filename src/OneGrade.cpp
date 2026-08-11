@@ -425,6 +425,7 @@ public:
     void applyMagicGrade(double p_Time); // Creative, then one classifier-chosen colour move
     void applySeparation();             // rescale the stored magic move without re-deciding
     void armBias(bool reset = false);   // store the current grade as Bias's zero point
+    void armToneTargets();              // ...and the conditions it currently meets
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
     double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
     double m_LastGain = 0.80;           // Gain the measurement asked for (bias moves off this)
@@ -552,6 +553,12 @@ private:
     OFX::DoubleParam* m_ToneMid;
     OFX::DoubleParam* m_ToneShi;
     OFX::DoubleParam* m_ToneFLo;
+    // The three conditions the CURRENT grade meets. Bias leans away from these rather
+    // than from the fitted constants, which is what lets a hand edit survive it. -1 = unset.
+    OFX::DoubleParam* m_ToneTFloor;
+    OFX::DoubleParam* m_ToneTMid;
+    OFX::DoubleParam* m_ToneTCeil;
+    OFX::DoubleParam* m_ToneTFMax;
     OFX::DoubleParam* m_ToneHi;
     OFX::DoubleParam* m_CreativeLow;   // where Creative places its black point (pre-LUT)
     OFX::StringParam* m_ProbePeak;
@@ -637,6 +644,10 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ToneMid      = fetchDoubleParam("toneMid");
     m_ToneShi      = fetchDoubleParam("toneShi");
     m_ToneFLo      = fetchDoubleParam("toneFLo");
+    m_ToneTFloor   = fetchDoubleParam("toneTFloor");
+    m_ToneTMid     = fetchDoubleParam("toneTMid");
+    m_ToneTCeil    = fetchDoubleParam("toneTCeil");
+    m_ToneTFMax    = fetchDoubleParam("toneTFMax");
     m_ToneHi       = fetchDoubleParam("toneHi");
     m_BiasGain     = fetchDoubleParam("biasGain");
     m_BiasLift     = fetchDoubleParam("biasLift");
@@ -1674,6 +1685,46 @@ void OneGrade::applyAutoGradeClean(double p_Time)
 // the offset is measured from there. That is what makes a hand tweak survive: the slider does
 // not jump, the picture does not move, and the next drag continues from where the user left it
 // rather than from where the button did.
+// RE-DERIVE WHAT THE GRADE CURRENTLY MEETS, so Bias leans away from that rather than from the
+// constants Magic Tone was solved to.
+//
+// Without this a hand edit to Lift, Gamma or Gain is discarded the next time Bias is touched:
+// armBias() re-anchors, which preserves the edit exactly on the offset path, but the solving
+// path drives back to targets stored when the button was pressed and the anchor is only the
+// seed for a bracketed solve. So the fix is not to remember the parameters harder -- it is to
+// move the CONDITIONS, because the conditions are what that path is actually about.
+//
+// Measured through tone_render(), the same function the solve places its targets with, so "where
+// is the subject now" and "where should the subject go" can never be answered differently.
+//
+// No-op unless Magic Tone armed this node: the offset path already preserves edits.
+void OneGrade::armToneTargets()
+{
+    double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0, tFLo = -1.0;
+    m_ToneLo->getValue(tLo);  m_ToneMid->getValue(tMid);
+    m_ToneShi->getValue(tShi); m_ToneHi->getValue(tHi); m_ToneFLo->getValue(tFLo);
+    if (!(tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 && tHi >= 0.0 && tFLo >= 0.0)) {
+        m_ToneTFloor->setValue(-1.0); m_ToneTMid->setValue(-1.0);
+        m_ToneTCeil->setValue(-1.0);  m_ToneTFMax->setValue(-1.0);
+        return;
+    }
+    float P[og::analysis::kParamN];
+    P[0]=(float)m_Temp->getValue();    P[1]=(float)m_Tint->getValue();
+    P[2]=(float)m_Density->getValue(); P[3]=(float)m_Lift->getValue();
+    P[4]=(float)m_Gamma->getValue();   P[5]=(float)m_Gain->getValue();
+    P[6]=(float)m_OffTemp->getValue(); P[7]=(float)m_OffTint->getValue();
+    P[8]=(float)m_PostExp->getValue(); P[9]=(float)m_PostCon->getValue();
+    P[10]=(float)m_RawExp->getValue(); P[11]=(float)m_RawTemp->getValue();
+    P[12]=(float)m_Rolloff->getValue();
+    const bool lutOk = ensureLutLoaded();
+    const og::grade::ToneTargets t = og::grade::tone_targets_of(
+        tLo, tMid, tHi, tFLo, P, lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0);
+    m_ToneTFloor->setValue(t.floor);
+    m_ToneTMid->setValue(t.mid);
+    m_ToneTCeil->setValue(t.ceil);
+    m_ToneTFMax->setValue(t.floorMax);
+}
+
 void OneGrade::armBias(bool reset)
 {
     if (reset) { m_AutoBias->setValue(0.0); m_BiasMirror->setValue(0.0); }
@@ -1760,9 +1811,16 @@ void OneGrade::applyBias()
         // THE WHOLE SLIDER LAW IS IN THE HEADER, so the bench walks the same curve this does.
         // It holds at the last feasible bias rather than declining, which is what stops the
         // picture jumping when the targets stop being reachable -- see solve_magic_tone_bias.
+        // The conditions the grade currently meets. Unset (-1) falls back to the fitted
+        // constants inside the solve, which is what a fresh Magic grade wants.
+        og::grade::ToneTargets base;
+        m_ToneTFloor->getValue(base.floor);
+        m_ToneTMid->getValue(base.mid);
+        m_ToneTCeil->getValue(base.ceil);
+        m_ToneTFMax->getValue(base.floorMax);
         const og::grade::MagicTone mt = og::grade::solve_magic_tone_bias(
             tLo, tMid, tShi, tHi, Pc, lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0,
-            tn, tFLo, bias);
+            tn, tFLo, bias, base);
         if (mt.ok) {
             m_Lift->setValue(mt.lift);
             m_Gamma->setValue(mt.gamma);
@@ -1929,6 +1987,7 @@ void OneGrade::applyMagicGrade(double p_Time)
         m_MagicParam->setValue(-1);
         m_MagicBase->setValue(0.0);
         armBias(true);
+        armToneTargets();   // clears them: a declined tone solve leaves nothing to lean away from
         setEnabledness();
         return;
     }
@@ -1969,6 +2028,10 @@ void OneGrade::applyMagicGrade(double p_Time)
     // Third discontinuity-at-its-own-default in this project, after Rolloff at 0 and RAW Temp at
     // 6500. The tell was identical all three times: the first nudge is a step, not a ramp.
     armBias(true);
+    // Same instant, same reason: the conditions Bias leans away from are the ones this grade
+    // ends on. Derived rather than assumed to equal the fitted constants -- the solve can land
+    // on its frame-floor or ceiling branch, in which case it deliberately did NOT hit them.
+    armToneTargets();
 
     // WHY, in the panel, in a sentence. The feature exists to surface a move an inexperienced
     // colourist would not have considered, and a suggestion with no visible reasoning teaches
@@ -2135,7 +2198,7 @@ void OneGrade::setEnabledness()
         m_ToneShi->getValue(tShi); m_ToneHi->getValue(tHi); m_ToneFLo->getValue(tFLo);
         const bool solving = (tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 &&
                               tHi >= 0.0 && tFLo >= 0.0);
-        m_BiasNote->setValue(solving ? "Re-solves L/G/G - hand edits are lost"
+        m_BiasNote->setValue(solving ? "Re-solves L/G/G around your edits"
                                      : "Offsets Lift/Gamma/Gain together");
     }
 }
@@ -2299,6 +2362,12 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
              (p_ParamName == "lift" || p_ParamName == "gamma" ||
               p_ParamName == "gain" || p_ParamName == "rolloff")) {
         armBias(false);
+        // The hand becomes the new zero. Re-anchoring alone preserves the edit on the offset
+        // path and cannot on the solving path, which re-solves to stored conditions -- so move
+        // the conditions to what the hand just achieved. Rolloff is in here because it is part
+        // of the render the conditions are measured through.
+        armToneTargets();
+        setEnabledness();
     }
     else if (p_Args.reason == OFX::eChangeUserEdit &&
              (p_ParamName == "offTemp" || p_ParamName == "temp")) {
@@ -2748,6 +2817,11 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             // than falling back to nudging parameters.
             anch("toneLo", -1.0); anch("toneMid", -1.0);
             anch("toneShi", -1.0); anch("toneHi", -1.0); anch("toneFLo", -1.0);
+            // ...and what the grade currently ACHIEVES at the first, second and fourth of them.
+            // Bias offsets from these, so re-deriving them after a hand edit is what makes the
+            // edit survive: at bias 0 the solve is asked for what is already on screen.
+            anch("toneTFloor", -1.0); anch("toneTMid", -1.0); anch("toneTCeil", -1.0);
+            anch("toneTFMax", -1.0);
         }
 
         PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");

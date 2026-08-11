@@ -201,6 +201,12 @@ int main(int argc, char** argv)
     // Render ONE frame at exactly this slider position. For looking at either side of a step,
     // where a sweep's fixed stops will not land where you need them.
     const double biasAt = argd(argc, argv, "--bias-at", -999.0);
+    // SIMULATE A HAND EDIT after Magic Grade: set one of the three to a value of your choosing,
+    // re-derive the conditions the grade now meets, and sweep Bias from there. What this is
+    // checking is that bias 0 gives the edit back rather than solving it away.
+    const double handLift  = argd(argc, argv, "--hand-lift",  -999.0);
+    const double handGamma = argd(argc, argv, "--hand-gamma", -999.0);
+    const double handGain  = argd(argc, argv, "--hand-gain",  -999.0);
     const char* lutPath = nullptr;
     for (int i = 1; i < argc; ++i) if (!strncmp(argv[i], "--lut=", 6)) lutPath = argv[i] + 6;
 
@@ -322,6 +328,29 @@ int main(int argc, char** argv)
         // returns at each stop, so a discontinuity is visible as a number rather than as "the
         // picture jumped". Mirrors applyBias()'s target arithmetic exactly -- the two shifted
         // targets and the same clamps -- because that arithmetic is the thing under test.
+        // HAND EDIT, then Bias. Mirrors what the plugin does on a manual Lift/Gamma/Gain move:
+        // re-derive the conditions from the edited grade so Bias leans away from THAT.
+        og::grade::ToneTargets handBase;
+        if (R.tone.ok && (handLift > -998.0 || handGamma > -998.0 || handGain > -998.0)) {
+            float Ph[oga::kParamN];
+            for (int k = 0; k < oga::kParamN; ++k) Ph[k] = P[k];
+            if (handLift  > -998.0) Ph[3] = (float)handLift;
+            if (handGamma > -998.0) Ph[4] = (float)handGamma;
+            if (handGain  > -998.0) Ph[5] = (float)handGain;
+            handBase = og::grade::tone_targets_of(R.tone.sLo, R.tone.sMid, R.tone.fHi,
+                                                  R.tone.fLo, Ph, lutData, lutSize);
+            const og::grade::MagicTone back = og::grade::solve_magic_tone_bias(
+                R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, Ph,
+                lutData, lutSize, tun, R.tone.fLo, 0.0, handBase);
+            printf("    hand edit  L%+.3f G%.3f g%.3f  -> conditions %.3f/%.3f/%.3f\n",
+                   Ph[3], Ph[4], Ph[5], handBase.floor, handBase.mid, handBase.ceil);
+            printf("    bias 0     L%+.3f G%.3f g%.3f  %s\n", back.lift, back.gamma, back.gain,
+                   (std::fabs(back.lift - Ph[3]) < 0.005 &&
+                    std::fabs(back.gamma - Ph[4]) < 0.02 &&
+                    std::fabs(back.gain - Ph[5]) < 0.01) ? "<- PRESERVED" : "<- LOST");
+            for (int k = 0; k < oga::kParamN; ++k) P[k] = Ph[k];   // sweep from the edited grade
+        }
+
         if (biasAt > -998.0 && R.tone.ok) {
             const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
                 R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
