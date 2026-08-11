@@ -485,6 +485,7 @@ private:
     OFX::DoubleParam* m_Gain;
     OFX::ChoiceParam* m_Encode;
     OFX::StringParam* m_EncodeNote;   // says what the encode actually is when it's overridden
+    OFX::StringParam* m_BiasNote;     // ...and which of its two control laws Bias is running
     OFX::DoubleParam* m_PostExp;
     OFX::DoubleParam* m_PostCon;
     OFX::DoubleParam* m_Rolloff;
@@ -599,6 +600,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_Gain    = fetchDoubleParam("gain");
     m_Encode  = fetchChoiceParam("outEncode");
     m_EncodeNote = fetchStringParam("encodeNote");
+    m_BiasNote   = fetchStringParam("biasNote");
     m_PostExp = fetchDoubleParam("postExp");
     m_PostCon = fetchDoubleParam("postCon");
     m_Rolloff = fetchDoubleParam("rolloff");
@@ -2119,6 +2121,23 @@ void OneGrade::setEnabledness()
     m_LookGroup->setEnabled(look && !bypLut && mode == 1);
     m_LookLut->setEnabled(look && !bypLut && mode == 1);
     m_LutMix->setEnabled(look && !bypLut && mode != 0);
+
+    // WHICH BIAS THE USER IS HOLDING. Exactly the test applyBias() makes -- armed targets mean
+    // the solving path -- so the line cannot drift from the behaviour it describes.
+    //
+    // Both laws are defensible; the surprise was that one control silently runs whichever, and
+    // that after a Magic grade a hand edit to Lift/Gamma/Gain is re-solved away on the next
+    // touch of the slider. The second half is the one that bites, so it is what the line spends
+    // its characters on.
+    {
+        double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0, tFLo = -1.0;
+        m_ToneLo->getValue(tLo);  m_ToneMid->getValue(tMid);
+        m_ToneShi->getValue(tShi); m_ToneHi->getValue(tHi); m_ToneFLo->getValue(tFLo);
+        const bool solving = (tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 &&
+                              tHi >= 0.0 && tFLo >= 0.0);
+        m_BiasNote->setValue(solving ? "Re-solves L/G/G - hand edits are lost"
+                                     : "Offsets Lift/Gamma/Gain together");
+    }
 }
 
 // Rebuild the Look LUT dropdown to list only the currently selected group's LUTs.
@@ -2901,6 +2920,21 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             page->addChild(*defineSlider(p_Desc, "autoBiasMirror", "Bias",
                 "The same Bias slider as the one under Base and Creative Grade - the two always hold the same value, and moving either moves both. It is repeated here because Magic Grade produces a Creative grade with a colour move on top, and the tonal lean is the next thing you will want after looking at the result.",
                 0.0, -2.0, 2.0, 0.01, gMagic));
+
+            // WHICH BIAS YOU HAVE, said out loud. The slider runs two different control laws
+            // and picks between them on state nothing on the panel shows: with Magic Tone's
+            // targets armed it re-solves them, and otherwise it offsets the three sliders
+            // together. Both are right; being unable to tell which one you are holding is not.
+            // Same rule as the encode note above - a silent override is a bug even when the
+            // math is right - and the same ~45-character ASCII budget.
+            StringParamDescriptor* bn = p_Desc.defineStringParam("biasNote");
+            bn->setLabels("Bias mode", "Bias mode", "Bias mode");
+            bn->setStringType(eStringTypeLabel);
+            bn->setDefault("");
+            bn->setHint("Which way Bias is working right now. After Magic Grade it moves the TARGETS the grade was solved for and solves again, so Lift, Gamma and Gain move by different amounts and in different directions to keep the subject where it was put - the numbers look erratic while the picture stays coherent, because they are results rather than settings. It also means a hand edit to those three is re-solved away the next time you touch Bias. Without a Magic grade it is a plain offset: all three move together, the whole image up or down.");
+            bn->setEnabled(false);
+            bn->setParent(*gMagic);
+            page->addChild(*bn);
         }
 
     }
