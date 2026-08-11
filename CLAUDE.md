@@ -294,11 +294,39 @@ sub-feature is only CI-verified when its release branch PRs into `main`** — ru
 for a `v*` tag (a cancelled tag run = no release artifacts). Pushing a
 **`v*` tag** additionally runs the `release` job → packages per-OS zip (bundle + installer
 from `install/`) → publishes a GitHub Release. Shipping since v0.1.0; tags so far v0.1.0,
-v0.2.0, v1.0.0, v1.0.1, v1.0.2, v1.0.3, v1.1.0 (the OneGrade rename), **v1.1.1** (current —
-the LUT encode-override visibility fix + the DWG/I naming unification).
+v0.2.0, v1.0.0–v1.0.4, v1.1.0 (the OneGrade rename), v1.1.1, v1.2.0, v1.3.0, v1.4.0 (Magic
+Grade), **v1.4.2** (current — the Magic Grade subject-tie + sampling fix, plus the three
+licence files the *shipped* bundle had been missing). **v1.4.1 was never tagged**; its work
+was folded into v1.4.0, so 1.4.2 follows 1.4.0 directly and a missing 1.4.1 release is
+expected, not a mistake.
 Plugin internal version is `kPluginVersionMajor/Minor` in `src/OneGrade.cpp` — OFX carries
-only major/minor, so 1.1 covers the whole v1.1.x line (no bump for v1.1.1); bump it when
-major/minor moves.
+only major/minor, so 1.4 covers the whole v1.4.x line (no bump for v1.4.1/v1.4.2, same as
+v1.1.1 before them); bump it when major/minor moves.
+
+**TAG THE MERGED `main`, NEVER YOUR OWN CHECKOUT** (2026-08-10 — it cost a bad release).
+`v1.4.2` was tagged while the checkout still sat on `main` and the release branch was still
+an open PR, so the tag landed on the *same commit as v1.4.0*: a GitHub Release advertising a
+fix it did not contain, byte-identical to the one before it. **Nothing warns you.** A tag on
+any reachable commit is valid, the release job builds it happily, and the zip looks right
+because it is a real build — just of the wrong tree. The existing "check
+`git branch --show-current` before committing" rule does not cover this: the mistake is not
+made at commit time, and the commits were fine and on the right branch. The order is **merge
+the PR → `git checkout main && git pull` → tag**. Verify before announcing anything:
+```bash
+git merge-base --is-ancestor <fix-sha> v<version> && echo "fix is in" || echo "STILL WRONG"
+```
+Recovering means deleting the tag **and its GitHub Release** and re-cutting — fine within
+minutes, which is what happened here — or burning the number and shipping the next one.
+Never move a tag someone may already have pulled.
+
+**What CI packages is the CMAKE bundle, on both platforms** (`cmake -S . -B build`, then the
+Package steps zip `build/OneGrade.ofx.bundle`). The Makefile bundle is a dev artefact that
+never ships. So anything added to the bundle must go in **`CMakeLists.txt`**, not just the
+Makefile — the LUT copy list is already an explicit by-name list for this reason, and the
+licence files were missing from releases until v1.4.2 for exactly the opposite reason: the
+Makefile had them and CMake did not. Fourth instance of the local-path-fine /
+shipped-path-silently-different shape, after the Windows LUT directory, the CUDA CPU
+fallback and the LUT encode override.
 
 ## The rename (2026-08-02) — PowerGrade → OneGrade
 Renamed because **"PowerGrade" already means something else in Resolve**: the stills album
