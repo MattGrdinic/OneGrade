@@ -187,6 +187,8 @@ int main(int argc, char** argv)
     // re-solve is shared code -- so the bench can walk it and show where it stops converging,
     // which is the only way to see a discontinuity without dragging a slider in Resolve.
     const bool  biasSweep = argf(argc, argv, "--bias-sweep");
+    // How often the sweep writes a frame. 0 prints the table and writes nothing.
+    const double biasStep = argd(argc, argv, "--bias-step", 0.5);
     const char* lutPath = nullptr;
     for (int i = 1; i < argc; ++i) if (!strncmp(argv[i], "--lut=", 6)) lutPath = argv[i] + 6;
 
@@ -310,6 +312,12 @@ int main(int argc, char** argv)
         // targets and the same clamps -- because that arithmetic is the thing under test.
         if (biasSweep && R.tone.ok) {
             og::grade::Tunables tn = tun;
+            // The tone triple this frame stands on, printed so a real configuration can be
+            // lifted straight into a unit test. A synthetic one is not good enough here: the
+            // first version of the continuity test used made-up percentiles that never reached
+            // the feasibility limit, so it passed with the hold-at-limit logic deleted.
+            printf("    tone inputs: sLo %.4f sMid %.4f sHi %.4f fHi %.4f fLo %.4f\n",
+                   R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, R.tone.fLo);
             printf("    bias   subjFloor  ceiling     lift   gamma    gain   result\n");
             for (double bs = 2.0; bs >= -2.001; bs -= 0.1) {
                 const double sf = std::min(0.40, std::max(0.00,
@@ -324,13 +332,44 @@ int main(int argc, char** argv)
                 const og::grade::MagicTone raw = og::grade::solve_magic_tone_from(
                     R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
                     lutData, lutSize, sf, tn.subjMid, fc, R.tone.fLo, tn.frameFloorMax);
-                if (!t.ok)
+                if (!t.ok) {
                     printf("   %+5.2f   %7.3f  %7.3f        -       -       -   NOT ARMED: %s\n",
                            bs, sf, fc, t.why);
-                else
-                    printf("   %+5.2f   %7.3f  %7.3f  %+7.3f %7.3f %7.3f   %s\n",
-                           bs, sf, fc, t.lift, t.gamma, t.gain,
-                           raw.ok ? "ok" : "held (targets unreachable)");
+                    continue;
+                }
+                printf("   %+5.2f   %7.3f  %7.3f  %+7.3f %7.3f %7.3f   %s\n",
+                       bs, sf, fc, t.lift, t.gamma, t.gain,
+                       raw.ok ? "ok" : "held (targets unreachable)");
+
+                // AND WRITE THE PICTURE. Numbers say the curve is continuous; only the frames
+                // say whether the grade at each stop is one anybody would want. Written at
+                // --bias-step so a sweep is a contact sheet you can flip through in order,
+                // rather than 41 versions of a 4K still.
+                if (biasStep > 0.0 &&
+                    std::fabs(bs / biasStep - std::floor(bs / biasStep + 0.5)) < 1e-6) {
+                    float Pb[oga::kParamN];
+                    for (int k = 0; k < oga::kParamN; ++k) Pb[k] = P[k];
+                    Pb[3] = t.lift; Pb[4] = t.gamma; Pb[5] = t.gain;
+                    std::vector<unsigned char> ob((size_t)f.w * f.h * 3);
+                    for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
+                        float r, g, b;
+                        full_chain(cam, enc, Pb, lutData, lutSize, 1.f,
+                                   f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+                        ob[k*3+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
+                        ob[k*3+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
+                        ob[k*3+2] = (unsigned char)(og::clamp01(b) * 255.f + .5f);
+                    }
+                    const char* nm0 = strrchr(argv[i], '/'); nm0 = nm0 ? nm0 + 1 : argv[i];
+                    std::string stem(nm0);
+                    const size_t dot = stem.rfind('.');
+                    if (dot != std::string::npos) stem = stem.substr(0, dot);
+                    char bp[64];
+                    // Sortable, so the contact sheet reads in slider order: p10 is +1.0.
+                    snprintf(bp, sizeof bp, "-bias%c%04d.png", bs < 0 ? 'm' : 'p',
+                             (int)std::llround(std::fabs(bs) * 100.0));
+                    const std::string op2 = outDir + "/" + stem + bp;
+                    stbi_write_png(op2.c_str(), f.w, f.h, 3, ob.data(), f.w * 3);
+                }
             }
         }
 

@@ -37,6 +37,7 @@ It rebuilds itself if the source changed, so there is no separate build step.
 | `--sep` | 1.0 | the Separation slider |
 | `--cycle` | 0 | which press. Magic Grade offers a different subject each time, and this is the only way to reproduce a grade the user reached on press two |
 | `--bias-sweep` | off | walk the Bias slider from +2 to -2 and print the tone re-solve at each stop. `held` marks where the targets stop being reachable and the slider stops moving — which is what a discontinuity looks like before it becomes "the picture jumped" |
+| `--bias-step` | 0.5 | how often the sweep **writes a frame**, as `<name>-biasp0150.png` / `-biasm0150.png` (p/m for sign, hundredths, so they sort in slider order). `0` prints the table and writes nothing. Use one frame at a time — at 0.25 a 4K still becomes 17 PNGs |
 | `--wb` | off | White Balance First |
 | `--camera` / `--encode` | 11 / 3 | Rec.2100 PQ decode, Cineon out (what the film LUT forces) |
 | `--lut=` | Kodak 2383 D60 | print stock; `run.sh` fills this in |

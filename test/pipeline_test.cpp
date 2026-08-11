@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../src/OneGradePipeline.h"
 #include "../src/OneGradeAnalysis.h"
+#include "../src/OneGradeCreative.h"
 #include <cstdio>
 #include <cmath>
 #include <cstdint>
@@ -884,6 +885,75 @@ int main() {
         for (int r = 0; r < oga::kRegionN; ++r) dcover += d[r].cover;
         ok &= close(dcover, 100.f, 0.01f);
         check(ok, "region stats: membership fixed, coverage sums to 100, survives decimation");
+    }
+
+    // 30. BIAS IS CONTINUOUS ACROSS ITS WHOLE RANGE, and holds rather than declining.
+    //
+    //     The fourth discontinuity in this project, and the first at a FEASIBILITY boundary
+    //     rather than at a control's own default. Bias shifts the ceiling target by
+    //     -bias*kBiasCeilingPer, so negative Bias walks it upward; it used to clamp at 1.000
+    //     while solve_magic_tone_from declines anything reaching kFrameBlown (0.999). From
+    //     about bias -1.07 down, ON EVERY FRAME, the solve was asked for exactly what the next
+    //     line then refused it for delivering. applyBias() read that decline as "not armed" and
+    //     fell through to its coefficient path -- a different control law -- so Lift stepped
+    //     -0.134 -> +0.162 between neighbouring slider positions and the picture inverted.
+    //
+    //     Pinned as CONTINUITY rather than as specific values, because the values are taste and
+    //     will move; what must never come back is a step in the middle of a drag.
+    {
+        float P0[13]; neutral13(P0);
+        P0[8] = 0.55f;                       // Creative's post-exposure, which render() applies
+        og::grade::Tunables tn;
+        // A FLAT FRAME, chosen because it actually reaches the limit. The first version of this
+        // test used comfortable percentiles, and they stayed solvable across the whole slider --
+        // so it passed with the hold-at-limit logic deleted, testing nothing. These are close
+        // together on purpose: a hazy, low-contrast shot is where negative Bias runs out of room
+        // first, and it starts declining at about -1.2.
+        const double sLo = 0.22, sMid = 0.24, sHi = 0.33, fHi = 0.42, fLo = 0.198;
+
+        bool ok = og::grade::kFrameCeilingMax < og::grade::kFrameBlown;   // the structural fix
+
+        // The contradiction is real, and this is what makes the clamp load-bearing: ask for the
+        // ceiling the unclamped code used to ask for and the solve refuses its own answer. If
+        // someone raises kFrameCeilingMax to 1.0, this line fails rather than the bug returning.
+        const og::grade::MagicTone blown = og::grade::solve_magic_tone_from(
+            sLo, sMid, sHi, fHi, P0, nullptr, 0,
+            tn.subjFloor, tn.subjMid, 1.000, fLo, tn.frameFloorMax);
+        ok &= !blown.ok;
+
+        og::grade::MagicTone prev = og::grade::solve_magic_tone_bias(
+            sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, 2.0);
+        ok &= prev.ok;                       // bias 0 solves, so every bias must return a grade
+        double worstLift = 0.0, worstGamma = 0.0, worstGain = 0.0;
+        bool held = false;                   // did the limit actually get exercised?
+        for (double b = 2.0 - 0.02; b >= -2.0001; b -= 0.02) {
+            const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                sLo, sMid, sHi, fHi, P0, nullptr, 0, tn, fLo, b);
+            if (!t.ok) { ok = false; break; }
+            // The raw solve at this same bias: where IT declines and the line above still
+            // returns a grade is precisely the hold doing its job.
+            const og::grade::MagicTone raw = og::grade::solve_magic_tone_from(
+                sLo, sMid, sHi, fHi, P0, nullptr, 0,
+                std::min(0.40, std::max(0.00, tn.subjFloor + b * og::grade::kBiasSubjFloorPer)),
+                tn.subjMid,
+                std::min(og::grade::kFrameCeilingMax,
+                         std::max(0.60, tn.frameCeiling - b * og::grade::kBiasCeilingPer)),
+                fLo, tn.frameFloorMax);
+            if (!raw.ok) held = true;
+            worstLift  = std::max(worstLift,  (double)std::fabs(t.lift  - prev.lift));
+            worstGamma = std::max(worstGamma, (double)std::fabs(t.gamma - prev.gamma));
+            worstGain  = std::max(worstGain,  (double)std::fabs(t.gain  - prev.gain));
+            prev = t;
+        }
+        // SELF-CHECKING, so this cannot quietly become a no-op again. If a future change makes
+        // this configuration solvable everywhere, the continuity assertion below would still
+        // pass while testing none of the holding -- which is exactly how the first draft of this
+        // test survived having the hold deleted.
+        ok &= held;
+        // Generous next to a 0.02 step of the slider, and an order of magnitude under the 0.296
+        // jump the bug produced -- this is a cliff detector, not a smoothness assertion.
+        ok &= (worstLift < 0.05) && (worstGamma < 0.15) && (worstGain < 0.05);
+        check(ok, "Bias is continuous over its full range and holds at the feasible limit");
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
