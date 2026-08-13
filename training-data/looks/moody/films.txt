@@ -1,0 +1,20 @@
+# MOODY -- low-key, held-down highlights, dense shadows
+#
+# PROVISIONAL -- these are placeholders, not a curated set. The list IS the
+# experiment: deciding which films carry a look is the editorial judgement the
+# targets get fitted to, and it should be yours. Replace freely.
+#
+# One slug per line. Find them with:  ./experiments/looks/fetch.py find "title"
+# Aim for ~30; separability needs 8 stills per REGION.
+
+sicario
+prisoners
+no-country-for-old-men
+zodiac
+the-batman
+joker
+road-to-perdition
+alien
+the-road
+drive
+nightcrawler

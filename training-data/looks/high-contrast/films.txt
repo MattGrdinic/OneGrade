@@ -1,0 +1,16 @@
+# HIGH CONTRAST -- wide subject spread, hard falloff
+#
+# PROVISIONAL -- these are placeholders, not a curated set. The list IS the
+# experiment: deciding which films carry a look is the editorial judgement the
+# targets get fitted to, and it should be yours. Replace freely.
+#
+# One slug per line. Find them with:  ./experiments/looks/fetch.py find "title"
+# Aim for ~30; separability needs 8 stills per REGION.
+
+sin-city
+the-lighthouse
+raging-bull
+schindlers-list
+mad-max-fury-road
+300
+the-man-who-wasnt-there
