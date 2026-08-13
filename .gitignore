@@ -22,6 +22,13 @@ experiments/segmentation/verify
 # offline bench binary and its outputs
 experiments/bench/bench
 experiments/looks/looks
+# Training environment and any weights derived from the reference corpus. Kept out of the repo
+# for the same reason the stills are: the licensing decision on shipping a model trained on
+# copyrighted frames is deliberately still open, and committing weights would quietly make it.
+experiments/looks/venv/
+experiments/looks/runs/
+*.pt
+*.pth
 
 # Look-reference corpus. The CURATION is tracked, the pixels are not: films.txt is the editorial
 # judgement the targets get fitted to and makes the corpus reproducible, while the stills

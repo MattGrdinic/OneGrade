@@ -50,6 +50,8 @@
 #include <cstring>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 #include "OneGradePipeline.h"
 #include "OneGradeAnalysis.h"
@@ -333,6 +335,10 @@ int main(int argc, char** argv)
     // lower bar than seeing whether something looks cinematic.
     const bool   frameCsv = argf(argc, argv, "--frame-csv");
     const int    degrade  = (int)argd(argc, argv, "--degrade", 0);
+    // Write the degraded frames out, so a model trains on the EXACT images the descriptor test
+    // was scored on. Regenerating equivalent degradations in the training script would be a
+    // paraphrase, and a head-to-head against 0.657 only means something if both saw one dataset.
+    const char*  writeDeg = args(argc, argv, "--write-degraded", "");
 
     og::seg::Segmenter seg;
     {
@@ -405,6 +411,16 @@ int main(int argc, char** argv)
                         s.px[i+k] = (unsigned char)(std::max(0.0, std::min(1.0, c3[k])) * 255.0 + 0.5);
                     }
                 }
+            }
+
+            if (*writeDeg && degrade) {
+                // .png, not the source extension -- stbi_write_png writes PNG whatever the name
+                // says, and a file called .jpg holding PNG bytes confuses everything downstream.
+                std::string stem = basename_of(path);
+                const size_t dot = stem.find_last_of('.');
+                if (dot != std::string::npos) stem = stem.substr(0, dot);
+                const std::string op = std::string(writeDeg) + "/" + stem + ".png";
+                stbi_write_png(op.c_str(), s.w, s.h, 3, s.px.data(), s.w * 3);
             }
 
             // Same subsampling rule as probeAnalyze and the bench (~200k samples). Coverage
