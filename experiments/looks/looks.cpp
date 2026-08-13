@@ -320,6 +320,20 @@ int main(int argc, char** argv)
     argband(argc, argv, "--mid",    midLo,    midHi);
     argband(argc, argv, "--high",   highLo,   highHi);
 
+    // FRAME CSV + DEGRADE, for the discriminant experiment.
+    //
+    // The question is whether the descriptor set responds to GRADE. Comparing film stills against
+    // OneGrade output cannot answer it: those are different scenes, so a separator could be
+    // reading content -- Hollywood interiors versus a desert -- and would look like a triumphant
+    // result while measuring nothing about grading. Degrading the SAME still controls content
+    // exactly, leaving grade as the only thing that moved.
+    //
+    // It is a FALSIFICATION test and the asymmetry matters. Failing it says the descriptors cannot
+    // see grade at all. Passing it says only that they see a shifted exposure, which is a far
+    // lower bar than seeing whether something looks cinematic.
+    const bool   frameCsv = argf(argc, argv, "--frame-csv");
+    const int    degrade  = (int)argd(argc, argv, "--degrade", 0);
+
     og::seg::Segmenter seg;
     {
         const std::string pp = std::string(modelDir) + "/ade20k.param";
@@ -341,6 +355,11 @@ int main(int argc, char** argv)
     if (lookDirs.empty()) { fprintf(stderr, "error: no look folders given\n"); return 2; }
 
     if (csv) printf("look,file,region,cover,floor,mid,hi,ceil,flo,dL,da,db,chosen\n");
+    if (frameCsv) {
+        printf("look,file");
+        for (int k = 0; k < FA_N; ++k) printf(",%s", kFrameAxis[k]);
+        printf(",covLo,covMid,covHi\n");
+    }
 
     std::vector<std::string> lookName;
     std::vector<std::vector<Row>> lookRows;
@@ -362,6 +381,31 @@ int main(int argc, char** argv)
             const int w0 = s.w, h0 = s.h;
             if (!noCrop) crop_bars(s, cropT);
             const bool cropped = (s.w != w0 || s.h != h0);
+
+            // Reproducible per file: seeded from the name, so the same still always receives the
+            // same degradation and a re-run is comparable.
+            if (degrade) {
+                unsigned int h = 2166136261u ^ (unsigned int)degrade;
+                for (char c : basename_of(path)) { h ^= (unsigned char)c; h *= 16777619u; }
+                auto rnd = [&]() { h ^= h << 13; h ^= h >> 17; h ^= h << 5;
+                                   return (double)(h & 0xFFFFFF) / (double)0xFFFFFF; };
+                const double ev  = -0.8 + 1.6 * rnd();          // exposure, stops
+                const double con =  0.7 + 0.8 * rnd();          // contrast about 0.5
+                const double sat =  0.6 + 1.0 * rnd();          // saturation
+                const double lft =  0.10 * rnd();               // lifted black
+                const double gain = std::pow(2.0, ev);
+                for (size_t i = 0; i < s.px.size(); i += 3) {
+                    double c3[3];
+                    for (int k = 0; k < 3; ++k) c3[k] = s.px[i+k] / 255.0 * gain;
+                    for (int k = 0; k < 3; ++k) c3[k] = 0.5 + (c3[k] - 0.5) * con;
+                    const double y = 0.2126*c3[0] + 0.7152*c3[1] + 0.0722*c3[2];
+                    for (int k = 0; k < 3; ++k) c3[k] = y + (c3[k] - y) * sat;
+                    for (int k = 0; k < 3; ++k) {
+                        c3[k] = c3[k] * (1.0 - lft) + lft;
+                        s.px[i+k] = (unsigned char)(std::max(0.0, std::min(1.0, c3[k])) * 255.0 + 0.5);
+                    }
+                }
+            }
 
             // Same subsampling rule as probeAnalyze and the bench (~200k samples). Coverage
             // percentages feed magic_decide, and v1.4.2 was a bug where the plugin and the
@@ -469,6 +513,12 @@ int main(int argc, char** argv)
                 fr.v[FA_LORELL] = (okm && fr.v[FA_LOCL] >= 0) ? fr.v[FA_LOCL] / fr.v[FA_MIDCL] : -1.0;
             }
             frames.push_back(fr);
+            if (frameCsv) {
+                printf("%s,%s", name.c_str(), fr.file.c_str());
+                for (int k = 0; k < FA_N; ++k) printf(",%.6f", fr.v[k]);
+                for (int k = 0; k < 3; ++k)    printf(",%.4f", fr.cov[k]);
+                printf("\n");
+            }
 
             if (!csv) {
                 printf("%-34s %dx%d%s\n", basename_of(path).c_str(), s.w, s.h,
