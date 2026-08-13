@@ -43,7 +43,7 @@
 //
 // USAGE
 //   looks MODEL_DIR LOOK_DIR [LOOK_DIR ...]  [--encode=N] [--min-cover=P] [--no-crop]
-//                                            [--crop=T] [--region=NAME] [--csv]
+//                                            [--crop=T] [--region=NAME] [--csv] [--all-rows]
 //
 // Each LOOK_DIR is one look; its folder name is the label. Put ~30 stills in each.
 #include <cmath>
@@ -148,7 +148,30 @@ struct Row {
     double ceil = 0.0, fLo = 0.0;              // frame max-channel p99.9, min-channel p0.1
     double dL = 0.0, da = 0.0, db = 0.0;       // this region minus everything else
     bool   chosen = false;                     // magic_decide() would pick this one
+    bool   viable = true;                      // solve_magic_tone() would accept it as a subject
+    const char* why = "";                      // ...and if not, which of its rules said no
 };
+
+// MEASURE A REFERENCE ONLY WHERE THE PLUGIN WOULD HAVE ACCEPTED IT AS A SUBJECT.
+//
+// The first pass over real film stills made the case on its own. ADE20K class 12 is "person" --
+// the whole body, wardrobe and hair -- not "face", and in wide narrative framing that region is
+// mostly dark clothing. One still came back SKIN 25.7% with p10, p50 and p90 ALL at 0.008: a flat
+// silhouette with no tonal range at all, reported as a subject midtone.
+//
+// Averaging those into a look would fit subjMid to how films frame people rather than to where a
+// face belongs, and the target it feeds was measured on an interview where the region genuinely
+// is a lit face. Same quantity by name, different thing entirely.
+//
+// The filter is not invented for this tool: it is the two tests solve_magic_tone() already
+// applies, so a still contributes to a look exactly when the plugin would have graded to it.
+// No new constant, and nothing to keep in step by hand.
+static bool subject_viable(double cover, double mid, const char** why)
+{
+    if (cover > 35.0)  { *why = "region too large to be one"; return false; }
+    if (mid   < 0.01)  { *why = "black, not dark";            return false; }
+    return true;
+}
 
 static double median(std::vector<double> v)
 {
@@ -241,6 +264,9 @@ int main(int argc, char** argv)
     const bool   noCrop   = argf(argc, argv, "--no-crop");
     const bool   csv      = argf(argc, argv, "--csv");
     const char*  onlyReg  = args(argc, argv, "--region", "");
+    // Off by default: a still the plugin would refuse to grade to is not evidence about where a
+    // subject belongs. On, for inspecting what the filter is removing.
+    const bool   allRows  = argf(argc, argv, "--all-rows");
 
     og::seg::Segmenter seg;
     {
@@ -376,6 +402,7 @@ int main(int argc, char** argv)
                     if (on) { row.dL = st[r].L - oL/on; row.da = st[r].a - oa/on; row.db = st[r].b - ob/on; }
                 }
                 row.chosen = choice.ok && choice.subject == r;
+                row.viable = subject_viable(row.cover, row.mid, &row.why);
                 rows.push_back(row);
 
                 if (csv) {
@@ -384,10 +411,12 @@ int main(int argc, char** argv)
                            row.floor, row.mid, row.hi, row.ceil, row.fLo,
                            row.dL, row.da, row.db, row.chosen ? 1 : 0);
                 } else {
-                    printf("   %-8s %5.1f%%%s  floor %.3f  mid %.3f  hi %.3f | ceil %.3f  fLo %.3f"
-                           " | dL %+6.1f da %+5.1f db %+5.1f\n",
+                    printf("   %-8s %5.1f%%%s  floor %.3f  mid %.3f  hi %.3f  spr %.3f | "
+                           "ceil %.3f  fLo %.3f | dL %+6.1f da %+5.1f db %+5.1f%s%s\n",
                            oga::region_name(r), row.cover, row.chosen ? " *" : "  ",
-                           row.floor, row.mid, row.hi, row.ceil, row.fLo, row.dL, row.da, row.db);
+                           row.floor, row.mid, row.hi, row.hi - row.floor,
+                           row.ceil, row.fLo, row.dL, row.da, row.db,
+                           row.viable ? "" : "   EXCLUDED: ", row.viable ? "" : row.why);
                 }
             }
         }
@@ -406,10 +435,18 @@ int main(int argc, char** argv)
         printf("%s\n", lookName[l].c_str());
         for (int r = 0; r < oga::kRegionN; ++r) {
             std::vector<double> f, m, c, fl;
+            size_t dropped = 0;
             for (const Row& row : lookRows[l]) if (row.region == r) {
+                if (!row.viable && !allRows) { ++dropped; continue; }
                 f.push_back(row.floor); m.push_back(row.mid);
                 c.push_back(row.ceil);  fl.push_back(row.fLo);
             }
+            // NEVER SILENTLY. A corpus that quietly discards half its stills reads as a thin
+            // source rather than as a filter doing its job -- the most repeated bug shape in this
+            // project is a resource that degrades without saying so.
+            if (dropped && f.size() < 3)
+                printf("   %-8s  all %zu excluded (not usable as a subject)\n",
+                       oga::region_name(r), dropped);
             if (f.size() < 3) continue;          // fewer than three is not a median
             printf("   %-8s n=%-3zu subjFloor %.3f (%.3f)  subjMid %.3f (%.3f)  "
                    "frameCeiling %.3f (%.3f)  frameFloor %.3f (%.3f)\n",
@@ -438,10 +475,12 @@ int main(int argc, char** argv)
                 for (size_t j = i + 1; j < lookName.size(); ++j) {
                     std::vector<double> A[4], Bv[4];
                     for (const Row& row : lookRows[i]) if (row.region == r) {
+                        if (!row.viable && !allRows) continue;
                         A[0].push_back(row.floor); A[1].push_back(row.mid);
                         A[2].push_back(row.ceil);  A[3].push_back(row.fLo);
                     }
                     for (const Row& row : lookRows[j]) if (row.region == r) {
+                        if (!row.viable && !allRows) continue;
                         Bv[0].push_back(row.floor); Bv[1].push_back(row.mid);
                         Bv[2].push_back(row.ceil);  Bv[3].push_back(row.fLo);
                     }

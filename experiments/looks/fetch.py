@@ -67,7 +67,11 @@ def get(url, delay, tries=4):
             if 500 <= e.code < 600:
                 time.sleep(3 * (attempt + 1))
                 continue
-            raise
+            # A 404 is an answer, not a failure of the run. The sitemap is a published index and
+            # some of its entries point at images that have since moved; letting that propagate
+            # aborted a whole batch partway through and lost the folders after it.
+            sys.stderr.write("  %s -> %d, skipping\n" % (url, e.code))
+            return None
         except (urllib.error.URLError, TimeoutError) as e:
             sys.stderr.write("  %s -> %s\n" % (url, e))
             time.sleep(3 * (attempt + 1))

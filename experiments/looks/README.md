@@ -100,6 +100,42 @@ Validated three ways:
 If real looks come back **overlapping on every axis**, that is an argument for more *axes* — the
 colour/separation triple, or a different print stock per look — not for more stills.
 
+## A still only counts where the plugin would have graded to it
+
+`--all-rows` off by default. A region is excluded from the aggregate unless it passes the two
+tests `solve_magic_tone()` already applies to a subject — coverage ≤ 35%, and a midtone at or
+above 0.01. Not a new rule invented here: a still contributes to a look exactly when the plugin
+would have accepted its subject, so the corpus and the solve cannot drift apart. Exclusions are
+printed per still with the reason, and named again in the aggregate when they empty a region.
+
+**The first pass over real film stills is what forced this.** ADE20K class 12 is **"person"** —
+whole body, wardrobe and hair — not "face". One still came back SKIN 25.7% with p10, p50 and p90
+**all at 0.008**: a flat silhouette with no tonal range, reported as a subject midtone. Averaging
+that into a look would fit `subjMid` to how films frame people rather than to where a face
+belongs.
+
+### The framing mismatch the filter does not fully fix
+
+Even after filtering, person-region midtones from wide narrative framing sit far below the
+interview-derived target (first pass, n=5–8):
+
+| look | subjMid, SKIN |
+|---|---|
+| moody | 0.062 |
+| cinematic | 0.065 |
+| bright | 0.161 |
+| *plugin's current target* | *0.278* |
+
+A person occupying 10% of a 2.39:1 frame is mostly body, and no threshold recovers a face from
+that. So **film-grab numbers are not usable as absolute subject targets.** What they do appear to
+carry is the *ratio* — bright runs ~2.5× moody — which is a look-to-look relationship that
+survives the framing difference.
+
+The shape that follows: take relative offsets from the reference corpus and keep the absolute
+anchor on hand-graded footage. Treat the table above as a hypothesis at n=5–8, not a result; the
+prediction to test on a full corpus is that the ordering and rough ratio hold while the absolute
+level stays low.
+
 ## Gathering the references
 
 - **~30 stills per look.** The floor is 8 per region, and a folder only speaks for the regions it
