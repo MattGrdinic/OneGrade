@@ -1,12 +1,13 @@
 # CINEMATIC -- the broad narrative baseline
 #
-# PROVISIONAL -- these are placeholders, not a curated set. The list IS the
-# experiment: deciding which films carry a look is the editorial judgement the
-# targets get fitted to, and it should be yours. Replace freely.
+# Curation approved by the user 2026-08-13, then extended to ~30 to clear the
+# separability floor (8 stills per REGION, and a still only counts toward the
+# regions it contains). Trim freely -- this list IS the ground truth.
 #
-# One slug per line. Find them with:  ./experiments/looks/fetch.py find "title"
-# Aim for ~30; separability needs 8 stills per REGION.
-
+# Each film appears in exactly ONE look. Sharing stills between two looks would
+# bias their comparison straight toward "overlapping".
+#
+# Find slugs with:  ./experiments/looks/fetch.py find "title"
 1917
 dune
 arrival
@@ -15,5 +16,28 @@ skyfall
 the-revenant
 there-will-be-blood
 blade-runner-2049
-sicario
-no-country-for-old-men
+gladiator
+the-dark-knight
+inception
+tenet
+dunkirk
+the-social-network
+the-tree-of-life
+the-new-world
+days-of-heaven
+barry-lyndon
+2001-a-space-odyssey
+apocalypse-now
+lawrence-of-arabia
+the-master
+phantom-thread
+moonlight
+if-beale-street-could-talk
+the-power-of-the-dog
+nomadland
+true-grit
+o-brother-where-art-thou
+fargo
+inside-llewyn-davis
+a-serious-man
+drive-my-car

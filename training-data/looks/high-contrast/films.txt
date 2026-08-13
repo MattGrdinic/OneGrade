@@ -1,12 +1,13 @@
 # HIGH CONTRAST -- wide subject spread, hard falloff
 #
-# PROVISIONAL -- these are placeholders, not a curated set. The list IS the
-# experiment: deciding which films carry a look is the editorial judgement the
-# targets get fitted to, and it should be yours. Replace freely.
+# Curation approved by the user 2026-08-13, then extended to ~30 to clear the
+# separability floor (8 stills per REGION, and a still only counts toward the
+# regions it contains). Trim freely -- this list IS the ground truth.
 #
-# One slug per line. Find them with:  ./experiments/looks/fetch.py find "title"
-# Aim for ~30; separability needs 8 stills per REGION.
-
+# Each film appears in exactly ONE look. Sharing stills between two looks would
+# bias their comparison straight toward "overlapping".
+#
+# Find slugs with:  ./experiments/looks/fetch.py find "title"
 sin-city
 the-lighthouse
 raging-bull
@@ -14,3 +15,26 @@ schindlers-list
 mad-max-fury-road
 300
 the-man-who-wasnt-there
+sin-city-a-dame-to-kill-for
+the-artist
+ida
+cold-war
+citizen-kane
+the-third-man
+touch-of-evil
+psycho
+the-elephant-man
+eraserhead
+pi
+following
+the-white-ribbon
+control
+good-night-and-good-luck
+nebraska
+frances-ha
+mank
+passing
+the-tragedy-of-macbeth
+manhattan
+stranger-than-paradise
+roma

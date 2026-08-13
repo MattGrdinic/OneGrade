@@ -1,12 +1,13 @@
 # MOODY -- low-key, held-down highlights, dense shadows
 #
-# PROVISIONAL -- these are placeholders, not a curated set. The list IS the
-# experiment: deciding which films carry a look is the editorial judgement the
-# targets get fitted to, and it should be yours. Replace freely.
+# Curation approved by the user 2026-08-13, then extended to ~30 to clear the
+# separability floor (8 stills per REGION, and a still only counts toward the
+# regions it contains). Trim freely -- this list IS the ground truth.
 #
-# One slug per line. Find them with:  ./experiments/looks/fetch.py find "title"
-# Aim for ~30; separability needs 8 stills per REGION.
-
+# Each film appears in exactly ONE look. Sharing stills between two looks would
+# bias their comparison straight toward "overlapping".
+#
+# Find slugs with:  ./experiments/looks/fetch.py find "title"
 sicario
 prisoners
 no-country-for-old-men
@@ -18,3 +19,29 @@ alien
 the-road
 drive
 nightcrawler
+seven
+fight-club
+the-girl-with-the-dragon-tattoo
+gone-girl
+blade-runner
+taxi-driver
+chinatown
+shutter-island
+the-departed
+oldboy
+memories-of-murder
+collateral
+heat
+insomnia
+the-machinist
+requiem-for-a-dream
+black-swan
+hereditary
+the-witch
+it-follows
+hell-or-high-water
+killing-them-softly
+only-god-forgives
+enemy
+sinister
+the-conversation

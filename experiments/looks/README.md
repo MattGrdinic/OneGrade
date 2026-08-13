@@ -136,6 +136,52 @@ anchor on hand-graded footage. Treat the table above as a hypothesis at n=5–8,
 prediction to test on a full corpus is that the ordering and rough ratio hold while the absolute
 level stays low.
 
+## RESULT (2026-08-13): film-grab does not separate these looks
+
+123 stills, four looks, seven axes. **Every pair overlaps on every axis.** The largest effect
+anywhere is 0.59 (`dL*`, cinematic vs moody) against a 0.60 bar; the best tone axis is `subjMid`
+at 0.51.
+
+The tone signal is directionally right and too small to use. `subjMid` on SKIN orders exactly as
+the labels predict — bright 0.215 > high-contrast 0.180 > cinematic 0.115 > moody 0.103 — but the
+within-look spread swamps it: cinematic's MAD is 0.075 on a median of 0.115, ±65%, while the
+look-to-look gaps are 0.03–0.11. **Individual films vary more than the look categories differ.**
+
+`frameCeiling` and `frameFloor` carry almost nothing (0.01–0.29 throughout). Everything blows to
+~0.9 and crushes to ~0.0 regardless of look, so those two are dead as look carriers.
+
+### Why, and why more stills will not fix it
+
+Two structural problems with this source, neither solved by gathering more:
+
+1. **One frame per film samples a random scene, not the film's look.** The choice avoided
+   correlated frames, and the cost was not appreciated at the time: a moody film has bright scenes.
+   Scene variance goes straight into the within-look spread that separability is measured against.
+2. **The subject region is framing-dependent.** ADE20K "person" is whole body, so `subjMid` moves
+   with how much frame a body occupies — noise with nothing to do with the look.
+
+So *overlapping* here is a statement about **this measurement**, not proof that the looks are the
+same. The measurement is too noisy to see a difference that may well be there.
+
+### What would actually test it
+
+**Change the unit of analysis from the frame to the film.** Pull many frames per film from the
+gallery, take a median per film first, then compare films across looks. That collapses scene
+variance into the per-film estimate instead of letting it inflate the spread, and n becomes 30
+films each estimated from ~30 frames rather than 30 lone frames. It reuses everything here; only
+the fetcher changes. Cost is real — roughly 300–900 requests per look — so rate limits matter.
+
+If that still overlaps, the conclusion is that a look is not a tone target and is carried by the
+print stock / colour transform instead, which is a different feature.
+
+### What the pass DID produce
+
+The per-region target table is independently useful, and for a reason the look comparison is not:
+it is a central tendency rather than a between-group difference, and SKY / FOLIAGE / TERRAIN /
+GROUND are large natural regions that do not suffer the framing problem the way "person" does.
+That is real data for **`docs/ROADMAP.md` "Magic Tone beyond faces"**, which has been waiting on
+exactly these numbers. Wants on-footage validation before anything ships.
+
 ## Gathering the references
 
 - **~30 stills per look.** The floor is 8 per region, and a folder only speaks for the regions it

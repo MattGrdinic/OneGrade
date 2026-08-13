@@ -1,12 +1,13 @@
 # BRIGHT -- high-key, lifted, open shadows
 #
-# PROVISIONAL -- these are placeholders, not a curated set. The list IS the
-# experiment: deciding which films carry a look is the editorial judgement the
-# targets get fitted to, and it should be yours. Replace freely.
+# Curation approved by the user 2026-08-13, then extended to ~30 to clear the
+# separability floor (8 stills per REGION, and a still only counts toward the
+# regions it contains). Trim freely -- this list IS the ground truth.
 #
-# One slug per line. Find them with:  ./experiments/looks/fetch.py find "title"
-# Aim for ~30; separability needs 8 stills per REGION.
-
+# Each film appears in exactly ONE look. Sharing stills between two looks would
+# bias their comparison straight toward "overlapping".
+#
+# Find slugs with:  ./experiments/looks/fetch.py find "title"
 la-la-land
 the-grand-budapest-hotel
 amelie
@@ -15,3 +16,23 @@ moonrise-kingdom
 the-truman-show
 singin-in-the-rain
 barbie
+the-royal-tenenbaums
+the-darjeeling-limited
+the-life-aquatic-with-steve-zissou
+fantastic-mr-fox
+isle-of-dogs
+the-french-dispatch
+asteroid-city
+midsommar
+the-favourite
+marie-antoinette
+big-fish
+pleasantville
+forrest-gump
+the-sound-of-music
+mary-poppins
+chicago
+500-days-of-summer
+juno
+the-secret-life-of-walter-mitty
+call-me-by-your-name

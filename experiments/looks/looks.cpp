@@ -469,20 +469,30 @@ int main(int argc, char** argv)
                "version of this divided the gap by the MAD, and a random split of ONE look\n"
                "reported 3.6 sigma on SKIN -- with n=3 the MAD collapses toward zero and the\n"
                "ratio explodes. A go/no-go number that says yes to noise is worse than none.\n");
-        const char* axis[4] = { "subjFloor", "subjMid", "frameCeiling", "frameFloor" };
+        // SEVEN AXES, not four. The tone quadruple alone came back overlapping on every pair of looks
+        // (max effect 0.51 against a 0.60 bar), which is the answer the README predicted would mean
+        // "more axes, not more stills" -- and the colour triple was already being measured per row
+        // and simply never tested. Signed components only: a distance cannot be solved against and
+        // predicted the wrong sign outright when it was tried (docs/AUTO-GRADE.md 9).
+        const char* axis[7] = { "subjFloor", "subjMid", "frameCeiling", "frameFloor",
+                                "dL*", "da*", "db*" };
         for (int r = 0; r < oga::kRegionN; ++r) {
             for (size_t i = 0; i < lookName.size(); ++i)
                 for (size_t j = i + 1; j < lookName.size(); ++j) {
-                    std::vector<double> A[4], Bv[4];
+                    std::vector<double> A[7], Bv[7];
                     for (const Row& row : lookRows[i]) if (row.region == r) {
                         if (!row.viable && !allRows) continue;
                         A[0].push_back(row.floor); A[1].push_back(row.mid);
                         A[2].push_back(row.ceil);  A[3].push_back(row.fLo);
+                        A[4].push_back(row.dL);    A[5].push_back(row.da);
+                        A[6].push_back(row.db);
                     }
                     for (const Row& row : lookRows[j]) if (row.region == r) {
                         if (!row.viable && !allRows) continue;
                         Bv[0].push_back(row.floor); Bv[1].push_back(row.mid);
                         Bv[2].push_back(row.ceil);  Bv[3].push_back(row.fLo);
+                        Bv[4].push_back(row.dL);    Bv[5].push_back(row.da);
+                        Bv[6].push_back(row.db);
                     }
                     const size_t na = A[0].size(), nb = Bv[0].size();
                     if (!na || !nb) continue;
@@ -496,7 +506,7 @@ int main(int argc, char** argv)
                         continue;
                     }
                     double best = 0.0;
-                    for (int k = 0; k < 4; ++k) {
+                    for (int k = 0; k < 7; ++k) {
                         // Common-language effect size: the share of cross pairs where A exceeds B.
                         // No denominator, so nothing can blow up; defined at any n; and it is the
                         // question the workflow actually asks -- pick a still from each look, how
