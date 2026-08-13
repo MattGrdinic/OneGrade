@@ -852,6 +852,70 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
     return feasible;
 }
 
+// ---------------------------------------------------------------------------------------
+// WHICH SAMPLES A TONE TARGET IS MADE OF -- extracted so a reference still can be measured at the
+// same five points the solve reads, rather than at five points that merely sound the same.
+//
+// solve_magic_tone() places its conditions at the subject's p10/p50/p90 ranked by Rec.709 LUMA and
+// the frame's p99.9/p0.1 ranked by MAX CHANNEL. Both halves matter and neither is guessable: rank
+// the frame by luma instead and a saturated practical stops being the ceiling; rank the subject by
+// max channel and a red cheek outranks a lit forehead.
+//
+// A look fitted by measuring a reference at "the 50th percentile" without matching the ranking key
+// would be a paraphrase, and on this feature every paraphrase produced plausible output while being
+// wrong -- a neutral render for a graded one, a pre-LUT render for the real one, a threshold
+// verified in Python and never ported. The rule lives here so there is one of it.
+//
+// It is the RULE that is shared and not a pixel buffer, because the two callers legitimately hold
+// different things. The solve keeps SOURCE indices and re-renders them at every stage, since RAW
+// Exposure acts before the measurement and moves the numbers it stands on; a reference still is
+// already the finished picture and has nothing to re-render. So the callback hands back a rendered
+// triple for sample i and the rule does not care where it came from.
+struct TonePick {
+    size_t iLo = 0, iMid = 0, iHi = 0;   // subject p10 / p50 / p90, ranked by luma
+    size_t iTop = 0, iBot = 0;           // frame p99.9 / p0.1, ranked by max channel
+    size_t subjN = 0;                    // how many samples carried the subject label
+    bool   ok = false;
+};
+
+// The two readings a picked sample is turned into, kept next to the picker for the same reason:
+// iTop is measured as its MAX channel and iBot as its MIN, which is not symmetric and not obvious.
+// A ceiling is the brightest channel of the brightest pixel; a floor is the darkest channel of the
+// darkest one, because that is the channel that hits zero first and takes the shadow detail with it.
+static inline double tone_luma(float r, float g, float b) { return 0.2126*r + 0.7152*g + 0.0722*b; }
+static inline double tone_hi(float r, float g, float b)   { return std::max(r, std::max(g, b)); }
+static inline double tone_lo(float r, float g, float b)   { return std::min(r, std::min(g, b)); }
+
+static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, int subject,
+                                         const std::function<void(size_t, float&, float&, float&)>& at)
+{
+    TonePick p;
+    if (!region || n < 64) return p;
+
+    std::vector<std::pair<float,size_t>> subjK, allK;
+    subjK.reserve(n / 4 + 1); allK.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        float r, g, b;
+        at(i, r, g, b);
+        allK.push_back({ (float)tone_hi(r, g, b), i });
+        if ((int)region[i] == subject)
+            subjK.push_back({ (float)tone_luma(r, g, b), i });
+    }
+    p.subjN = subjK.size();
+    if (subjK.size() < 32) return p;
+
+    auto pct = [](std::vector<std::pair<float,size_t>>& v, double q) {
+        const size_t k = (size_t)(q * (v.size() - 1));
+        std::nth_element(v.begin(), v.begin() + k, v.end(),
+            [](const std::pair<float,size_t>& a, const std::pair<float,size_t>& b) { return a.first < b.first; });
+        return v[k].second;
+    };
+    p.iLo  = pct(subjK, 0.10); p.iMid = pct(subjK, 0.50); p.iHi = pct(subjK, 0.90);
+    p.iTop = pct(allK,  0.999); p.iBot = pct(allK,  0.001);
+    p.ok = true;
+    return p;
+}
+
 static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subject,
                                          int cam, int enc,
                                          const float* lut, int lutSize,
@@ -906,25 +970,16 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     // Exposure, which acts on scene light BEFORE the transform, so changing it changes the very
     // numbers the solve is standing on. Keeping the source triple that sits at each percentile
     // makes every stage a function of the parameters, exposure included.
-    std::vector<std::pair<float,size_t>> subjK, allK;
-    subjK.reserve(n / 4 + 1); allK.reserve(n);
-    for (size_t i = 0; i < n; ++i) {
-        float r, g, b;
-        og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        allK.push_back({ std::max(r, std::max(g, b)), i });
-        if ((int)S.region[i] == subject)
-            subjK.push_back({ 0.2126f*r + 0.7152f*g + 0.0722f*b, i });
-    }
-    if (subjK.size() < 32) { out.why = "subject too small"; return out; }
-
-    auto at = [](std::vector<std::pair<float,size_t>>& v, double q) {
-        const size_t k = (size_t)(q * (v.size() - 1));
-        std::nth_element(v.begin(), v.begin() + k, v.end(),
-            [](const std::pair<float,size_t>& a, const std::pair<float,size_t>& b) { return a.first < b.first; });
-        return v[k].second;
-    };
-    const size_t iLo = at(subjK, 0.10), iMid = at(subjK, 0.50),
-                 iHi = at(subjK, 0.90), iTop = at(allK, 0.999), iBot = at(allK, 0.001);
+    // The picking rule is shared with the reference-still measurement (pick_tone_samples), so a
+    // look's targets and the solve that consumes them cannot disagree about what "the subject's
+    // midtone" means. The callback re-renders from source, which is what lets RAW Exposure move
+    // these numbers later instead of them being frozen scalars.
+    const TonePick pk = pick_tone_samples(n, S.region.data(), subject,
+        [&](size_t i, float& r, float& g, float& b) {
+            og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+        });
+    if (!pk.ok) { out.why = "subject too small"; return out; }
+    const size_t iLo = pk.iLo, iMid = pk.iMid, iHi = pk.iHi, iTop = pk.iTop, iBot = pk.iBot;
 
     // UNDEREXPOSURE IS NOT LOW KEY, AND THE SUBJECT IS HOW YOU TELL THEM APART.
     //
@@ -973,20 +1028,22 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         Pn[10] = Pe[10];
     }
 
+    // Same three readings the reference measurement takes, via the same helpers -- a subject point
+    // is its luma, the frame's top is its max channel and the frame's bottom its min.
     auto shade = [&](size_t i) {
         float r, g, b;
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        return (double)(0.2126f*r + 0.7152f*g + 0.0722f*b);
+        return tone_luma(r, g, b);
     };
     auto shadeMin = [&](size_t i) {
         float r, g, b;
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        return (double)std::min(r, std::min(g, b));
+        return tone_lo(r, g, b);
     };
     auto shadeMax = [&](size_t i) {
         float r, g, b;
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        return (double)std::max(r, std::max(g, b));
+        return tone_hi(r, g, b);
     };
     MagicTone r = solve_magic_tone_from(shade(iLo), shade(iMid), shade(iHi), shadeMax(iTop),
                                         Pe, lut, lutSize, t.subjFloor, t.subjMid, t.frameCeiling,

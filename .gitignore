@@ -21,6 +21,7 @@ experiments/segmentation/verify
 
 # offline bench binary and its outputs
 experiments/bench/bench
+experiments/looks/looks
 # Compiled probes in experiments/ -- these were tracked as Mach-O arm64 binaries, 9 MB of
 # build output that only ever worked on one machine.
 experiments/segmentation/e2e
