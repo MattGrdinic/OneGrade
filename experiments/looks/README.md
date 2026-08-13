@@ -182,6 +182,53 @@ GROUND are large natural regions that do not suffer the framing problem the way 
 That is real data for **`docs/ROADMAP.md` "Magic Tone beyond faces"**, which has been waiting on
 exactly these numbers. Wants on-footage validation before anything ships.
 
+## The reframe: not "look like a film", but "have what film frames have"
+
+The separability pass above tested whether cinematic separates from moody from bright. That is the
+wrong question, and its answer is weak evidence for the right one: **all 123 stills are film, and
+they failed to separate from each other.** A common signature is what that looks like.
+
+The question that matters is film against everything else — a frame with a dull subject that reads
+as film anyway. That needs a non-film control, and it needs **frame-level** descriptors, because
+region axes describe where a subject sits and a small control set fragments into n=2-5 once split
+by region.
+
+### First pass, and it is not a result
+
+121 film stills against 14 OneGrade outputs. Nothing crosses the 0.60 bar (max 0.47), but three
+related measures agree:
+
+| axis | film | OneGrade | effect |
+|---|---|---|---|
+| `loC` shadow chroma | **1.51** | **6.56** | 0.47 |
+| `loRel` shadow ÷ midtone chroma | **0.13** | **0.50** | 0.47 |
+| `hiRel` highlight ÷ midtone chroma | **1.15** | **0.76** | 0.45 |
+| `spread` p90 − p10 luma | 0.431 | 0.578 | 0.30 |
+
+**The print-stock hypothesis was wrong in its direction.** The prediction was that film
+desaturates highlights hard, the way a print shoulder does. It does not: film *holds* highlight
+chroma slightly above its midtone, and OneGrade is the one desaturating. The large consistent
+difference is in the **shadows** — film goes nearly neutral down there, OneGrade keeps half its
+midtone chroma.
+
+### Two reasons not to act on this yet
+
+1. **The control is bad data.** Fourteen frames, and they come from mixed bench runs including
+   bias sweeps and deliberately extreme settings — the same folder that reads `frameCeiling 1.000`
+   with `MAD 0.000`. It is not a picture of normal OneGrade output. **~30 clean exports from
+   ordinary use is the blocker on this whole line.**
+2. **`loC` has a confound that would change the fix.** Film frames crush to `frameFloor 0.000`
+   almost universally, and a pixel at zero has no chroma to measure. So low `loC` may be reporting
+   *film crushes its blacks* rather than *film neutralises shadow colour*. Those are different
+   claims: the first is a tone control, the second is a colour one. Distinguishing them means
+   measuring chroma at matched luminance rather than at matched percentile — the same shape as the
+   `hot` versus `pin` distinction, where a threshold on the wrong quantity described the filter
+   instead of the footage.
+
+Chroma here is a **diagnostic, not a solve target**. `docs/AUTO-GRADE.md` §9 bans magnitudes from
+the steerable set; if any of these becomes something to aim at, it has to be re-expressed as
+signed components first.
+
 ## Gathering the references
 
 - **~30 stills per look.** The floor is 8 per region, and a folder only speaks for the regions it

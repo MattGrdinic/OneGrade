@@ -173,6 +173,32 @@ static bool subject_viable(double cover, double mid, const char** why)
     return true;
 }
 
+// ---------------------------------------------------------------------------------------
+// FRAME-LEVEL DESCRIPTORS -- what a picture does, independent of what is in it.
+//
+// The region axes cannot answer "why does this read as film". They are percentile positions and
+// mean Lab differences, so they describe where a subject sits; the user's own example is a frame
+// with a dull subject that reads as film anyway. Whatever carries that is a property of the
+// PICTURE, not of the thing in it.
+//
+// It is also the only way a small control set stays usable. Fourteen stills fragment into n=2-5
+// once split by region, under any floor worth having, but they are fourteen whole frames.
+//
+// CHROMA HERE IS A DIAGNOSTIC, NOT A SOLVE TARGET. docs/AUTO-GRADE.md 9 bans magnitudes from the
+// steerable set because a distance cannot be steered and predicted the wrong sign when tried.
+// That rule is about STEERING. These describe and compare; nothing solves against them, and if one
+// ever becomes a target it has to be re-expressed as signed components first.
+struct FrameRow {
+    std::string file;
+    double hiC = 0.0;      // mean chroma of the brightest decile
+    double midC = 0.0;     // ...of the middle decile
+    double loC = 0.0;      // ...of the darkest decile
+    double hiRel = 0.0;    // hiC / midC: how hard highlights desaturate. The print-stock shoulder
+                           // does exactly this, and a digital grade often does not.
+    double loRel = 0.0;    // loC / midC: whether shadows hold a cast or go neutral
+    double spread = 0.0;   // p90 - p10 in luma: how much of the range the picture actually uses
+};
+
 static double median(std::vector<double> v)
 {
     if (v.empty()) return 0.0;
@@ -292,11 +318,13 @@ int main(int argc, char** argv)
 
     std::vector<std::string> lookName;
     std::vector<std::vector<Row>> lookRows;
+    std::vector<std::vector<FrameRow>> lookFrames;
 
     for (const std::string& dir : lookDirs) {
         const std::string name = basename_of(dir);
         std::vector<std::string> files = list_dir(dir);
         std::vector<Row> rows;
+        std::vector<FrameRow> frames;
         if (!csv) printf("\n=== %s  (%zu stills) ===\n", name.c_str(), files.size());
 
         for (const std::string& path : files) {
@@ -360,6 +388,38 @@ int main(int argc, char** argv)
             }
             const oga::MagicChoice choice = oga::magic_decide(st, 0);
 
+            FrameRow fr;
+            fr.file = basename_of(path);
+            {
+                std::vector<std::pair<float,size_t>> byLuma;
+                byLuma.reserve(n);
+                for (size_t i = 0; i < n; ++i)
+                    byLuma.push_back({ (float)ogg::tone_luma(R[i], G[i], B[i]), i });
+                std::sort(byLuma.begin(), byLuma.end(),
+                          [](const std::pair<float,size_t>& a, const std::pair<float,size_t>& b) {
+                              return a.first < b.first; });
+                auto meanC = [&](size_t a, size_t b) {
+                    double acc = 0.0; size_t cnt = 0;
+                    for (size_t i = a; i < b && i < byLuma.size(); ++i) {
+                        const size_t k = byLuma[i].second;
+                        float L, av, bv;
+                        oga::display_to_Lab(enc, R[k], G[k], B[k], L, av, bv);
+                        acc += std::sqrt((double)av*av + (double)bv*bv);
+                        ++cnt;
+                    }
+                    return cnt ? acc / cnt : 0.0;
+                };
+                const size_t N = byLuma.size();
+                fr.loC  = meanC(0, N/10);
+                fr.midC = meanC(N*45/100, N*55/100);
+                fr.hiC  = meanC(N - N/10, N);
+                fr.hiRel = (fr.midC > 1e-6) ? fr.hiC / fr.midC : 0.0;
+                fr.loRel = (fr.midC > 1e-6) ? fr.loC / fr.midC : 0.0;
+                fr.spread = (double)byLuma[(size_t)(0.90*(N-1))].first
+                          - (double)byLuma[(size_t)(0.10*(N-1))].first;
+            }
+            frames.push_back(fr);
+
             if (!csv) {
                 printf("%-34s %dx%d%s\n", basename_of(path).c_str(), s.w, s.h,
                        cropped ? "  (bars cropped)" : "");
@@ -422,6 +482,7 @@ int main(int argc, char** argv)
         }
         lookName.push_back(name);
         lookRows.push_back(rows);
+        lookFrames.push_back(frames);
     }
 
     if (csv) return 0;
@@ -454,6 +515,65 @@ int main(int argc, char** argv)
                    median(f), mad(f), median(m), mad(m),
                    median(c), mad(c), median(fl), mad(fl));
         }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // FRAME-LEVEL: what the picture does, regardless of what is in it.
+    printf("\n\n================ FRAME CHARACTER  (median, MAD in brackets) ================\n");
+    printf("hiRel/loRel are chroma at the extremes over chroma in the midtone. A print stock\n"
+           "desaturates its highlights hard; whether a digital grade does is the question.\n\n");
+    for (size_t l = 0; l < lookName.size(); ++l) {
+        const std::vector<FrameRow>& F = lookFrames[l];
+        if (F.empty()) continue;
+        std::vector<double> hi, lo, hr, lr, sp, mc;
+        for (const FrameRow& f : F) {
+            hi.push_back(f.hiC); lo.push_back(f.loC); mc.push_back(f.midC);
+            hr.push_back(f.hiRel); lr.push_back(f.loRel); sp.push_back(f.spread);
+        }
+        printf("%-16s n=%-3zu midC %5.2f (%.2f)  hiC %5.2f (%.2f)  loC %5.2f (%.2f)  "
+               "hiRel %.2f (%.2f)  loRel %.2f (%.2f)  spread %.3f (%.3f)\n",
+               lookName[l].c_str(), F.size(), median(mc), mad(mc), median(hi), mad(hi),
+               median(lo), mad(lo), median(hr), mad(hr), median(lr), mad(lr),
+               median(sp), mad(sp));
+    }
+
+    if (lookName.size() >= 2) {
+        printf("\n================ FRAME SEPARABILITY ================\n");
+        const char* fax[6] = { "midC", "hiC", "loC", "hiRel", "loRel", "spread" };
+        for (size_t i = 0; i < lookName.size(); ++i)
+            for (size_t j = i + 1; j < lookName.size(); ++j) {
+                std::vector<double> A[6], Bv[6];
+                for (const FrameRow& f : lookFrames[i]) {
+                    A[0].push_back(f.midC); A[1].push_back(f.hiC); A[2].push_back(f.loC);
+                    A[3].push_back(f.hiRel); A[4].push_back(f.loRel); A[5].push_back(f.spread);
+                }
+                for (const FrameRow& f : lookFrames[j]) {
+                    Bv[0].push_back(f.midC); Bv[1].push_back(f.hiC); Bv[2].push_back(f.loC);
+                    Bv[3].push_back(f.hiRel); Bv[4].push_back(f.loRel); Bv[5].push_back(f.spread);
+                }
+                if (A[0].size() < kMinSeparable || Bv[0].size() < kMinSeparable) {
+                    printf("\n  %s (n=%zu) vs %s (n=%zu): too few frames\n", lookName[i].c_str(),
+                           A[0].size(), lookName[j].c_str(), Bv[0].size());
+                    continue;
+                }
+                printf("\n  %s (n=%zu) vs %s (n=%zu)\n", lookName[i].c_str(), A[0].size(),
+                       lookName[j].c_str(), Bv[0].size());
+                double best = 0.0;
+                for (int k = 0; k < 6; ++k) {
+                    size_t above = 0, ties = 0;
+                    for (double a : A[k]) for (double b : Bv[k]) {
+                        if (a > b) ++above; else if (a == b) ++ties;
+                    }
+                    const double pr = ((double)above + 0.5*(double)ties)
+                                    / ((double)A[k].size() * Bv[k].size());
+                    const double e = std::fabs(2.0*pr - 1.0);
+                    printf("     %-8s %7.3f vs %7.3f   d %+7.3f   effect %.2f%s\n", fax[k],
+                           median(A[k]), median(Bv[k]), median(A[k]) - median(Bv[k]), e,
+                           e >= kDistinctEffect ? "   <-- DISTINCT" : "");
+                    if (e > best) best = e;
+                }
+                printf("     -> %s\n", best >= kDistinctEffect ? "DISTINCT" : "overlapping");
+            }
     }
 
     // ---------------------------------------------------------------------------------------
