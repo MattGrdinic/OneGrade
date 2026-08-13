@@ -188,15 +188,20 @@ static bool subject_viable(double cover, double mid, const char** why)
 // steerable set because a distance cannot be steered and predicted the wrong sign when tried.
 // That rule is about STEERING. These describe and compare; nothing solves against them, and if one
 // ever becomes a target it has to be re-expressed as signed components first.
+enum {
+    FA_MIDC, FA_HIC, FA_LOC, FA_HIREL, FA_LOREL, FA_SPREAD,   // by PERCENTILE
+    FA_MIDCL, FA_HICL, FA_LOCL, FA_HIRELL, FA_LORELL,         // by matched LUMINANCE
+    FA_N
+};
+static const char* kFrameAxis[FA_N] = {
+    "midC", "hiC", "loC", "hiRel", "loRel", "spread",
+    "midC@L", "hiC@L", "loC@L", "hiRel@L", "loRel@L"
+};
+
 struct FrameRow {
     std::string file;
-    double hiC = 0.0;      // mean chroma of the brightest decile
-    double midC = 0.0;     // ...of the middle decile
-    double loC = 0.0;      // ...of the darkest decile
-    double hiRel = 0.0;    // hiC / midC: how hard highlights desaturate. The print-stock shoulder
-                           // does exactly this, and a digital grade often does not.
-    double loRel = 0.0;    // loC / midC: whether shadows hold a cast or go neutral
-    double spread = 0.0;   // p90 - p10 in luma: how much of the range the picture actually uses
+    double v[FA_N] = {0};
+    double cov[3]  = {0, 0, 0};   // % of frame inside the shadow / mid / highlight LUMA band
 };
 
 static double median(std::vector<double> v)
@@ -225,6 +230,18 @@ static double argd(int argc, char** argv, const char* key, double def)
         if (!strncmp(argv[i], key, n) && argv[i][n] == '=') return atof(argv[i] + n + 1);
     return def;
 }
+// A luminance band as "lo:hi", so the contested one can be swept from the command line.
+static void argband(int argc, char** argv, const char* key, double& lo, double& hi)
+{
+    const size_t n = strlen(key);
+    for (int i = 1; i < argc; ++i)
+        if (!strncmp(argv[i], key, n) && argv[i][n] == '=') {
+            const char* v = argv[i] + n + 1;
+            const char* c = strchr(v, ':');
+            if (c) { lo = atof(v); hi = atof(c + 1); }
+        }
+}
+
 static bool argf(int argc, char** argv, const char* key)
 {
     for (int i = 1; i < argc; ++i) if (!strcmp(argv[i], key)) return true;
@@ -293,6 +310,15 @@ int main(int argc, char** argv)
     // Off by default: a still the plugin would refuse to grade to is not evidence about where a
     // subject belongs. On, for inspecting what the filter is removing.
     const bool   allRows  = argf(argc, argv, "--all-rows");
+
+    // Absolute luminance bands for the matched-luminance chroma. The shadow band starts above
+    // zero on purpose -- see the confound note where they are used.
+    double shadowLo = 0.02, shadowHi = 0.10;
+    double midLo    = 0.18, midHi    = 0.32;
+    double highLo   = 0.60, highHi   = 0.85;
+    argband(argc, argv, "--shadow", shadowLo, shadowHi);
+    argband(argc, argv, "--mid",    midLo,    midHi);
+    argband(argc, argv, "--high",   highLo,   highHi);
 
     og::seg::Segmenter seg;
     {
@@ -391,32 +417,56 @@ int main(int argc, char** argv)
             FrameRow fr;
             fr.file = basename_of(path);
             {
-                std::vector<std::pair<float,size_t>> byLuma;
-                byLuma.reserve(n);
-                for (size_t i = 0; i < n; ++i)
-                    byLuma.push_back({ (float)ogg::tone_luma(R[i], G[i], B[i]), i });
-                std::sort(byLuma.begin(), byLuma.end(),
-                          [](const std::pair<float,size_t>& a, const std::pair<float,size_t>& b) {
-                              return a.first < b.first; });
-                auto meanC = [&](size_t a, size_t b) {
+                std::vector<float> lum(n);
+                std::vector<float> chroma(n);
+                for (size_t i = 0; i < n; ++i) {
+                    lum[i] = (float)ogg::tone_luma(R[i], G[i], B[i]);
+                    float L, av, bv;
+                    oga::display_to_Lab(enc, R[i], G[i], B[i], L, av, bv);
+                    chroma[i] = std::sqrt(av*av + bv*bv);
+                }
+
+                // BY PERCENTILE -- always populated, and confounded by how dark the picture is.
+                std::vector<size_t> ord(n);
+                for (size_t i = 0; i < n; ++i) ord[i] = i;
+                std::sort(ord.begin(), ord.end(),
+                          [&](size_t a, size_t b) { return lum[a] < lum[b]; });
+                auto meanRank = [&](size_t a, size_t b) {
                     double acc = 0.0; size_t cnt = 0;
-                    for (size_t i = a; i < b && i < byLuma.size(); ++i) {
-                        const size_t k = byLuma[i].second;
-                        float L, av, bv;
-                        oga::display_to_Lab(enc, R[k], G[k], B[k], L, av, bv);
-                        acc += std::sqrt((double)av*av + (double)bv*bv);
-                        ++cnt;
-                    }
+                    for (size_t i = a; i < b && i < n; ++i) { acc += chroma[ord[i]]; ++cnt; }
                     return cnt ? acc / cnt : 0.0;
                 };
-                const size_t N = byLuma.size();
-                fr.loC  = meanC(0, N/10);
-                fr.midC = meanC(N*45/100, N*55/100);
-                fr.hiC  = meanC(N - N/10, N);
-                fr.hiRel = (fr.midC > 1e-6) ? fr.hiC / fr.midC : 0.0;
-                fr.loRel = (fr.midC > 1e-6) ? fr.loC / fr.midC : 0.0;
-                fr.spread = (double)byLuma[(size_t)(0.90*(N-1))].first
-                          - (double)byLuma[(size_t)(0.10*(N-1))].first;
+                fr.v[FA_LOC]  = meanRank(0, n/10);
+                fr.v[FA_MIDC] = meanRank(n*45/100, n*55/100);
+                fr.v[FA_HIC]  = meanRank(n - n/10, n);
+                fr.v[FA_HIREL] = (fr.v[FA_MIDC] > 1e-6) ? fr.v[FA_HIC] / fr.v[FA_MIDC] : 0.0;
+                fr.v[FA_LOREL] = (fr.v[FA_MIDC] > 1e-6) ? fr.v[FA_LOC] / fr.v[FA_MIDC] : 0.0;
+                fr.v[FA_SPREAD] = (double)lum[ord[(size_t)(0.90*(n-1))]]
+                                - (double)lum[ord[(size_t)(0.10*(n-1))]];
+
+                // BY MATCHED LUMINANCE -- the confound fix. A pixel at zero has no chroma to
+                // measure, and film frames crush to a frame floor of 0.000 almost universally, so
+                // the percentile version cannot tell "film neutralises its shadow colour" from
+                // "film puts more of the picture at black". Those want different fixes -- a colour
+                // control versus a tone control -- so the bands are absolute and the shadow band
+                // starts ABOVE zero. Same shape as hot versus pin: a threshold on the wrong
+                // quantity describes the filter rather than the footage.
+                //
+                // Coverage travels with each band because a band nobody occupies still returns a
+                // number, and a mean over four pixels is not a measurement.
+                auto meanBand = [&](double lo, double hi, double& coverPct) {
+                    double acc = 0.0; size_t cnt = 0;
+                    for (size_t i = 0; i < n; ++i)
+                        if (lum[i] >= lo && lum[i] <= hi) { acc += chroma[i]; ++cnt; }
+                    coverPct = 100.0 * (double)cnt / (double)n;
+                    return cnt >= 64 ? acc / cnt : -1.0;          // -1 = not enough to say
+                };
+                fr.v[FA_LOCL]  = meanBand(shadowLo, shadowHi, fr.cov[0]);
+                fr.v[FA_MIDCL] = meanBand(midLo,    midHi,    fr.cov[1]);
+                fr.v[FA_HICL]  = meanBand(highLo,   highHi,   fr.cov[2]);
+                const bool okm = fr.v[FA_MIDCL] > 1e-6;
+                fr.v[FA_HIRELL] = (okm && fr.v[FA_HICL] >= 0) ? fr.v[FA_HICL] / fr.v[FA_MIDCL] : -1.0;
+                fr.v[FA_LORELL] = (okm && fr.v[FA_LOCL] >= 0) ? fr.v[FA_LOCL] / fr.v[FA_MIDCL] : -1.0;
             }
             frames.push_back(fr);
 
@@ -520,55 +570,57 @@ int main(int argc, char** argv)
     // ---------------------------------------------------------------------------------------
     // FRAME-LEVEL: what the picture does, regardless of what is in it.
     printf("\n\n================ FRAME CHARACTER  (median, MAD in brackets) ================\n");
-    printf("hiRel/loRel are chroma at the extremes over chroma in the midtone. A print stock\n"
-           "desaturates its highlights hard; whether a digital grade does is the question.\n\n");
+    printf("Two readings of the same thing. @L is measured in ABSOLUTE luminance bands\n"
+           "(shadow %.2f-%.2f, mid %.2f-%.2f, high %.2f-%.2f) rather than by percentile,\n"
+           "so a picture that simply sits darker cannot masquerade as one with less colour.\n"
+           "cov%% is how much of the frame occupies each band; a thin band is not evidence.\n\n",
+           shadowLo, shadowHi, midLo, midHi, highLo, highHi);
     for (size_t l = 0; l < lookName.size(); ++l) {
         const std::vector<FrameRow>& F = lookFrames[l];
         if (F.empty()) continue;
-        std::vector<double> hi, lo, hr, lr, sp, mc;
-        for (const FrameRow& f : F) {
-            hi.push_back(f.hiC); lo.push_back(f.loC); mc.push_back(f.midC);
-            hr.push_back(f.hiRel); lr.push_back(f.loRel); sp.push_back(f.spread);
+        printf("%s  (n=%zu)\n", lookName[l].c_str(), F.size());
+        for (int k = 0; k < FA_N; ++k) {
+            std::vector<double> v;
+            for (const FrameRow& f : F) if (f.v[k] >= 0.0) v.push_back(f.v[k]);
+            if (v.size() < 3) { printf("   %-8s  unmeasurable on %zu/%zu frames\n",
+                                       kFrameAxis[k], F.size() - v.size(), F.size()); continue; }
+            printf("   %-8s %7.3f (%.3f)   n=%zu\n", kFrameAxis[k], median(v), mad(v), v.size());
         }
-        printf("%-16s n=%-3zu midC %5.2f (%.2f)  hiC %5.2f (%.2f)  loC %5.2f (%.2f)  "
-               "hiRel %.2f (%.2f)  loRel %.2f (%.2f)  spread %.3f (%.3f)\n",
-               lookName[l].c_str(), F.size(), median(mc), mad(mc), median(hi), mad(hi),
-               median(lo), mad(lo), median(hr), mad(hr), median(lr), mad(lr),
-               median(sp), mad(sp));
+        double c0 = 0, c1 = 0, c2 = 0;
+        {
+            std::vector<double> a, b, c;
+            for (const FrameRow& f : F) { a.push_back(f.cov[0]); b.push_back(f.cov[1]); c.push_back(f.cov[2]); }
+            c0 = median(a); c1 = median(b); c2 = median(c);
+        }
+        printf("   cov%%     shadow %.1f   mid %.1f   high %.1f\n\n", c0, c1, c2);
     }
 
     if (lookName.size() >= 2) {
         printf("\n================ FRAME SEPARABILITY ================\n");
-        const char* fax[6] = { "midC", "hiC", "loC", "hiRel", "loRel", "spread" };
         for (size_t i = 0; i < lookName.size(); ++i)
             for (size_t j = i + 1; j < lookName.size(); ++j) {
-                std::vector<double> A[6], Bv[6];
-                for (const FrameRow& f : lookFrames[i]) {
-                    A[0].push_back(f.midC); A[1].push_back(f.hiC); A[2].push_back(f.loC);
-                    A[3].push_back(f.hiRel); A[4].push_back(f.loRel); A[5].push_back(f.spread);
-                }
-                for (const FrameRow& f : lookFrames[j]) {
-                    Bv[0].push_back(f.midC); Bv[1].push_back(f.hiC); Bv[2].push_back(f.loC);
-                    Bv[3].push_back(f.hiRel); Bv[4].push_back(f.loRel); Bv[5].push_back(f.spread);
-                }
-                if (A[0].size() < kMinSeparable || Bv[0].size() < kMinSeparable) {
-                    printf("\n  %s (n=%zu) vs %s (n=%zu): too few frames\n", lookName[i].c_str(),
-                           A[0].size(), lookName[j].c_str(), Bv[0].size());
-                    continue;
-                }
-                printf("\n  %s (n=%zu) vs %s (n=%zu)\n", lookName[i].c_str(), A[0].size(),
-                       lookName[j].c_str(), Bv[0].size());
+                printf("\n  %s (n=%zu) vs %s (n=%zu)\n",
+                       lookName[i].c_str(), lookFrames[i].size(),
+                       lookName[j].c_str(), lookFrames[j].size());
                 double best = 0.0;
-                for (int k = 0; k < 6; ++k) {
+                for (int k = 0; k < FA_N; ++k) {
+                    std::vector<double> A, Bv;
+                    for (const FrameRow& f : lookFrames[i]) if (f.v[k] >= 0.0) A.push_back(f.v[k]);
+                    for (const FrameRow& f : lookFrames[j]) if (f.v[k] >= 0.0) Bv.push_back(f.v[k]);
+                    if (A.size() < kMinSeparable || Bv.size() < kMinSeparable) {
+                        printf("     %-8s too few measurable frames (%zu / %zu)\n",
+                               kFrameAxis[k], A.size(), Bv.size());
+                        continue;
+                    }
                     size_t above = 0, ties = 0;
-                    for (double a : A[k]) for (double b : Bv[k]) {
+                    for (double a : A) for (double b : Bv) {
                         if (a > b) ++above; else if (a == b) ++ties;
                     }
                     const double pr = ((double)above + 0.5*(double)ties)
-                                    / ((double)A[k].size() * Bv[k].size());
+                                    / ((double)A.size() * Bv.size());
                     const double e = std::fabs(2.0*pr - 1.0);
-                    printf("     %-8s %7.3f vs %7.3f   d %+7.3f   effect %.2f%s\n", fax[k],
-                           median(A[k]), median(Bv[k]), median(A[k]) - median(Bv[k]), e,
+                    printf("     %-8s %7.3f vs %7.3f   d %+7.3f   effect %.2f%s\n",
+                           kFrameAxis[k], median(A), median(Bv), median(A) - median(Bv), e,
                            e >= kDistinctEffect ? "   <-- DISTINCT" : "");
                     if (e > best) best = e;
                 }
