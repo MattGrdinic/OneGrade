@@ -425,6 +425,10 @@ public:
     void applyMagicGrade(double p_Time); // Creative, then one classifier-chosen colour move
     void applySeparation();             // rescale the stored magic move without re-deciding
     void armBias(bool reset = false);   // store the current grade as Bias's zero point
+    void armToneTargets();              // ...and the conditions it currently meets
+    void populateMagicSubject();        // rebuild the Subject list from the cached segmentation
+    void applyMagicSubject();           // re-grade around the subject the user picked
+    void applyMagicResult(const og::grade::MagicResult& R, const char* src, bool repopulate);
     double m_LastKey = 0.0;             // scene key in stops from the last successful analyse
     double m_LastPin = 0.0;             // % of frame clipped at the source ceiling
     double m_LastGain = 0.80;           // Gain the measurement asked for (bias moves off this)
@@ -485,6 +489,14 @@ private:
     OFX::DoubleParam* m_Gain;
     OFX::ChoiceParam* m_Encode;
     OFX::StringParam* m_EncodeNote;   // says what the encode actually is when it's overridden
+    OFX::StringParam* m_BiasNote;     // ...and which of its two control laws Bias is running
+    OFX::ChoiceParam* m_MagicSubject; // which of the frame's subjects the grade is built around
+    // Creative's grade, before a subject was chosen -- what switching subjects re-runs from.
+    // Instance state on purpose: it is only meaningful while the segmentation behind it is live,
+    // which is this session. A reloaded project shows "press Magic Grade" instead of a stale list.
+    float m_MagicBaseP[13] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    bool  m_HaveMagicBase = false;
+    bool  m_MagicLutOk    = false;
     OFX::DoubleParam* m_PostExp;
     OFX::DoubleParam* m_PostCon;
     OFX::DoubleParam* m_Rolloff;
@@ -551,6 +563,12 @@ private:
     OFX::DoubleParam* m_ToneMid;
     OFX::DoubleParam* m_ToneShi;
     OFX::DoubleParam* m_ToneFLo;
+    // The three conditions the CURRENT grade meets. Bias leans away from these rather
+    // than from the fitted constants, which is what lets a hand edit survive it. -1 = unset.
+    OFX::DoubleParam* m_ToneTFloor;
+    OFX::DoubleParam* m_ToneTMid;
+    OFX::DoubleParam* m_ToneTCeil;
+    OFX::DoubleParam* m_ToneTFMax;
     OFX::DoubleParam* m_ToneHi;
     OFX::DoubleParam* m_CreativeLow;   // where Creative places its black point (pre-LUT)
     OFX::StringParam* m_ProbePeak;
@@ -599,6 +617,8 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_Gain    = fetchDoubleParam("gain");
     m_Encode  = fetchChoiceParam("outEncode");
     m_EncodeNote = fetchStringParam("encodeNote");
+    m_BiasNote   = fetchStringParam("biasNote");
+    m_MagicSubject = fetchChoiceParam("magicSubject");
     m_PostExp = fetchDoubleParam("postExp");
     m_PostCon = fetchDoubleParam("postCon");
     m_Rolloff = fetchDoubleParam("rolloff");
@@ -635,6 +655,10 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ToneMid      = fetchDoubleParam("toneMid");
     m_ToneShi      = fetchDoubleParam("toneShi");
     m_ToneFLo      = fetchDoubleParam("toneFLo");
+    m_ToneTFloor   = fetchDoubleParam("toneTFloor");
+    m_ToneTMid     = fetchDoubleParam("toneTMid");
+    m_ToneTCeil    = fetchDoubleParam("toneTCeil");
+    m_ToneTFMax    = fetchDoubleParam("toneTFMax");
     m_ToneHi       = fetchDoubleParam("toneHi");
     m_BiasGain     = fetchDoubleParam("biasGain");
     m_BiasLift     = fetchDoubleParam("biasLift");
@@ -1672,6 +1696,46 @@ void OneGrade::applyAutoGradeClean(double p_Time)
 // the offset is measured from there. That is what makes a hand tweak survive: the slider does
 // not jump, the picture does not move, and the next drag continues from where the user left it
 // rather than from where the button did.
+// RE-DERIVE WHAT THE GRADE CURRENTLY MEETS, so Bias leans away from that rather than from the
+// constants Magic Tone was solved to.
+//
+// Without this a hand edit to Lift, Gamma or Gain is discarded the next time Bias is touched:
+// armBias() re-anchors, which preserves the edit exactly on the offset path, but the solving
+// path drives back to targets stored when the button was pressed and the anchor is only the
+// seed for a bracketed solve. So the fix is not to remember the parameters harder -- it is to
+// move the CONDITIONS, because the conditions are what that path is actually about.
+//
+// Measured through tone_render(), the same function the solve places its targets with, so "where
+// is the subject now" and "where should the subject go" can never be answered differently.
+//
+// No-op unless Magic Tone armed this node: the offset path already preserves edits.
+void OneGrade::armToneTargets()
+{
+    double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0, tFLo = -1.0;
+    m_ToneLo->getValue(tLo);  m_ToneMid->getValue(tMid);
+    m_ToneShi->getValue(tShi); m_ToneHi->getValue(tHi); m_ToneFLo->getValue(tFLo);
+    if (!(tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 && tHi >= 0.0 && tFLo >= 0.0)) {
+        m_ToneTFloor->setValue(-1.0); m_ToneTMid->setValue(-1.0);
+        m_ToneTCeil->setValue(-1.0);  m_ToneTFMax->setValue(-1.0);
+        return;
+    }
+    float P[og::analysis::kParamN];
+    P[0]=(float)m_Temp->getValue();    P[1]=(float)m_Tint->getValue();
+    P[2]=(float)m_Density->getValue(); P[3]=(float)m_Lift->getValue();
+    P[4]=(float)m_Gamma->getValue();   P[5]=(float)m_Gain->getValue();
+    P[6]=(float)m_OffTemp->getValue(); P[7]=(float)m_OffTint->getValue();
+    P[8]=(float)m_PostExp->getValue(); P[9]=(float)m_PostCon->getValue();
+    P[10]=(float)m_RawExp->getValue(); P[11]=(float)m_RawTemp->getValue();
+    P[12]=(float)m_Rolloff->getValue();
+    const bool lutOk = ensureLutLoaded();
+    const og::grade::ToneTargets t = og::grade::tone_targets_of(
+        tLo, tMid, tHi, tFLo, P, lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0);
+    m_ToneTFloor->setValue(t.floor);
+    m_ToneTMid->setValue(t.mid);
+    m_ToneTCeil->setValue(t.ceil);
+    m_ToneTFMax->setValue(t.floorMax);
+}
+
 void OneGrade::armBias(bool reset)
 {
     if (reset) { m_AutoBias->setValue(0.0); m_BiasMirror->setValue(0.0); }
@@ -1725,20 +1789,49 @@ void OneGrade::applyBias()
     if (tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 && tHi >= 0.0 && tFLo >= 0.0) {
         float Pc[oga::kParamN];
         Pc[0]=(float)m_Temp->getValue();    Pc[1]=(float)m_Tint->getValue();
-        Pc[2]=(float)m_Density->getValue(); Pc[3]=(float)m_Lift->getValue();
-        Pc[4]=(float)m_Gamma->getValue();   Pc[5]=(float)m_Gain->getValue();
+        Pc[2]=(float)m_Density->getValue();
+        // THE SOLVE STARTS FROM THE ARMED GRADE, NEVER FROM THE LIVE SLIDERS.
+        //
+        // These three used to be read straight off the node -- which are the PREVIOUS bias
+        // solve's own output, so every drag event started where the last one finished and the
+        // slider was reading itself. solve_magic_tone_from is path-dependent by design (its
+        // ceiling fallback deliberately restores Creative's gamma from P0[4], and the coordinate
+        // passes start where they are told), so feeding results forward turned the drag into a
+        // 2-CYCLE: on one frame Lift alternated 0.087 / 0.000 and Gain 0.29 / 0.55 on every
+        // other 0.002 of slider, from about +0.9 upward. On screen that is the picture flipping
+        // between lifted and normal over and over as the slider moves -- reported as an
+        // inversion, and the second thing this slider has done that looked like one.
+        //
+        // The anchor armBias() stores is exactly the stable reference this needs, and it was
+        // already sitting there being used only by the coefficient path below. With it, the same
+        // slider position always produces the same grade no matter how it was reached.
+        //
+        // Third time in this project a control has read its own output: Auto Grade's first press
+        // measured the node it was about to change, White Balance settled over three presses,
+        // and now this. The tell is the same every time -- the answer depends on the history
+        // rather than on the footage.
+        double aL = 0.0, aG = 1.0, aN = 1.0;
+        m_BiasLift->getValue(aL); m_BiasGamma->getValue(aG); m_BiasGain->getValue(aN);
+        Pc[3]=(float)aL; Pc[4]=(float)aG; Pc[5]=(float)aN;
         Pc[6]=(float)m_OffTemp->getValue(); Pc[7]=(float)m_OffTint->getValue();
         Pc[8]=(float)m_PostExp->getValue(); Pc[9]=(float)m_PostCon->getValue();
         Pc[10]=(float)m_RawExp->getValue(); Pc[11]=(float)m_RawTemp->getValue();
         Pc[12]=(float)m_Rolloff->getValue();
         const bool lutOk = ensureLutLoaded();
         og::grade::Tunables tn;
-        const og::grade::MagicTone mt = og::grade::solve_magic_tone_from(
+        // THE WHOLE SLIDER LAW IS IN THE HEADER, so the bench walks the same curve this does.
+        // It holds at the last feasible bias rather than declining, which is what stops the
+        // picture jumping when the targets stop being reachable -- see solve_magic_tone_bias.
+        // The conditions the grade currently meets. Unset (-1) falls back to the fitted
+        // constants inside the solve, which is what a fresh Magic grade wants.
+        og::grade::ToneTargets base;
+        m_ToneTFloor->getValue(base.floor);
+        m_ToneTMid->getValue(base.mid);
+        m_ToneTCeil->getValue(base.ceil);
+        m_ToneTFMax->getValue(base.floorMax);
+        const og::grade::MagicTone mt = og::grade::solve_magic_tone_bias(
             tLo, tMid, tShi, tHi, Pc, lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0,
-            std::min(0.40, std::max(0.00, tn.subjFloor    + bias * 0.06)),
-            tn.subjMid,
-            std::min(1.00, std::max(0.60, tn.frameCeiling - bias * 0.03)),
-            tFLo, tn.frameFloorMax);
+            tn, tFLo, bias, base);
         if (mt.ok) {
             m_Lift->setValue(mt.lift);
             m_Gamma->setValue(mt.gamma);
@@ -1807,6 +1900,62 @@ void OneGrade::applyBias()
 // and nothing else, so a real segmentation model swaps into that one function. This exists to
 // prove the chain end to end in Resolve BEFORE the model goes in, so the model lands in a slot
 // already known to work.
+// Rebuild the Subject list from the segmentation the last press produced. Mirrors
+// populateLookLut(): resetOptions() + appendOption() at runtime is a pattern this plugin already
+// relies on, so Resolve is known to handle it.
+//
+// Labels carry the coverage because coverage is the tell. A face at 13% is a face; "skin" at 46%
+// is sand, and the number is the only thing that says so -- the same reason the analysis panel
+// has always printed it next to the subject key.
+void OneGrade::populateMagicSubject()
+{
+    m_MagicSubject->resetOptions();
+    if (!m_HaveMagicBase || m_LastSamples.size() < 512) {
+        m_MagicSubject->appendOption("- press Magic Grade -");
+        return;
+    }
+    const int n = og::grade::magic_option_count(m_LastSamples, og::grade::kCreativeCamera,
+                                                og::grade::kCreativeEncode, m_MagicBaseP);
+    if (n <= 0) {
+        m_MagicSubject->appendOption("- nothing to separate -");
+        return;
+    }
+    for (int k = 0; k < n; ++k) {
+        const oga::MagicChoice c = og::grade::magic_option_at(
+            m_LastSamples, og::grade::kCreativeCamera, og::grade::kCreativeEncode, m_MagicBaseP, k);
+        char lab[64];
+        snprintf(lab, sizeof lab, "%d - %s %.0f%%", k + 1,
+                 c.ok ? oga::region_name(c.subject) : "?", c.ok ? c.cover : 0.f);
+        m_MagicSubject->appendOption(lab);
+    }
+}
+
+// Re-grade around the subject the user picked. No frame fetch, no measurement, no inference --
+// steps 4-7 over a SampleSet whose regions are already assigned, which is why this can sit on a
+// dropdown instead of behind a button press.
+void OneGrade::applyMagicSubject()
+{
+    if (!m_HaveMagicBase || m_LastSamples.size() < 512) return;
+    int idx = 0; m_MagicSubject->getValue(idx);
+
+    og::grade::Tunables tun;
+    m_CreativeLow->getValue(tun.blackTarget);
+    // Re-checked rather than trusted from the press: the user can change LUT Mode in between, and
+    // a solve placed against the wrong LUT is the bug that made the first press come out crushed.
+    const bool lutOk = ensureLutLoaded();
+
+    og::grade::Measurements meas;
+    meas.key = m_LastKey; meas.pin = m_LastPin; meas.hot = m_LastHot;
+    meas.d01 = m_LastR01; meas.d50 = m_LastD50; meas.d99 = m_LastD99;
+    meas.valid = true;
+
+    const og::grade::MagicResult R = og::grade::solve_magic_from_regions(
+        m_LastSamples, m_MagicBaseP, meas, og::grade::kCreativeCamera, og::grade::kCreativeEncode,
+        lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0, tun, idx, 1.0);
+
+    applyMagicResult(R, s_seg_ready() ? "model" : "heuristic", /*repopulate=*/false);
+}
+
 void OneGrade::applyMagicGrade(double p_Time)
 {
     // THE ORDER LIVES IN ONE PLACE NOW. Everything from here to the panel notes used to be
@@ -1822,6 +1971,9 @@ void OneGrade::applyMagicGrade(double p_Time)
         m_MagicNote->setValue("No frame to analyse");
         m_MagicWhy->setValue("");
         m_MagicParam->setValue(-1);
+        m_HaveMagicBase = false;
+        populateMagicSubject();
+        setEnabledness();
         return;
     }
 
@@ -1831,7 +1983,12 @@ void OneGrade::applyMagicGrade(double p_Time)
     applyPreset(1);
 
     bool wbFirst = false; m_WbFirst->getValue(wbFirst);
-    int  cycle   = 0;     m_MagicCycle->getValue(cycle);
+    // ONE PRESS, THEN PICK. The button used to cycle: press again for a different subject, with
+    // no way to see what the alternatives were or to go back to one. It always solves the FIRST
+    // option now and hands the rest to the Subject dropdown, which re-runs from the cached
+    // segmentation. Everything expensive about this button -- the frame fetch, the measurement
+    // and ~100 ms of inference -- happens once, and choosing between its answers is arithmetic.
+    const int cycle = 0;
     og::grade::Tunables tun;
     m_CreativeLow->getValue(tun.blackTarget);
     // LOADED, not merely selected. applyPreset(1) has just chosen the film LUT, and on a node
@@ -1866,6 +2023,21 @@ void OneGrade::applyMagicGrade(double p_Time)
         lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0,
         tun, cycle, 1.0, wbFirst, segfn);
 
+    // What the alternatives are re-run from. Creative's grade, before any subject was chosen, so
+    // switching options cannot compound one subject's colour move onto the next. Instance state:
+    // it dies with the session, which is exactly as long as the segmentation behind it lives.
+    for (int k = 0; k < oga::kParamN; ++k) m_MagicBaseP[k] = R.Pcreative[k];
+    m_HaveMagicBase = R.ok;
+    m_MagicLutOk    = lutOk;
+
+    applyMagicResult(R, src, /*repopulate=*/true);
+}
+
+// WRITE A RESULT TO THE NODE. Shared by the button and by the Subject dropdown, so the two cannot
+// come to mean different things -- the panel, the anchors and the tone targets are all part of
+// "a grade was applied" and every one of them was a step someone could forget.
+void OneGrade::applyMagicResult(const og::grade::MagicResult& R, const char* src, bool repopulate)
+{
     // P[] IS THE WHOLE GRADE. Writing it wholesale rather than parameter by parameter is what
     // stops the two implementations diverging again -- there is no step here that could be
     // forgotten, because there are no steps.
@@ -1905,10 +2077,13 @@ void OneGrade::applyMagicGrade(double p_Time)
         m_MagicParam->setValue(-1);
         m_MagicBase->setValue(0.0);
         armBias(true);
+        armToneTargets();   // clears them: a declined tone solve leaves nothing to lean away from
+        // ...and the list, or it would still be offering the PREVIOUS frame's subjects.
+        if (repopulate) { populateMagicSubject(); m_MagicSubject->setValue(0); }
         setEnabledness();
         return;
     }
-    m_MagicCycle->setValue(cycle + 1);          // next press offers the next distinct move
+    // (the cycle counter is no longer advanced -- the Subject dropdown owns the choice)
 
     // The Separation slider rescales the stored move, so its anchor is the parameter WITHOUT it.
     // solve_magic already applied the move at Separation 1.0, so subtracting it recovers the
@@ -1945,6 +2120,10 @@ void OneGrade::applyMagicGrade(double p_Time)
     // Third discontinuity-at-its-own-default in this project, after Rolloff at 0 and RAW Temp at
     // 6500. The tell was identical all three times: the first nudge is a step, not a ramp.
     armBias(true);
+    // Same instant, same reason: the conditions Bias leans away from are the ones this grade
+    // ends on. Derived rather than assumed to equal the fitted constants -- the solve can land
+    // on its frame-floor or ceiling branch, in which case it deliberately did NOT hit them.
+    armToneTargets();
 
     // WHY, in the panel, in a sentence. The feature exists to surface a move an inexperienced
     // colourist would not have considered, and a suggestion with no visible reasoning teaches
@@ -1966,6 +2145,10 @@ void OneGrade::applyMagicGrade(double p_Time)
                  (c.sign > 0) ? "warm" : "cool", c.subjB, c.restB);
     }
     m_MagicWhy->setValue(msg);
+    // The list of alternatives belongs to the press that produced the segmentation, not to a
+    // selection made from it -- rebuilding it on every pick would reset the dropdown under the
+    // user's cursor.
+    if (repopulate) { populateMagicSubject(); m_MagicSubject->setValue(c.option); }
     setEnabledness();
 }
 
@@ -2097,6 +2280,26 @@ void OneGrade::setEnabledness()
     m_LookGroup->setEnabled(look && !bypLut && mode == 1);
     m_LookLut->setEnabled(look && !bypLut && mode == 1);
     m_LutMix->setEnabled(look && !bypLut && mode != 0);
+
+    // WHICH BIAS THE USER IS HOLDING. Exactly the test applyBias() makes -- armed targets mean
+    // the solving path -- so the line cannot drift from the behaviour it describes.
+    //
+    // Both laws are defensible; the surprise was that one control silently runs whichever, and
+    // that after a Magic grade a hand edit to Lift/Gamma/Gain is re-solved away on the next
+    // touch of the slider. The second half is the one that bites, so it is what the line spends
+    // its characters on.
+    {
+        double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0, tFLo = -1.0;
+        m_ToneLo->getValue(tLo);  m_ToneMid->getValue(tMid);
+        m_ToneShi->getValue(tShi); m_ToneHi->getValue(tHi); m_ToneFLo->getValue(tFLo);
+        const bool solving = (tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 &&
+                              tHi >= 0.0 && tFLo >= 0.0);
+        m_BiasNote->setValue(solving ? "Re-solves L/G/G around your edits"
+                                     : "Offsets Lift/Gamma/Gain together");
+    }
+    // Nothing to choose between until a press has produced a segmentation. Greyed rather than
+    // hidden, so the control is visible as something the button will fill in.
+    m_MagicSubject->setEnabled(m_HaveMagicBase);
 }
 
 // Rebuild the Look LUT dropdown to list only the currently selected group's LUTs.
@@ -2258,6 +2461,12 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
              (p_ParamName == "lift" || p_ParamName == "gamma" ||
               p_ParamName == "gain" || p_ParamName == "rolloff")) {
         armBias(false);
+        // The hand becomes the new zero. Re-anchoring alone preserves the edit on the offset
+        // path and cannot on the solving path, which re-solves to stored conditions -- so move
+        // the conditions to what the hand just achieved. Rolloff is in here because it is part
+        // of the render the conditions are measured through.
+        armToneTargets();
+        setEnabledness();
     }
     else if (p_Args.reason == OFX::eChangeUserEdit &&
              (p_ParamName == "offTemp" || p_ParamName == "temp")) {
@@ -2273,6 +2482,11 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     }
     else if (p_ParamName == "magicGrade" && p_Args.reason == OFX::eChangeUserEdit) {
         applyMagicGrade(p_Args.time);
+    }
+    // Cheap by construction: the segmentation is already in hand, so this re-grades rather than
+    // re-analyses. Guarded like every other button so a project load cannot trigger a solve.
+    else if (p_ParamName == "magicSubject" && p_Args.reason == OFX::eChangeUserEdit) {
+        applyMagicSubject();
     }
     else if (p_ParamName == "separation" && p_Args.reason == OFX::eChangeUserEdit) {
         applySeparation();
@@ -2707,6 +2921,11 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             // than falling back to nudging parameters.
             anch("toneLo", -1.0); anch("toneMid", -1.0);
             anch("toneShi", -1.0); anch("toneHi", -1.0); anch("toneFLo", -1.0);
+            // ...and what the grade currently ACHIEVES at the first, second and fourth of them.
+            // Bias offsets from these, so re-deriving them after a hand edit is what makes the
+            // edit survive: at bias 0 the solve is asked for what is already on screen.
+            anch("toneTFloor", -1.0); anch("toneTMid", -1.0); anch("toneTCeil", -1.0);
+            anch("toneTFMax", -1.0);
         }
 
         PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");
@@ -2818,9 +3037,24 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         {
             PushButtonParamDescriptor* mg = p_Desc.definePushButtonParam("magicGrade");
             mg->setLabels("Magic Grade", "Magic Grade", "Magic Grade");
-            mg->setHint("Applies Creative Grade, then looks at what is actually in the frame - sky, water, foliage, a person - decides which of those the shot is about, and makes ONE colour move to set it off against the rest. The move is chosen, not calculated to a target: which slider depends on whether the subject is the bright or the dark part of the frame, and which direction depends on the way it already leans. Press again to pick a different subject; the readout says which option you are on and how many there are. Some shots have nothing to separate - a flat aerial, a macro of leaves - and on those it simply leaves you with Creative Grade and says so.");
+            mg->setHint("Applies Creative Grade, then looks at what is actually in the frame - sky, water, foliage, a person - decides which of those the shot is about, and makes ONE colour move to set it off against the rest. The move is chosen, not calculated to a target: which slider depends on whether the subject is the bright or the dark part of the frame, and which direction depends on the way it already leans. It does the looking ONCE: the frame fetch, the measurement and the segmentation all happen on this press, and the other subjects it found are listed in Subject below, where switching between them is instant. Pressing again simply redoes the analysis on the current frame. Some shots have nothing to separate - a flat aerial, a macro of leaves - and on those it simply leaves you with Creative Grade and says so.");
             mg->setParent(*gMagic);
             page->addChild(*mg);
+
+            // THE FRAME'S OTHER ANSWERS, offered rather than hidden behind repeated presses.
+            //
+            // Rebuilt at runtime from the cached segmentation, the same way the Look LUT list is
+            // rebuilt when its group changes. It has to start with a prompt rather than an empty
+            // list: choice params save by index and the options cannot be rebuilt on load without
+            // fetching a frame, so a reopened project would otherwise show a stale subject that
+            // reads as a promise the node cannot keep.
+            ChoiceParamDescriptor* ms = p_Desc.defineChoiceParam("magicSubject");
+            ms->setLabels("Subject", "Subject", "Subject");
+            ms->setHint("Which of the things in the frame the grade is built around. Magic Grade picks the most likely one and lists the rest here - selecting a different one re-grades around it immediately, because the expensive part (looking at the frame) is already done. The subject decides a lot: the grade holds ITS shadows and midtone in place, so a small subject like a face constrains the picture much more than a large one like sand or sky, and Bias has correspondingly less room afterwards. Which one is more pleasing is a judgement this plugin does not make - try them. The list is rebuilt each time you press Magic Grade, and is empty until you do.");
+            ms->appendOption("- press Magic Grade -");
+            ms->setDefault(0);
+            ms->setParent(*gMagic);
+            page->addChild(*ms);
 
             BooleanParamDescriptor* wb = p_Desc.defineBooleanParam("wbFirst");
             wb->setLabels("White Balance First", "White Balance First", "White Balance First");
@@ -2879,6 +3113,21 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             page->addChild(*defineSlider(p_Desc, "autoBiasMirror", "Bias",
                 "The same Bias slider as the one under Base and Creative Grade - the two always hold the same value, and moving either moves both. It is repeated here because Magic Grade produces a Creative grade with a colour move on top, and the tonal lean is the next thing you will want after looking at the result.",
                 0.0, -2.0, 2.0, 0.01, gMagic));
+
+            // WHICH BIAS YOU HAVE, said out loud. The slider runs two different control laws
+            // and picks between them on state nothing on the panel shows: with Magic Tone's
+            // targets armed it re-solves them, and otherwise it offsets the three sliders
+            // together. Both are right; being unable to tell which one you are holding is not.
+            // Same rule as the encode note above - a silent override is a bug even when the
+            // math is right - and the same ~45-character ASCII budget.
+            StringParamDescriptor* bn = p_Desc.defineStringParam("biasNote");
+            bn->setLabels("Bias mode", "Bias mode", "Bias mode");
+            bn->setStringType(eStringTypeLabel);
+            bn->setDefault("");
+            bn->setHint("Which way Bias is working right now. After Magic Grade it moves the TARGETS the grade was solved for and solves again, so Lift, Gamma and Gain move by different amounts and in different directions to keep the subject where it was put - the numbers look erratic while the picture stays coherent, because they are results rather than settings. It also means a hand edit to those three is re-solved away the next time you touch Bias. Without a Magic grade it is a plain offset: all three move together, the whole image up or down.");
+            bn->setEnabled(false);
+            bn->setParent(*gMagic);
+            page->addChild(*bn);
         }
 
     }

@@ -109,6 +109,64 @@ struct Tunables {
     double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
 };
 
+// A TARGET MAY NEVER ASK FOR WHAT THE ACCEPTANCE TEST REJECTS.
+//
+// solve_magic_tone_from() declines a result whose frame highlight reaches kFrameBlown, and Bias
+// shifts the ceiling TARGET by -bias*0.03 -- so negative Bias walked the target upward until it
+// clamped at 1.000, which is above the blown threshold. From about bias -1.07 down, on EVERY
+// frame, the solve was being asked for precisely the thing the next line then refused, so it
+// could not succeed no matter what the footage looked like. applyBias() then fell through to its
+// coefficient path and the picture jumped.
+//
+// The clamp belongs here, next to the test it has to stay under, rather than at the two call
+// sites that shift the target. Same lesson as the encode split: a number compared against a
+// constant has to live in the same space as that constant -- here, on the same side of it.
+static const double kFrameBlown      = 0.999;   // render(fHi) at or above this is blown
+static const double kFrameCeilingMax = 0.990;   // ...so never TARGET above this
+
+// WHERE A SOURCE VALUE LANDS under a grade, through the LUT and the trim -- the picture the
+// viewer is actually judging. The tone solve places its targets with this, and callers ask it
+// "where is the subject NOW?" with the same function, so the question and the answer cannot
+// drift apart. It was a lambda inside the solve until a caller needed to ask.
+static inline double tone_render(double v, double lf, double gm, double gn,
+                                 double pe, double con, double roll,
+                                 const float* lut, int lutSize)
+{
+    float x = og::lgg_core((float)v, (float)lf, (float)gm, (float)gn);
+    float r = x, g = x, b = x;
+    if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
+    og::apply_trim((float)pe, (float)con, r, g, b);
+    if (roll > 0.f) g = og::softclip(g, (float)roll);
+    return (double)g;
+}
+
+// The three conditions a grade currently MEETS, in the order the solve names them. This is what
+// lets a hand edit become the thing Bias leans away from: measure what the hand did, and Bias
+// offsets from there instead of from the constants the button was solved to.
+struct ToneTargets { double floor = -1.0, mid = -1.0, ceil = -1.0, floorMax = -1.0; };
+
+// floorMax IS PART OF THE ANSWER, not a detail. Solving to the conditions a grade already meets
+// only gives that grade back if EVERY constraint agrees it is acceptable, and the frame-floor cap
+// is a constraint: a grade sitting above it gets its Lift taken away and reassigned, so the round
+// trip lands somewhere else entirely. Caught by the bench refusing to preserve an edit of exactly
+// zero -- re-solving the untouched grade moved Lift 0.084 -> 0.066 and Gamma 1.199 -> 1.264.
+static inline ToneTargets tone_targets_of(double sLo, double sMid, double fHi, double fLo,
+                                          const float P[analysis::kParamN],
+                                          const float* lut, int lutSize)
+{
+    ToneTargets t;
+    t.floor    = tone_render(sLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+    t.mid      = tone_render(sMid, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+    t.ceil     = tone_render(fHi,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+    t.floorMax = tone_render(fLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+    return t;
+}
+
+// How far one unit of Bias moves each target. Taste, unlike the two above, but they belong
+// together: these are what walk the ceiling into the clamp.
+static const double kBiasSubjFloorPer = 0.06;
+static const double kBiasCeilingPer   = 0.03;
+
 // The Cinematic Film Emulation recipe, which Creative Grade starts from. User-validated, and the
 // tint in particular (Gain Temp -0.22 / Gain Tint 0.09) is what gives the look its character --
 // it was identical across all four shots the Gain fit came from.
@@ -589,6 +647,11 @@ struct MagicTone {
     float frameLo = 0.f;  // the frame's own floor, which placing the subject must not wash out
     float sMidNeutral = 0.f;   // the subject's midtone before any of this, for diagnosis
     const char* why = "";   // which decline, when ok is false -- see solve_white_balance
+    // WHICH CONDITIONS BOUND, as a bitmask: 1 = the frame's floor took Lift off the subject,
+    // 2 = the ceiling gave way and Gain carries the midtone. Reported because a change of
+    // branch is a change of WHICH CONTROL DOES WHAT, and that is a step change in the picture
+    // however smoothly the targets were moved -- Bias has to be able to see one coming.
+    int   branch = 0;
     bool  ok = false;
 };
 
@@ -605,12 +668,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     MagicTone out;
     const double pe = P0[8], con = P0[9], roll = P0[12];
     auto render = [&](double v, double lf, double gm, double gn) {
-        float x = og::lgg_core((float)v, (float)lf, (float)gm, (float)gn);
-        float r = x, g = x, b = x;
-        if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
-        og::apply_trim((float)pe, (float)con, r, g, b);
-        if (roll > 0.f) g = og::softclip(g, (float)roll);
-        return (double)g;
+        return tone_render(v, lf, gm, gn, pe, con, roll, lut, lutSize);
     };
 
     double lf = P0[3], gm = P0[4], gn = P0[5];
@@ -637,7 +695,9 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     // conditions each pass, fought the fallback below, and ended up declining the frame outright
     // -- which handed the shot back to Creative at a black point of 0.002 and no shadow
     // separation at all, worse than the overshoot it was fixing.
+    int branch = 0;
     if (frameLo(lf, gm, gn) > frameFloorMax) {
+        branch |= 1;
         for (int pass = 0; pass < kMagicTonePasses; ++pass) {
             lf = solve1d(-0.50, 0.50, frameFloorMax, [&](double v) { return frameLo(v, gm, gn); });
             gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
@@ -658,6 +718,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     // legitimately. The fallback drops the ceiling condition entirely and re-solves the two
     // subject conditions against Creative's gain, which converges because it is then 2x2.
     if (std::fabs(render(sMid, lf, gm, gn) - subjMid) > 0.01) {
+        branch |= 2;
         // GAIN CARRIES THE MIDTONE HERE, not Gamma, and it is allowed past Creative's ceiling.
         //
         // That ceiling (gainMax 0.80) exists so a deliberately low-key shot is never pushed up --
@@ -693,7 +754,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     // Checked on the RESULT, not on whether a control sits at a bound. A bound can be reached
     // legitimately, and a solve can fail without reaching one.
     if (std::fabs(render(sMid, lf, gm, gn) - subjMid) > 0.02) { out.why = "subject unplaceable"; return out; }
-    if (render(fHi, lf, gm, gn) >= 0.999) { out.why = "highlight blown"; return out; }
+    if (render(fHi, lf, gm, gn) >= kFrameBlown) { out.why = "highlight blown"; return out; }
 
     out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
     out.sLo = (float)sLo; out.sMid = (float)sMid; out.sHi = (float)sHi;
@@ -703,10 +764,93 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     out.subjHi  = (float)render(sHi,  lf, gm, gn);
     out.frameHi = (float)render(fHi,  lf, gm, gn);
     out.mid     = (float)render(sMid, lf, gm, gn);
+    out.branch  = branch;
     out.ok = true;
     return out;
 }
 
+
+// BIAS: move the targets, re-solve, and HOLD AT THE LAST FEASIBLE BIAS.
+//
+// Lives here rather than in applyBias() because the bench has to be able to walk this exact
+// curve -- a discontinuity in it is invisible from the outside until someone drags a slider in
+// Resolve and the picture jumps, which is how it was found. Reimplementing it to test it is the
+// mistake this header exists to prevent.
+//
+// Holding matters as much as the arithmetic. A declined solve used to fall through to a
+// coefficient path, and the two do not meet: neighbouring slider positions gave Lift -0.134 and
+// +0.162 on one frame, a 0.30 step that read as the image inverting. Bisecting to the limit
+// rather than keeping the last value is deliberate -- keeping the last value makes the result
+// depend on how fast the slider was dragged, so two users stop at two different grades. The
+// limit is a property of the frame and should be found, not remembered.
+//
+// Returns !ok only when bias 0 itself does not solve, which means the node was never armed by
+// Magic Tone; the caller's own fallback is right in that case and only that case.
+static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sHi, double fHi,
+                                              const float P0[analysis::kParamN],
+                                              const float* lut, int lutSize,
+                                              const Tunables& t, double fLo, double bias,
+                                              ToneTargets base = ToneTargets())
+{
+    // BIAS LEANS AWAY FROM WHATEVER THE GRADE CURRENTLY MEETS, not from the constants the button
+    // was solved to. Pass the conditions a hand edit achieved and the edit survives by
+    // construction: at bias 0 the solve is asked for exactly what is already on screen, so it
+    // returns it. Default-constructed (-1) means "use the fitted targets", which is what a fresh
+    // Magic grade wants and what every existing caller got before.
+    const double bFloor = (base.floor >= 0.0) ? base.floor : t.subjFloor;
+    const double bMid   = (base.mid   >= 0.0) ? base.mid   : t.subjMid;
+    const double bCeil  = (base.ceil  >= 0.0) ? base.ceil  : t.frameCeiling;
+    // ...and the frame floor has to admit the grade it is being asked to reproduce, or the cap
+    // reassigns Lift and the round trip fails. Never TIGHTER than the fitted value, so this can
+    // only ever let an existing grade through -- it cannot license a new one to wash out.
+    const double bFFMax = (base.floorMax >= 0.0) ? std::max(t.frameFloorMax, base.floorMax)
+                                                 : t.frameFloorMax;
+    auto at = [&](double b) {
+        return solve_magic_tone_from(
+            sLo, sMid, sHi, fHi, P0, lut, lutSize,
+            std::min(0.40, std::max(0.00, bFloor + b * kBiasSubjFloorPer)),
+            bMid,
+            std::min(kFrameCeilingMax, std::max(0.60, bCeil - b * kBiasCeilingPer)),
+            fLo, bFFMax);
+    };
+    MagicTone feasible = at(0.0);
+    if (!feasible.ok) return at(bias);   // never armed by Magic Tone -- let the caller fall back
+
+    // THE CEILING GIVING WAY IS A STEP IN THE PICTURE, so it bounds the slider like a decline.
+    //
+    // Bit 2 is the fallback that DROPS the ceiling condition and lets Gain take the midtone off
+    // Gamma. Crossing it changes which control does what, and that is discontinuous by nature:
+    // on one frame it moved Lift 0.003 -> 0.081 and Gain 0.555 -> 0.282 between two neighbouring
+    // slider positions. Rendered either side, the far side is not a different look -- it is a
+    // washed-out picture with the blacks lifted off the floor, which is what the user saw and
+    // called broken.
+    //
+    // ONLY BIT 2, and that distinction is the whole fix. Holding on ANY branch change was tried
+    // first and was far too blunt: the frame-floor bit comes and goes SMOOTHLY -- one frame runs
+    // Lift 0.122 -> 0.083 -> -0.019 straight through it -- so holding there capped that frame at
+    // -0.06 and left the positive half inert on every tone-solved frame. Zero jumps because
+    // nothing moved, which is a worse bug than the step it removed. The question is not "did the
+    // branch change" but "did the assignment of conditions to controls change".
+    //
+    // Carrying the solved gamma into the fallback rather than restoring Creative's was also
+    // tried; the step did not move, because the step IS the reassignment and not the value it
+    // starts from. Smoothing it properly means blending the two branches, which wants its own
+    // footage pass. Until then the slider runs out of road rather than driving off it.
+    auto sameShape = [&](const MagicTone& s) {
+        return s.ok && ((s.branch & 2) == (feasible.branch & 2));
+    };
+
+    MagicTone mt = at(bias);
+    if (sameShape(mt)) return mt;
+
+    double lo = 0.0, hi = bias;          // lo keeps the assignment, hi does not
+    for (int i = 0; i < 18; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        const MagicTone s = at(mid);
+        if (sameShape(s)) { lo = mid; feasible = s; } else hi = mid;
+    }
+    return feasible;
+}
 
 static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subject,
                                          int cam, int enc,
@@ -877,6 +1021,11 @@ using SegmentFn = std::function<bool(const unsigned char* rgb, int w, int h,
 
 struct MagicResult {
     float P[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    // The grade as Creative left it, BEFORE a subject was chosen. Kept so switching subjects
+    // starts from the same place every time -- re-running from the graded result would compound
+    // one subject's colour move onto the next, and the answer would depend on the order they
+    // were tried in.
+    float Pcreative[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
     analysis::MagicChoice choice;
     MagicTone     tone;
     WhiteBalance  wb;
@@ -887,6 +1036,78 @@ struct MagicResult {
 
 // thumbSrc: 512*512*3 camera log, top-down. S must already hold the frame's samples; its region
 // labels are filled in here. `click` cycles the subject, `sep` scales the colour move.
+// STEPS 4-7, GIVEN A SEGMENTATION THAT ALREADY EXISTS: decide, tone, colour, re-solve.
+//
+// Split out of solve_magic() so the choice of subject can be revisited for free. Segmentation is
+// the whole cost of the button (~100 ms of inference); everything here is arithmetic over a
+// SampleSet whose regions are already assigned, so offering every option the frame supports costs
+// nothing next to offering one.
+//
+// `creativeP` is the grade as Creative left it -- BEFORE any subject was chosen. Re-running from
+// the graded result instead would compound one subject's colour move onto the next, so switching
+// options would depend on which order they were tried in.
+static inline MagicResult solve_magic_from_regions(analysis::SampleSet& S,
+                                                   const float creativeP[analysis::kParamN],
+                                                   const Measurements& m, int cam, int enc,
+                                                   const float* lut, int lutSize,
+                                                   const Tunables& t, int click, double sep)
+{
+    (void)m;
+    MagicResult out;
+    for (int k = 0; k < analysis::kParamN; ++k) out.P[k] = creativeP[k];
+    for (int k = 0; k < analysis::kParamN; ++k) out.Pcreative[k] = creativeP[k];
+
+    const int dispEnc = (enc <= 2) ? enc : 1;
+    analysis::RegionStat st[analysis::kRegionN];
+    analysis::region_stats(S, cam, dispEnc, out.P, st);
+    out.choice = analysis::magic_decide(st, click);
+    if (!out.choice.ok) return out;
+
+    // TONE, then COLOUR, then TONE AGAIN -- the last two because Offset Temp is additive and Gain
+    // Temp multiplicative, so either shifts the channels the tone was placed on. A grade has to be
+    // solved for the configuration it ends in, not one it passed through.
+    auto applyTone = [&]() {
+        const MagicTone tn = solve_magic_tone(S, out.choice.subject, cam, enc, lut, lutSize,
+                                              out.P, t);
+        if (tn.ok) {
+            out.P[3] = tn.lift; out.P[4] = tn.gamma; out.P[5] = tn.gain;
+            if (tn.rawExp > 0.f) out.P[10] = tn.rawExp;
+        }
+        out.tone = tn;
+    };
+    applyTone();
+
+    out.magicBase = solve_magic_base(S, cam, dispEnc, out.choice, st, t);
+    out.P[out.choice.param] = (float)std::min(1.0, std::max(-1.0,
+        (double)out.P[out.choice.param] + out.magicBase * sep));
+
+    solve_black_px(S, cam, enc, out.P, t.blackTarget, nullptr, 0);
+    applyTone();
+
+    out.ok = true;
+    return out;
+}
+
+// HOW MANY DISTINCT SUBJECTS THIS FRAME OFFERS, and what they are. magic_decide() already builds
+// the deduped candidate list and reports its size, so asking it for each index in turn enumerates
+// them with no new logic to keep in step.
+static inline int magic_option_count(const analysis::SampleSet& S, int cam, int enc,
+                                     const float* P)
+{
+    analysis::RegionStat st[analysis::kRegionN];
+    analysis::region_stats(S, cam, (enc <= 2) ? enc : 1, P, st);
+    const analysis::MagicChoice c = analysis::magic_decide(st, 0);
+    return c.ok ? c.options : 0;
+}
+
+static inline analysis::MagicChoice magic_option_at(const analysis::SampleSet& S, int cam, int enc,
+                                                    const float* P, int k)
+{
+    analysis::RegionStat st[analysis::kRegionN];
+    analysis::region_stats(S, cam, (enc <= 2) ? enc : 1, P, st);
+    return analysis::magic_decide(st, k);
+}
+
 static inline MagicResult solve_magic(analysis::SampleSet& S,
                                       const std::vector<float>& thumbSrc,
                                       const Measurements& m, int cam, int enc,
@@ -938,35 +1159,16 @@ static inline MagicResult solve_magic(analysis::SampleSet& S,
     if (!segment(th.data(), 512, 512, mask)) return out;
     if (!analysis::assign_regions(S, mask, 512, 512)) return out;
 
-    // 4. DECIDE: rank the regions, pick a subject, pick a control and a direction.
-    const int dispEnc = (enc <= 2) ? enc : 1;
-    analysis::RegionStat st[analysis::kRegionN];
-    analysis::region_stats(S, cam, dispEnc, out.P, st);
-    out.choice = analysis::magic_decide(st, click);
-    if (!out.choice.ok) return out;
-
-    // 5. TONE, then 6. COLOUR, then 7. TONE AGAIN -- the last two because Offset Temp is additive
-    //    and Gain Temp multiplicative, so either shifts the channels the tone was placed on. A
-    //    grade has to be solved for the configuration it ends in, not one it passed through.
-    auto applyTone = [&]() {
-        const MagicTone tn = solve_magic_tone(S, out.choice.subject, cam, enc, lut, lutSize,
-                                              out.P, t);
-        if (tn.ok) {
-            out.P[3] = tn.lift; out.P[4] = tn.gamma; out.P[5] = tn.gain;
-            if (tn.rawExp > 0.f) out.P[10] = tn.rawExp;
-        }
-        out.tone = tn;
-    };
-    applyTone();
-
-    out.magicBase = solve_magic_base(S, cam, dispEnc, out.choice, st, t);
-    out.P[out.choice.param] = (float)std::min(1.0, std::max(-1.0,
-        (double)out.P[out.choice.param] + out.magicBase * sep));
-
-    solve_black_px(S, cam, enc, out.P, t.blackTarget, nullptr, 0);
-    applyTone();
-
-    out.ok = true;
+    // 4-7 live in solve_magic_from_regions() so they can be re-run WITHOUT the model. Steps 1-3
+    // are the ~100 ms; choosing a different subject out of the same segmentation is arithmetic,
+    // which is what lets the panel offer the alternatives instead of making the user press the
+    // button again and hope.
+    for (int k = 0; k < analysis::kParamN; ++k) out.Pcreative[k] = out.P[k];
+    const MagicResult tail = solve_magic_from_regions(S, out.P, m, cam, enc, lut, lutSize,
+                                                     t, click, sep);
+    for (int k = 0; k < analysis::kParamN; ++k) out.P[k] = tail.P[k];
+    out.choice = tail.choice; out.tone = tail.tone; out.magicBase = tail.magicBase;
+    out.ok = tail.ok;
     return out;
 }
 

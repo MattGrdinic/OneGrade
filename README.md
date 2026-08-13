@@ -92,6 +92,12 @@ being straight about what that means.
 - **It runs on a button press only.** Not during playback, not during render. Press the button,
   it thinks for about a tenth of a second on one CPU thread, and writes ordinary slider values
   you can then drag.
+- **It looks once, then you choose.** That one press does all the expensive work, and the other
+  subjects it found appear in the **Subject** dropdown — switching between them re-grades
+  instantly, because nothing needs looking at again. Which subject you pick matters: the grade
+  holds *that* subject's shadows and midtone in place, so a face at 13% of the frame constrains
+  the picture much more than sand at 43%, and Bias has correspondingly less room afterwards.
+  **Which one is more pleasing is a judgement the plugin does not make** — try them.
 - **It is 12 MB.** [PP-MobileSeg-Base](models/README.md), Apache-2.0 licensed, running on the
   CPU. No GPU is involved and none is needed.
 - **It is not required.** If the model is missing the rest of the plugin works exactly as

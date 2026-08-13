@@ -294,11 +294,39 @@ sub-feature is only CI-verified when its release branch PRs into `main`** — ru
 for a `v*` tag (a cancelled tag run = no release artifacts). Pushing a
 **`v*` tag** additionally runs the `release` job → packages per-OS zip (bundle + installer
 from `install/`) → publishes a GitHub Release. Shipping since v0.1.0; tags so far v0.1.0,
-v0.2.0, v1.0.0, v1.0.1, v1.0.2, v1.0.3, v1.1.0 (the OneGrade rename), **v1.1.1** (current —
-the LUT encode-override visibility fix + the DWG/I naming unification).
+v0.2.0, v1.0.0–v1.0.4, v1.1.0 (the OneGrade rename), v1.1.1, v1.2.0, v1.3.0, v1.4.0 (Magic
+Grade), **v1.4.2** (current — the Magic Grade subject-tie + sampling fix, plus the three
+licence files the *shipped* bundle had been missing). **v1.4.1 was never tagged**; its work
+was folded into v1.4.0, so 1.4.2 follows 1.4.0 directly and a missing 1.4.1 release is
+expected, not a mistake.
 Plugin internal version is `kPluginVersionMajor/Minor` in `src/OneGrade.cpp` — OFX carries
-only major/minor, so 1.1 covers the whole v1.1.x line (no bump for v1.1.1); bump it when
-major/minor moves.
+only major/minor, so 1.4 covers the whole v1.4.x line (no bump for v1.4.1/v1.4.2, same as
+v1.1.1 before them); bump it when major/minor moves.
+
+**TAG THE MERGED `main`, NEVER YOUR OWN CHECKOUT** (2026-08-10 — it cost a bad release).
+`v1.4.2` was tagged while the checkout still sat on `main` and the release branch was still
+an open PR, so the tag landed on the *same commit as v1.4.0*: a GitHub Release advertising a
+fix it did not contain, byte-identical to the one before it. **Nothing warns you.** A tag on
+any reachable commit is valid, the release job builds it happily, and the zip looks right
+because it is a real build — just of the wrong tree. The existing "check
+`git branch --show-current` before committing" rule does not cover this: the mistake is not
+made at commit time, and the commits were fine and on the right branch. The order is **merge
+the PR → `git checkout main && git pull` → tag**. Verify before announcing anything:
+```bash
+git merge-base --is-ancestor <fix-sha> v<version> && echo "fix is in" || echo "STILL WRONG"
+```
+Recovering means deleting the tag **and its GitHub Release** and re-cutting — fine within
+minutes, which is what happened here — or burning the number and shipping the next one.
+Never move a tag someone may already have pulled.
+
+**What CI packages is the CMAKE bundle, on both platforms** (`cmake -S . -B build`, then the
+Package steps zip `build/OneGrade.ofx.bundle`). The Makefile bundle is a dev artefact that
+never ships. So anything added to the bundle must go in **`CMakeLists.txt`**, not just the
+Makefile — the LUT copy list is already an explicit by-name list for this reason, and the
+licence files were missing from releases until v1.4.2 for exactly the opposite reason: the
+Makefile had them and CMake did not. Fourth instance of the local-path-fine /
+shipped-path-silently-different shape, after the Windows LUT directory, the CUDA CPU
+fallback and the LUT encode override.
 
 ## The rename (2026-08-02) — PowerGrade → OneGrade
 Renamed because **"PowerGrade" already means something else in Resolve**: the stills album
@@ -670,6 +698,55 @@ together, so nudging one breaks all three ("if I touch the bias slider we kill t
 Crushing is now structurally impossible rather than guarded. The anchor is re-armed at the END of
 `applyMagicGrade`; armed halfway, the first touch snapped back to an intermediate grade (third
 discontinuity-at-its-own-default here, after Rolloff at 0 and RAW Temp at 6500).
+
+**A TARGET MAY NEVER ASK FOR WHAT THE ACCEPTANCE TEST REJECTS** (2026-08-10, `extreme-settings00098434`).
+Bias shifts the ceiling target by `-bias*0.03`, so NEGATIVE bias walks it *up* — and it used to
+clamp at **1.000**, while the decline check on the very next line rejects any result `>= 0.999`.
+So from about **bias -1.07 down, on every frame**, the solve was asked for precisely the thing it
+was then refused for delivering. It could not succeed on any footage. `applyBias` treated that
+decline as "not armed" and fell through to its **coefficient path**, which is a different control
+law — Lift went `-0.134` solved to `+0.162` coefficient at neighbouring slider positions, a 0.30
+step the user saw as the image inverting: very contrasty, then saturated, then normal, "making
+the plugin look broken". Fixes: `kFrameCeilingMax = 0.990` sits below `kFrameBlown = 0.999` and
+lives beside it in `OneGradeCreative.h`, and `solve_magic_tone_bias()` now owns the whole slider
+law — it **bisects back to the last feasible bias and holds there** instead of declining.
+Bisecting rather than keeping the last value is deliberate: keeping it makes the grade depend on
+how fast the slider was dragged. **Fourth discontinuity in this project** after Rolloff at 0, RAW
+Temp at 6500 and the halfway-armed anchor — and the first at a *feasibility* boundary rather than
+at a default. Walk the whole slider with `--bias-sweep`, which was added to find this and prints
+`held` where the targets stop being reachable.
+
+**THE BIAS SLIDER TOOK FOUR FIXES AND IS STILL NOT PERFECT** (2026-08-10/11; full write-up
+`docs/AUTO-GRADE.md` §10 "Four ways one slider looked broken"). All four looked like "an
+inversion" on footage and three were **invisible to a sweep from a fixed reference** — they only
+appear when the slider is walked the way a hand walks it. In order:
+1. **A target asked for what the acceptance test forbids.** Ceiling shifted by `-bias*0.03`
+   clamped at 1.000 while the decline check rejects `>= kFrameBlown` (0.999) → below bias ≈ −1.07
+   the solve could not succeed **on any frame**. `kFrameCeilingMax = 0.990` now lives next to
+   `kFrameBlown`, not at the call sites.
+2. **The slider read its own output.** `applyBias` seeded the solve from the live L/G/G — the
+   previous solve's result — and the solve is path-dependent, so a drag became a **2-cycle** (89
+   jumps on one frame). Seeded from the armed anchor: 89 → 1. **Third control here to read its own
+   output**, after Auto Grade's first press and WB settling over three presses.
+3. **Crossing the ceiling-gives-way branch** (`branch & 2`) reassigns which control carries the
+   midtone — inherently a step, and the far side is a washed-out picture. Bias bisects back and
+   **holds**. ONLY that bit: holding on any branch change capped a frame at −0.06 (the frame-floor
+   bit comes and goes *smoothly*) — zero jumps because nothing moved.
+4. **Hand edits were solved away.** Fixed by moving the CONDITIONS, not by remembering parameters:
+   `tone_targets_of()` re-derives what the grade meets, Bias offsets from there, so bias 0 asks for
+   what is on screen. **The frame-floor cap is part of that** — without deriving it too, re-solving
+   an *untouched* grade moved Lift 0.084 → 0.066. Edits that blow the highlight are deliberately
+   NOT preserved (Bias would have nowhere to go).
+
+**Still imperfect — user's call to ship anyway** ("some shots still cause unpredictable results,
+but the majority work, so good enough for now", 2026-08-11). Known: a hand edit can still land you
+on the ceiling-gives-way branch, where gamma is restored from the anchor rather than solved.
+**Two laws behind one control** (re-solve when armed, offset otherwise) — now stated by the
+`biasNote` label, driven from `setEnabledness()` with the same test `applyBias` makes.
+
+**The bench flags that found all of it** (`--bias-sweep --bias-drag --bias-feedback --bias-inc
+--bias-at --hand-lift/gamma/gain`). **A jump every other step is invisible at the default 0.1
+increment** — use `--bias-inc=0.002`. `--bias-feedback` reproduces defect 2 on demand.
 
 **Every tone target came from ONE hand-graded interview.** Placeholders with the right shape, all
 exposed as bench flags. Extending past faces is a DATA question — see `docs/ROADMAP.md`.
