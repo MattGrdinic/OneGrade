@@ -42,14 +42,16 @@ from torchvision import models, transforms
 
 
 class Pairs(Dataset):
-    def __init__(self, films, pos_dir, neg_dirs, train, shuffle_labels, seed=0):
+    def __init__(self, films, pos_dir, neg_dirs, train, shuffle_labels, seed=0, var_per_epoch=None):
         self.films = films
         self.pos_dir = pos_dir
         self.neg_dirs = neg_dirs
         self.train = train
+        self.vpe = var_per_epoch or (len(neg_dirs) if train else 1)
         self.rng = random.Random(seed)
         # Flip a film's two labels together, so a leak shows up as a real score rather than being
         # averaged away.
+        self.epoch = 0
         self.flip = {f: (self.rng.random() < 0.5) for f in films} if shuffle_labels else {}
         norm = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         if train:
@@ -65,7 +67,7 @@ class Pairs(Dataset):
     def __len__(self):
         # Positives are repeated once per negative variant so the classes stay balanced while
         # every degradation is seen each epoch -- 4x the data per pass, same 50/50 split.
-        return len(self.films) * 2 * (len(self.neg_dirs) if self.train else 1)
+        return len(self.films) * 2 * (self.vpe if self.train else 1)
 
     def __getitem__(self, i):
         variant = (i // (len(self.films) * 2)) if self.train else 0
@@ -75,7 +77,8 @@ class Pairs(Dataset):
         if positive:
             path = os.path.join(self.pos_dir, film)
         else:
-            d = self.neg_dirs[variant % len(self.neg_dirs)]
+            # Rotate through every variant across epochs even when only some are used per epoch.
+            d = self.neg_dirs[(variant + self.epoch) % len(self.neg_dirs)]
             path = os.path.join(d, os.path.splitext(film)[0] + ".png")
         y = 1.0 if positive else 0.0
         if self.flip.get(film):
@@ -109,6 +112,9 @@ def main():
     ap.add_argument("neg_dirs", nargs="+")
     ap.add_argument("--epochs", type=int, default=12)
     ap.add_argument("--shuffle", action="store_true")
+    # How many degradation variants each epoch sees. At 121 films, 4 bought data; at 1100 the
+    # scenes supply the variety and 4 just makes an epoch 4x longer for the same coverage.
+    ap.add_argument("--var-per-epoch", type=int, default=1)
     a = ap.parse_args()
 
     films = sorted(f for f in os.listdir(a.pos_dir) if f.lower().endswith((".jpg", ".jpeg", ".png")))
@@ -124,7 +130,7 @@ def main():
     if a.shuffle:
         print("LABELS SHUFFLED — this is the null, expect ~0.50")
 
-    tr = DataLoader(Pairs(tr_films, a.pos_dir, a.neg_dirs, True, a.shuffle, 1),
+    tr = DataLoader(Pairs(tr_films, a.pos_dir, a.neg_dirs, True, a.shuffle, 1, a.var_per_epoch),
                     batch_size=16, shuffle=True, num_workers=0)
     va = DataLoader(Pairs(va_films, a.pos_dir, a.neg_dirs, False, a.shuffle, 1),
                     batch_size=16, shuffle=False, num_workers=0)
@@ -143,6 +149,7 @@ def main():
     best = 0.0
     for ep in range(1, a.epochs + 1):
         model.train()
+        tr.dataset.epoch = ep
         tot = 0.0
         for x, y in tr:
             opt.zero_grad()

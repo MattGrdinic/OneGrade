@@ -339,6 +339,10 @@ int main(int argc, char** argv)
     // was scored on. Regenerating equivalent degradations in the training script would be a
     // paraphrase, and a head-to-head against 0.657 only means something if both saw one dataset.
     const char*  writeDeg = args(argc, argv, "--write-degraded", "");
+    // Skip segmentation when the run only exists to write degraded frames. Inference is ~0.5s a
+    // still and generating four variants over a thousand-film corpus would spend half an hour
+    // computing region masks nothing then reads.
+    const bool   degOnly  = argf(argc, argv, "--degrade-only");
 
     og::seg::Segmenter seg;
     {
@@ -422,6 +426,8 @@ int main(int argc, char** argv)
                 const std::string op = std::string(writeDeg) + "/" + stem + ".png";
                 stbi_write_png(op.c_str(), s.w, s.h, 3, s.px.data(), s.w * 3);
             }
+
+            if (degOnly) continue;
 
             // Same subsampling rule as probeAnalyze and the bench (~200k samples). Coverage
             // percentages feed magic_decide, and v1.4.2 was a bug where the plugin and the
