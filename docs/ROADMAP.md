@@ -654,3 +654,39 @@ known to be measuring saturation, and it is not a reason to raise the guard.
 
 Face grades are unchanged to every printed digit, which is the regression check that matters: the
 guard was inert on them before and is inert on them now, for a different and correct reason.
+
+### The fourth condition: built, measured, and it is post contrast that is wrong (2026-08-14)
+
+Following the `subjMid` dead end above, the surround's midtone was added as a fourth condition on a
+fourth control, post contrast, chosen because it carried the largest `d(rdL*)/dp` in the Jacobian
+and pivots at 0.5. Built so it is **absent at rest** — `surrMid < 0` means no fourth pass, so a
+fresh Magic Grade stays three conditions and every validated grade is bit-identical. Confirmed: all
+nine clips print identical L/G/g/branch/ceiling with the machinery in place.
+
+**It does not work, and the reason is exact.** The surround's midtone renders at **0.552** and
+**0.540** on the two face clips — essentially *on* the contrast pivot of 0.500. Contrast is
+`(v − 0.5)·con + 0.5`, so its leverage on the surround is `0.052` per unit: moving the surround by
+0.05 demands a full unit of contrast. Measured, contrast ran to its 2.0 bound by sep +0.25 and
+`rdL*` went the **wrong way**, −18.80 → −16.61, with Lift dragged 0.055 → 0.323 and Gamma
+1.381 → 0.926 compensating.
+
+**The Jacobian was read wrong, not measured wrong.** `pCn` really does carry the largest
+`d(rdL*)/dp` — because contrast moves the SUBJECT, which sits at 0.278 and far from the pivot. The
+subject is pinned by two of its own conditions, so the solve spends the whole move undoing it.
+Attributing a separation derivative to the surround when it belongs to the subject is the same
+class of error as `hot` versus `pin`: the number was real and described something else.
+
+**The structural finding, which outlives the attempt.** Subject floor, subject midtone and frame
+ceiling pin the tone curve at three points. The surround's position is then a CONSEQUENCE of those
+three, not a free variable, and no fourth control can move it without a control whose leverage is
+independent of all three — which post contrast is not, since it overlaps Gamma almost exactly.
+
+**Where a third attempt should start: relax one of the three, do not add a fourth.** The code's own
+reasoning already says legibility lives in the midtone and the floor is what gives ground first —
+that is exactly what the `frameFloorMax` branch does. So Tone Separation should SWAP which
+condition Lift serves, trading the subject's floor against the surround's position, reusing the
+branch-swap pattern that already exists twice rather than inventing a fourth condition. Untested.
+
+Kept in the tree because it is inert and any future law needs it: `TonePick::iSur` (surround p50 by
+luma, falling back to the frame median when the subject fills the frame), `MagicTone::sSur/surr/con`,
+`ToneTargets::surr`, and the fourth coordinate pass behind its sentinel.

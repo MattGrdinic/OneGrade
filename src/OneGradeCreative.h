@@ -245,7 +245,8 @@ static inline double tone_render(double v, double lf, double gm, double gn,
 // The three conditions a grade currently MEETS, in the order the solve names them. This is what
 // lets a hand edit become the thing Bias leans away from: measure what the hand did, and Bias
 // offsets from there instead of from the constants the button was solved to.
-struct ToneTargets { double floor = -1.0, mid = -1.0, ceil = -1.0, floorMax = -1.0; };
+struct ToneTargets { double floor = -1.0, mid = -1.0, ceil = -1.0, floorMax = -1.0,
+                     surr = -1.0; };
 
 // floorMax IS PART OF THE ANSWER, not a detail. Solving to the conditions a grade already meets
 // only gives that grade back if EVERY constraint agrees it is acceptable, and the frame-floor cap
@@ -254,9 +255,14 @@ struct ToneTargets { double floor = -1.0, mid = -1.0, ceil = -1.0, floorMax = -1
 // zero -- re-solving the untouched grade moved Lift 0.084 -> 0.066 and Gamma 1.199 -> 1.264.
 static inline ToneTargets tone_targets_of(double sLo, double sMid, double fHi, double fLo,
                                           const float P[analysis::kParamN],
-                                          const float* lut, int lutSize)
+                                          const float* lut, int lutSize, double sSur = -1.0)
 {
     ToneTargets t;
+    // The surround's CURRENT midtone, which is what makes Tone Separation's origin the identity:
+    // at sep 0 the fourth condition asks for exactly what is on screen, so adding it changes
+    // nothing. Left unset when the caller has no surround reading, which keeps the condition off.
+    if (sSur >= 0.0)
+        t.surr = tone_render(sSur, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
     t.floor    = tone_render(sLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
     t.mid      = tone_render(sMid, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
     t.ceil     = tone_render(fHi,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
@@ -299,6 +305,11 @@ static const double kBiasCeilingPer   = 0.03;
 // and no picture, and the fourth time the bench caught it by rendering the result instead of
 // trusting the solve's own report.
 static const double kToneSepMidPer = 0.05;
+
+// Sentinels, named because -1.0 appears in four argument slots and they do not all mean the same
+// thing: one turns a guard off, one says "no separate floor reading, reuse fLo".
+static const double kFrameFloorMinOff = -1.0;
+static const double kFloorReadUnset   = -1.0;
 
 // Below this, the subject and its surround are at the same lightness and "further apart" has no
 // direction to point in. The slider goes inert and says so rather than picking one: a control that
@@ -793,6 +804,13 @@ struct MagicTone {
     float rawExp = 0.f;   // scene-linear stops added to rescue an underexposed subject
     float ceil = 0.f;     // the frame highlight target actually solved against, after the search
     float frameLo = 0.f;  // the frame's own floor, which placing the subject must not wash out
+    // THE FOURTH CONDITION, present only when Tone Separation asks for one. `con` is the post-LUT
+    // Contrast the solve chose, `sSur` the surround's neutral midtone it was solved against and
+    // `surr` what that midtone ended up at. Contrast rather than any of the other three because
+    // it is the only tone control the subject conditions do not already own, and because it
+    // pivots at 0.5 -- between a subject at 0.278 and a brighter surround, which is what lets the
+    // two move APART instead of together.
+    float con = 1.f, sSur = 0.f, surr = 0.f;
     float sMidNeutral = 0.f;   // the subject's midtone before any of this, for diagnosis
     const char* why = "";   // which decline, when ok is false -- see solve_white_balance
     // WHICH CONDITIONS BOUND, as a bitmask: 1 = the frame's floor took Lift off the subject,
@@ -813,12 +831,37 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
                                               double subjFloor, double subjMid, double frameCeiling,
                                               double fLo, double frameFloorMax,
                                               double frameFloorMin = -1.0,
-                                              double fLoY = -1.0)
+                                              double fLoY = -1.0,
+                                              double sSur = 0.0, double surrMid = -1.0)
 {
     MagicTone out;
-    const double pe = P0[8], con = P0[9], roll = P0[12];
+    const double pe = P0[8], roll = P0[12];
+
+    // THE FOURTH CONDITION IS ABSENT AT REST, not fitted to a constant -- which is what makes this
+    // safe to add to a solve every validated grade stands on. surrMid < 0 means "no surround
+    // condition", the loops below stay exactly three passes, and a fresh Magic Grade is bit
+    // identical to what it was. The condition only exists once Tone Separation is off zero, and
+    // its target is then whatever the grade already achieves, so the slider's own origin is the
+    // identity too.
+    //
+    // Contrast has to be a solved variable rather than a constant read from P0, so `cn` is what
+    // render() closes over. Every existing call site is unchanged because it reads the same
+    // variable; only the new pass writes it.
+    const bool useSurr = (surrMid >= 0.0);
+    double cn = P0[9];
+    auto renderC = [&](double v, double lf, double gm, double gn, double c) {
+        return tone_render(v, lf, gm, gn, pe, c, roll, lut, lutSize);
+    };
     auto render = [&](double v, double lf, double gm, double gn) {
-        return tone_render(v, lf, gm, gn, pe, con, roll, lut, lutSize);
+        return renderC(v, lf, gm, gn, cn);
+    };
+    // One more coordinate pass, in the same form as the other three: each condition is monotone in
+    // its own control. Run LAST in each round so the three subject/frame conditions are solved
+    // against the contrast the previous round settled on, rather than chasing a value that moves
+    // underneath them mid-round.
+    auto surrPass = [&](double lf, double gm, double gn) {
+        if (!useSurr) return;
+        cn = solve1d(0.05, 2.00, surrMid, [&](double c) { return renderC(sSur, lf, gm, gn, c); });
     };
 
     double lf = P0[3], gm = P0[4], gn = P0[5];
@@ -827,6 +870,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
         lf = solve1d(-0.50, 0.50, subjFloor,    [&](double v) { return render(sLo,  v, gm, gn); });
         gm = solve1d( 0.30,  3.00, subjMid,     [&](double v) { return render(sMid, lf, v, gn); });
         gn = solve1d( 0.05,  3.00, frameCeiling,[&](double v) { return render(fHi,  lf, gm, v); });
+        surrPass(lf, gm, gn);
     }
     // LOW KEY HAS TO SURVIVE BEING MADE LEGIBLE.
     //
@@ -852,6 +896,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
             lf = solve1d(-0.50, 0.50, frameFloorMax, [&](double v) { return frameLo(v, gm, gn); });
             gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
             gn = solve1d( 0.05,  3.00, frameCeiling, [&](double v) { return render(fHi,  lf, gm, v); });
+            surrPass(lf, gm, gn);
         }
     }
 
@@ -891,6 +936,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
             lf = solve1d(-0.50, 0.50, frameFloorMin, [&](double v) { return frameLoY(v, gm, gn); });
             gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
             gn = solve1d( 0.05,  3.00, frameCeiling, [&](double v) { return render(fHi,  lf, gm, v); });
+            surrPass(lf, gm, gn);
         }
     }
 
@@ -923,6 +969,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
         for (int pass = 0; pass < kMagicTonePasses; ++pass) {
             lf = solve1d(-0.50, 0.50, subjFloor, [&](double v) { return render(sLo,  v, gm, gn); });
             gn = solve1d( 0.05,  2.00, subjMid,  [&](double v) { return render(sMid, lf, gm, v); });
+            surrPass(lf, gm, gn);
         }
     }
 
@@ -953,6 +1000,9 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     out.subjHi  = (float)render(sHi,  lf, gm, gn);
     out.frameHi = (float)render(fHi,  lf, gm, gn);
     out.mid     = (float)render(sMid, lf, gm, gn);
+    out.con     = (float)cn;
+    out.sSur    = (float)sSur;
+    out.surr    = (float)render(sSur, lf, gm, gn);
     out.branch  = branch;
     out.ok = true;
     return out;
@@ -981,7 +1031,8 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
                                               const Tunables& t, double fLo, double bias,
                                               ToneTargets base = ToneTargets(),
                                               double sep = 0.0, double sepDir = 0.0,
-                                              double sepPer = kToneSepMidPer)
+                                              double sepPer = kToneSepMidPer,
+                                              double sSur = -1.0)
 {
     // BIAS LEANS AWAY FROM WHATEVER THE GRADE CURRENTLY MEETS, not from the constants the button
     // was solved to. Pass the conditions a hand edit achieved and the edit survives by
@@ -996,6 +1047,7 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
     // only ever let an existing grade through -- it cannot license a new one to wash out.
     const double bFFMax = (base.floorMax >= 0.0) ? std::max(t.frameFloorMax, base.floorMax)
                                                  : t.frameFloorMax;
+    const double bSurr  = base.surr;
     // ONE LINE FROM THE ANCHOR TO WHEREVER BOTH SLIDERS CURRENTLY SIT, walked by a single
     // parameter. With two sliders the feasible region is an area rather than an interval, and
     // bisecting each axis in turn would make the result depend on which was bisected first --
@@ -1006,14 +1058,26 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
     // construction. With sep = 0 it reduces to exactly the interval the bias bisection used to
     // walk, point for point, which is why the existing behaviour is unchanged rather than
     // approximately preserved.
+    // SEPARATION MOVES THE SURROUND, AWAY FROM THE SUBJECT. sepDir is the sign of the gap that
+    // already exists (subject minus surround, from the region triple), so positive sep always
+    // widens it whichever way round the frame is: a subject darker than its surround separates by
+    // the surround going up, a brighter one by it coming down.
+    //
+    // The subject's own targets are untouched by this, which is the point. Moving them moves the
+    // surround with them through the same curve -- measured at 1.9 L* across a whole slider, the
+    // dead end this replaced. Moving the surround against a pinned subject is the only way the gap
+    // opens.
+    const bool hasSurr = (bSurr >= 0.0) && (sSur >= 0.0) && (sepDir != 0.0);
     auto at = [&](double u) {
-        const double b = bias * u, s = sep * u * sepDir;
+        const double b = bias * u, s = sep * u;
         return solve_magic_tone_from(
             sLo, sMid, sHi, fHi, P0, lut, lutSize,
             std::min(0.40, std::max(0.00, bFloor + b * kBiasSubjFloorPer)),
-            std::min(0.60, std::max(0.05, bMid + s * sepPer)),
+            bMid,
             std::min(kFrameCeilingMax, std::max(0.60, bCeil - b * kBiasCeilingPer)),
-            fLo, bFFMax);
+            fLo, bFFMax, kFrameFloorMinOff, kFloorReadUnset,
+            sSur,
+            hasSurr ? std::min(0.98, std::max(0.02, bSurr - s * sepDir * sepPer)) : -1.0);
     };
     MagicTone feasible = at(0.0);
     if (!feasible.ok) return at(1.0);   // never armed by Magic Tone -- let the caller fall back
@@ -1081,6 +1145,10 @@ struct TonePick {
     // pixel scores well on that while sitting at zero in its other two -- so the sample iBot
     // selects is not the darkest thing in the frame by the measure a viewer uses.
     size_t iBotY = 0;
+    // The SURROUND's midtone: p50 by luma over everything the subject is not. The thing the
+    // subject has to stand out from, and the only reading here that is about neither the subject
+    // nor the frame as a whole.
+    size_t iSur = 0;
     size_t subjN = 0;                    // how many samples carried the subject label
     bool   ok = false;
 };
@@ -1099,15 +1167,15 @@ static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, 
     TonePick p;
     if (!region || n < 64) return p;
 
-    std::vector<std::pair<float,size_t>> subjK, allK, allY;
-    subjK.reserve(n / 4 + 1); allK.reserve(n); allY.reserve(n);
+    std::vector<std::pair<float,size_t>> subjK, allK, allY, surK;
+    subjK.reserve(n / 4 + 1); allK.reserve(n); allY.reserve(n); surK.reserve(n);
     for (size_t i = 0; i < n; ++i) {
         float r, g, b;
         at(i, r, g, b);
         allK.push_back({ (float)tone_hi(r, g, b), i });
         allY.push_back({ (float)tone_luma(r, g, b), i });
-        if ((int)region[i] == subject)
-            subjK.push_back({ (float)tone_luma(r, g, b), i });
+        if ((int)region[i] == subject) subjK.push_back({ (float)tone_luma(r, g, b), i });
+        else                           surK.push_back({ (float)tone_luma(r, g, b), i });
     }
     p.subjN = subjK.size();
     if (subjK.size() < 32) return p;
@@ -1121,6 +1189,11 @@ static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, 
     p.iLo  = pct(subjK, 0.10); p.iMid = pct(subjK, 0.50); p.iHi = pct(subjK, 0.90);
     p.iTop = pct(allK,  0.999); p.iBot = pct(allK,  0.001);
     p.iBotY = pct(allY, 0.001);
+    // Falls back to the frame's own midtone when the subject fills the frame. A surround of
+    // nothing has no midtone, and a separation target against an empty population would be a
+    // number describing noise -- the same failure the 200-sample gate on the region triple exists
+    // to prevent.
+    p.iSur = surK.size() >= 200 ? pct(surK, 0.50) : pct(allY, 0.50);
     p.ok = true;
     return p;
 }
@@ -1197,7 +1270,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         });
     if (!pk.ok) { out.why = "subject too small"; return out; }
     const size_t iLo = pk.iLo, iMid = pk.iMid, iHi = pk.iHi, iTop = pk.iTop, iBot = pk.iBot;
-    const size_t iBotY = pk.iBotY;
+    const size_t iBotY = pk.iBotY, iSur = pk.iSur;
 
     // UNDEREXPOSURE IS NOT LOW KEY, AND THE SUBJECT IS HOW YOU TELL THEM APART.
     //
@@ -1272,11 +1345,12 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     // The frame floor read as LUMA, from the pixel that is darkest by luma -- a
     // different sample and a different reading from mBot, which is why it is measured
     // separately rather than derived from it.
-    const double mBotY = shade(iBotY);
+    const double mBotY = shade(iBotY), mSur = shade(iSur);
     auto solve_at = [&](double c) {
         return solve_magic_tone_from(mLo, mMid, mHi, mTop, Pe, lut, lutSize,
                                      subjFloorT, subjMidT, c,
-                                     mBot, t.frameFloorMax, t.frameFloorMin, mBotY);
+                                     mBot, t.frameFloorMax, t.frameFloorMin, mBotY,
+                                     mSur, -1.0);
     };
 
     // TWO CANDIDATES, NOT A SEARCH -- and the difference is not economy, it is safety.

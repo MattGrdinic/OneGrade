@@ -373,6 +373,8 @@ int main(int argc, char** argv)
         // this bench exists to catch.
         if (toneSepSweep && R.tone.ok) {
             const double dir = og::grade::tone_sep_dir(d.v[oga::D_RDL]);
+            printf("    surround: neutral %.3f -> rendered %.3f (contrast pivots at 0.500)\n",
+                   R.tone.sSur, R.tone.surr);
             printf("    tone separation: rdL* %+.2f -> direction %+.0f%s\n",
                    d.v[oga::D_RDL], dir,
                    dir == 0.0 ? "  (INERT: subject and surround are at the same lightness)" : "");
@@ -381,21 +383,21 @@ int main(int argc, char** argv)
             // on screen -- the fitted ceiling is 0.968 and this frame was solved at 0.890, so the
             // solve was asked to reproduce a grade it had never made.
             const og::grade::ToneTargets sepBase = og::grade::tone_targets_of(
-                R.tone.sLo, R.tone.sMid, R.tone.fHi, R.tone.fLo, P, lutData, lutSize);
-            printf("    sep      lift   gamma    gain    rdL*   d(rdL*)\n");
+                R.tone.sLo, R.tone.sMid, R.tone.fHi, R.tone.fLo, P, lutData, lutSize, R.tone.sSur);
+            printf("    sep      lift   gamma    gain   contr    rdL*   d(rdL*)\n");
             double prevR = d.v[oga::D_RDL], prevL = R.tone.lift;
             for (double s = -1.0; s <= 1.0001; s += biasInc) {
                 const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
                     R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
                     lutData, lutSize, tun, R.tone.fLo, 0.0, sepBase,
-                    s, dir, toneSepPer);
+                    s, dir, toneSepPer, R.tone.sSur);
                 if (!t.ok) { printf("   %+5.3f   NOT ARMED: %s\n", s, t.why); break; }
                 float Ps[oga::kParamN];
                 for (int k = 0; k < oga::kParamN; ++k) Ps[k] = P[k];
-                Ps[3] = t.lift; Ps[4] = t.gamma; Ps[5] = t.gain;
+                Ps[3] = t.lift; Ps[4] = t.gamma; Ps[5] = t.gain; Ps[9] = t.con;
                 const oga::Desc ds = oga::describe(S, cam, enc <= 2 ? enc : 1, Ps);
-                printf("   %+5.3f  %+7.3f %7.3f %7.3f %+7.2f  %+7.2f%s\n",
-                       s, t.lift, t.gamma, t.gain, ds.v[oga::D_RDL],
+                printf("   %+5.3f  %+7.3f %7.3f %7.3f %7.3f %+7.2f  %+7.2f%s\n",
+                       s, t.lift, t.gamma, t.gain, t.con, ds.v[oga::D_RDL],
                        ds.v[oga::D_RDL] - prevR,
                        std::fabs(t.lift - prevL) > 0.02 ? "   <-- JUMP" : "");
                 prevR = ds.v[oga::D_RDL]; prevL = t.lift;
