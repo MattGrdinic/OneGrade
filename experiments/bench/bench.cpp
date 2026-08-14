@@ -189,6 +189,8 @@ int main(int argc, char** argv)
     // BIAS, swept. The slider re-solves the tone targets rather than nudging sliders, and that
     // re-solve is shared code -- so the bench can walk it and show where it stops converging,
     // which is the only way to see a discontinuity without dragging a slider in Resolve.
+    // Both separation triples per frame -- the band stand-in and the region version beside it.
+    const bool  sepReport = argf(argc, argv, "--sep-report");
     const bool  biasSweep = argf(argc, argv, "--bias-sweep");
     // How often the sweep writes a frame. 0 prints the table and writes nothing.
     const double biasStep = argd(argc, argv, "--bias-step", 0.5);
@@ -294,6 +296,9 @@ int main(int argc, char** argv)
         if (noTone) { P[3] = 0.11f; P[4] = 1.f; P[10] = 0.f; }
 
         oga::classify(S, cam, enc <= 2 ? enc : 1);
+        // The subject is chosen inside solve_magic, so it is stamped on afterwards -- which is
+        // also what the plugin will do. Without it the region separation triple reads zero.
+        if (R.choice.ok) S.subject = R.choice.subject;
         oga::Desc d = oga::describe(S, cam, enc <= 2 ? enc : 1, P);
 
         std::string decision = seg.ready() ? "no move" : "no model";
@@ -555,6 +560,16 @@ int main(int argc, char** argv)
         printf("%-24s %6s %6s %6.3f %6.2f %6.2f %6.3f  blk / %%crushMin / %%crushY / shadowSep\n",
                "", "", "", postBlk, 100.0 * (double)crushed / (double)total,
                100.0 * (double)crushedY / (double)total, sep10);
+        // BOTH SEPARATION TRIPLES, side by side, because the whole question is whether the region
+        // version says something the band version cannot. Printing only the new one would make it
+        // impossible to tell a real improvement from a differently-scaled number.
+        if (sepReport) {
+            printf("%-24s   band dL* %+7.2f da* %+7.2f db* %+7.2f | region %s dL* %+7.2f "
+                   "da* %+7.2f db* %+7.2f\n", "",
+                   d.v[oga::D_DL], d.v[oga::D_DA], d.v[oga::D_DB],
+                   R.choice.ok ? oga::region_name(R.choice.subject) : "-",
+                   d.v[oga::D_RDL], d.v[oga::D_RDA], d.v[oga::D_RDB]);
+        }
         std::string op = outDir + "/" + std::string(nm);
         stbi_write_png(op.c_str(), f.w, f.h, 3, out.data(), f.w * 3);
     }

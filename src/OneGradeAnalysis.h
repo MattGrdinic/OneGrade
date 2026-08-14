@@ -170,6 +170,13 @@ enum {
     D_DL,       // TONE separation: region A minus region B in L*
     D_DA,       // HUE separation, green/magenta axis
     D_DB,       // HUE separation, warm/cool axis
+    // The same triple asked of the SUBJECT against everything else, once a segmentation has
+    // said which region the subject is. Separate descriptors rather than a redefinition of the
+    // three above, so the band version and everything fitted against it stay exactly as they
+    // were and the two can be compared on the same frame. Zero when there is no subject.
+    D_RDL,      // TONE separation: subject minus surround in L*
+    D_RDA,      // HUE separation, green/magenta axis
+    D_RDB,      // HUE separation, warm/cool axis
     D_SKINL,    // luma median over the skin mask (0 when coverage is too low to trust)
     D_SKINB,    // b* over the skin mask (0 when coverage is too low to trust)
     // --- report-only below: measured honestly, but NOT steerable. See the note above. ---
@@ -185,7 +192,8 @@ static const int kSteerableDescN = D_SKINB + 1;
 static inline const char* desc_name(int i)
 {
     static const char* n[kDescN] = { "black","mid","white","over","a*","b*",
-                                     "dL*","da*","db*","skinL","skinb*","chroma","sep" };
+                                     "dL*","da*","db*", "rdL*","rda*","rdb*",
+                                     "skinL","skinb*","chroma","sep" };
     return (i >= 0 && i < kDescN) ? n[i] : "?";
 }
 
@@ -217,6 +225,12 @@ struct SampleSet {
     // location. The flip is the whole reason these are stored rather than recomputed: getting
     // it wrong turns sky into ground silently, and the numbers would all still look plausible.
     std::vector<float> u, v;
+    // WHICH REGION IS THE SUBJECT, once something has decided -- -1 until then. Carried on the
+    // sample set rather than passed to describe() so the Jacobian, which calls describe() a
+    // couple of dozen times, cannot take its derivative around a different subject than the
+    // operating point was measured with. Same reasoning as decimate() copying memberships
+    // instead of re-deriving them.
+    int subject = -1;
     size_t size() const { return band.size(); }
 };
 
@@ -299,6 +313,11 @@ static inline SampleSet decimate(const SampleSet& S, size_t target)
         D.region.push_back(S.region.empty() ? (uint8_t)R_OTHER : S.region[i]);
         if (!S.u.empty()) { D.u.push_back(S.u[i]); D.v.push_back(S.v[i]); }
     }
+    // Which region is the subject is a membership like any other, and the same argument applies:
+    // dropping it would leave the Jacobian's describe() calls with no subject while the operating
+    // point had one, so the separation triple would read a derivative of zero against a non-zero
+    // value -- the "runs, reports, and does nothing" shape the region copy above was added for.
+    D.subject = S.subject;
     return D;
 }
 
@@ -436,6 +455,11 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
     // a*/b*, so the separation triple is one coherent Lab difference between two regions
     // rather than a tone number and two colour numbers that cannot be compared with each other.
     double bandL[3] = {0,0,0}, bandA[3] = {0,0,0}, bandB[3] = {0,0,0}; long long bandN[3] = {0,0,0};
+    // Subject and surround, as the same Lab means over two populations that partition the frame.
+    // Index 0 is the surround and 1 the subject, so the difference below reads the same way round
+    // as the band triple: the thing of interest minus the thing it has to stand out from.
+    double regL[2] = {0,0}, regA[2] = {0,0}, regB[2] = {0,0}; long long regN[2] = {0,0};
+    const bool haveSubject = (S.subject >= 0 && S.subject < kRegionN && S.region.size() == n);
     double skB = 0; long long skN = 0;
 
     for (size_t i = 0; i < n; ++i) {
@@ -456,6 +480,10 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
         if (gp < 2) { gA[gp] += a; gB[gp] += bb; ++gN[gp]; }
         const uint8_t bd = S.band[i];
         if (bd < 3) { bandL[bd] += L; bandA[bd] += a; bandB[bd] += bb; ++bandN[bd]; }
+        if (haveSubject) {
+            const int k = ((int)S.region[i] == S.subject) ? 1 : 0;
+            regL[k] += L; regA[k] += a; regB[k] += bb; ++regN[k];
+        }
         if (S.skin[i]) { skinLum.push_back(Y); skB += bb; ++skN; }
     }
 
@@ -480,6 +508,16 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
         d.v[D_DL] = (float)(bandL[2]/bandN[2] - bandL[0]/bandN[0]);
         d.v[D_DA] = (float)(bandA[2]/bandN[2] - bandA[0]/bandN[0]);
         d.v[D_DB] = (float)(bandB[2]/bandN[2] - bandB[0]/bandN[0]);
+    }
+    // THE SAME TRIPLE OVER REAL REGIONS. Gated on BOTH populations, with the same minimum, because
+    // the two sides are symmetric here in a way the skin mask's bounds are not: a subject at 1% of
+    // frame and a subject at 99% both leave one mean built from noise, and neither difference means
+    // anything. Reusing skin_trustworthy()'s upper bound would be wrong -- that 25% says "this
+    // stopped being a face", which is a statement about the label, not about the arithmetic.
+    if (regN[0] >= 200 && regN[1] >= 200) {
+        d.v[D_RDL] = (float)(regL[1]/regN[1] - regL[0]/regN[0]);
+        d.v[D_RDA] = (float)(regA[1]/regN[1] - regA[0]/regN[0]);
+        d.v[D_RDB] = (float)(regB[1]/regN[1] - regB[0]/regN[0]);
     }
     // Zeroed rather than reported unless the mask is believable — too few pixels is noise, too
     // many means it matched the scene rather than a face. Same gate classify() reports through

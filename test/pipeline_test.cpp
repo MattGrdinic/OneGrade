@@ -1114,6 +1114,66 @@ int main() {
         check(ok, "the frame ceiling picks between two validated values, never a solved-for edge");
     }
 
+    // 34. THE SEPARATION TRIPLE OVER REAL REGIONS, alongside the band version rather than
+    //     replacing it.
+    //
+    //     The band triple splits the frame by HEIGHT, which works on a landscape and fails the
+    //     moment the subject is not above or below its surround -- two people side by side, a face
+    //     against a window. The enum note has called that a stand-in since it was written. This is
+    //     the same three signed Lab components asked of the segmentation's subject against
+    //     everything else, and it is deliberately a SECOND set of descriptors: the band version and
+    //     the fits that stand on it keep working unchanged, and the two can be read off one frame.
+    //
+    //     Checked on a frame where the two disagree by construction -- subject brighter and warmer
+    //     than its surround, but distributed so the vertical thirds cannot see it. A test where
+    //     both triples agree would pass with the region masks ignored entirely.
+    {
+        og::analysis::SampleSet S;
+        const int N = 3000;
+        for (int i = 0; i < N; ++i) {
+            // Subject samples are spread evenly down the frame, so the band split has nothing to
+            // find. The period is 5 against decimate()'s stride of 2 below on purpose: the first
+            // version used every third sample with a stride of 3, and the thinned set came out
+            // 100%% subject with an empty surround -- the gate correctly refused to report a
+            // difference against a mean of nothing, and the test caught its own construction.
+            const bool subj = (i % 5 < 2);
+            const float r = subj ? 0.62f : 0.40f;
+            const float g = subj ? 0.58f : 0.40f;
+            const float b = subj ? 0.48f : 0.44f;      // subject warmer, surround cooler
+            S.rgb.push_back(r); S.rgb.push_back(g); S.rgb.push_back(b);
+            S.region.push_back(subj ? og::analysis::R_SKIN : og::analysis::R_VEG);
+            S.band.push_back((uint8_t)((i * 3) / N));  // thirds by index, blind to the subject
+            S.group.push_back(2); S.mid.push_back(1); S.skin.push_back(0);
+        }
+        float P0[13]; neutral13(P0);
+
+        // No subject named: the triple reads zero rather than guessing, exactly like the skin pair.
+        S.subject = -1;
+        const og::analysis::Desc none = og::analysis::describe(S, 1, 1, P0);
+        bool ok = (none.v[og::analysis::D_RDL] == 0.f)
+               && (none.v[og::analysis::D_RDA] == 0.f)
+               && (none.v[og::analysis::D_RDB] == 0.f);
+
+        S.subject = og::analysis::R_SKIN;
+        const og::analysis::Desc d = og::analysis::describe(S, 1, 1, P0);
+        ok &= (d.v[og::analysis::D_RDL] > 1.f);    // subject is lighter, in L* units
+        ok &= (d.v[og::analysis::D_RDB] > 0.5f);   // ...and warmer, b* toward yellow
+
+        // The band triple is blind to it here, which is the point of the construction.
+        ok &= (std::fabs(d.v[og::analysis::D_DL]) < 0.5f);
+
+        // decimate() has to carry the subject or the Jacobian differentiates a descriptor that
+        // reads zero on the thinned set while the operating point had a value -- the same defect
+        // the region copy beside it was added to fix.
+        const og::analysis::SampleSet D = og::analysis::decimate(S, 1500);
+        const og::analysis::Desc dd = og::analysis::describe(D, 1, 1, P0);
+        ok &= (D.subject == og::analysis::R_SKIN);
+        ok &= (dd.v[og::analysis::D_RDL] > 1.f);
+        ok &= close(dd.v[og::analysis::D_RDL], d.v[og::analysis::D_RDL], 0.5f);
+
+        check(ok, "the separation triple reads real regions, and survives decimation");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }
