@@ -417,7 +417,11 @@ int main(int argc, char** argv)
                 }
             }
 
-            if (*writeDeg && degrade) {
+            // Writes with degrade=0 too, so the POSITIVE class can be re-encoded through the
+            // identical decode-and-write path. Otherwise positives stay JPEG while negatives are
+            // PNG, and a network can separate the classes on compression artefacts alone without
+            // learning anything about grading at all.
+            if (*writeDeg) {
                 // .png, not the source extension -- stbi_write_png writes PNG whatever the name
                 // says, and a file called .jpg holding PNG bytes confuses everything downstream.
                 std::string stem = basename_of(path);

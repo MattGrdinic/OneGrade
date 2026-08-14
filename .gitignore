@@ -8,31 +8,68 @@ build-cuda/
 .DS_Store
 
 local
-__pycache__/
 
-# region-mask experiment: model cache and mask previews
+# ---------------------------------------------------------------------------------------
+# Python: interpreters and caches, never sources. Every .py in experiments/ IS tracked --
+# they are how the models get converted and the constants get fitted, and losing one costs
+# more than the environment it ran in. Only what pip and CPython generate is excluded.
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------------------
+# Compiled experiment binaries. These were once tracked as Mach-O arm64 objects -- 9 MB of
+# build output that only ever ran on one machine.
+experiments/bench/bench
+experiments/bench/out/
+experiments/looks/looks
+experiments/segmentation/e2e
+experiments/segmentation/wbtest
+experiments/segmentation/rawclasses
+experiments/segmentation/verify
+
+# Region-mask experiment: model cache and mask previews
 experiments/segmentation/out/
 experiments/segmentation/seg-env/
 
-# converted model artefacts: large, regenerable via experiments/segmentation/convert.py,
-# and the shipping checkpoint is not settled yet
+# Converted model artefacts: large, regenerable via experiments/segmentation/convert.py, and
+# the shipping checkpoint is not settled yet.
 experiments/segmentation/converted/
-experiments/segmentation/verify
+experiments/segmentation/converted-paddle/*.onnx
+experiments/segmentation/converted-paddle/*.pdparams
+experiments/segmentation/converted-paddle/*.pnnx.*
+experiments/segmentation/converted-paddle/*_pnnx.py
+experiments/segmentation/converted-paddle/*.ncnn.*
+experiments/segmentation/converted-paddle/*_ncnn.py
 
-# offline bench binary and its outputs
-experiments/bench/bench
-experiments/looks/looks
-# Training environment and any weights derived from the reference corpus. Kept out of the repo
-# for the same reason the stills are: the licensing decision on shipping a model trained on
-# copyrighted frames is deliberately still open, and committing weights would quietly make it.
-experiments/looks/venv/
+# Trained weights, wherever they land. Kept out for the same reason the reference stills are:
+# the decision about shipping a model trained on copyrighted frames is deliberately still open,
+# and committing weights would quietly make it.
 experiments/looks/runs/
 *.pt
 *.pth
+*.onnx
 
-# Look-reference corpus. The CURATION is tracked, the pixels are not: films.txt is the editorial
-# judgement the targets get fitted to and makes the corpus reproducible, while the stills
-# themselves are copyrighted frames kept for local measurement only. See training-data/README.md.
+# ---------------------------------------------------------------------------------------
+# training-data/ -- PIXELS OUT, RECIPES IN.
+#
+# Everything here is ignored by default and re-admitted by name, so a new subfolder of images
+# cannot be committed by forgetting a rule. Three kinds of thing live under it:
+#
+#   looks/*/films.txt    the editorial judgement of which films carry a look -- this IS the
+#                        ground truth a target gets fitted to, so it is tracked
+#   corpus/films.txt     a deterministic sample of the film index; makes the 1000-film
+#                        grade-quality corpus rebuildable from the repo alone
+#   onegrade-training/   the user's own camera-log stills and the bench's graded output.
+#                        Not copyrighted, but 16-bit UHD frames at ~46 MB each -- they would
+#                        add over half a gigabyte and are irreplaceable rather than
+#                        regenerable, so they belong in a backup, not in git.
+#
+# See training-data/README.md for the provenance and the licensing position.
 training-data/**
 !training-data/
 !training-data/README.md
@@ -41,17 +78,3 @@ training-data/**
 !training-data/looks/*/films.txt
 !training-data/corpus/
 !training-data/corpus/films.txt
-# Compiled probes in experiments/ -- these were tracked as Mach-O arm64 binaries, 9 MB of
-# build output that only ever worked on one machine.
-experiments/segmentation/e2e
-experiments/segmentation/wbtest
-experiments/segmentation/rawclasses
-experiments/segmentation/verify
-# Conversion intermediates. Regenerate with convert_paddle.py; see that directory's README.
-experiments/segmentation/converted-paddle/*.onnx
-experiments/segmentation/converted-paddle/*.pdparams
-experiments/segmentation/converted-paddle/*.pnnx.*
-experiments/segmentation/converted-paddle/*_pnnx.py
-experiments/segmentation/converted-paddle/*.ncnn.*
-experiments/segmentation/converted-paddle/*_ncnn.py
-experiments/bench/out/
