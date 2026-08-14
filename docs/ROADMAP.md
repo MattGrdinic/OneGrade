@@ -626,3 +626,31 @@ returned a different grade than the one on screen — the fitted ceiling is 0.96
 been solved at 0.890, so the solve was asked to reproduce a grade it had never made. `applyBias()`
 derives its base correctly; only the new bench path did not. Any caller of
 `solve_magic_tone_bias()` that does not pass `tone_targets_of()` is asking the wrong question.
+
+### SKY enabled, and the guard that was blocking it (2026-08-14)
+
+`frameFloorMin` — the guard that stops a BRIGHT subject crushing the frame's floor, the mirror of
+`frameFloorMax` — existed but was **inert**, and the value was never the problem. It read `fLo`,
+the MIN channel of the pixel ranked p0.1 by MAX channel, and those are two different pixels: a
+saturated pixel has a bright max and a min at zero, so it ranks nowhere near the bottom on the
+ranking while sitting at the bottom of the value being read. The sample the guard protected was not
+the darkest thing in the frame by any measure a viewer uses.
+
+Re-anchored on **luma**, with its own sample (`TonePick::iBotY`, the frame's p0.1 by luma) rather
+than reusing `fLo`. `fLo` deliberately keeps its min-channel reading for `frameFloorMax`, which is
+load-bearing on every validated face grade — the two guards ask different questions, "did a channel
+hit zero" and "did the picture go black", and want different statistics for it.
+
+Third instance of that defect after the black-point encode bug and hot-versus-pin, and found the
+same way: by the bench reporting a correct picture as 43.8% crushed until `crushed%` was itself
+re-anchored on luma.
+
+**Verified live and left at 0.020.** Swept 0.020 / 0.080 / 0.150 on the four sky clips: branch 4
+appears at 0.080 on three of them and at 0.150 on all four (where Lift runs to its 0.500 bound on
+two, which is over-constraining). So the guard works and simply does not fire at its default on
+this footage — and `crushY` is 0.00% on all four, so by the luma measure there is nothing for it to
+fire about. **The earlier "3 of 4 clips improve" reading came from `crushMin`**, the statistic now
+known to be measuring saturation, and it is not a reason to raise the guard.
+
+Face grades are unchanged to every printed digit, which is the regression check that matters: the
+guard was inert on them before and is inert on them now, for a different and correct reason.

@@ -197,7 +197,10 @@ struct Tunables {
         // is the branch-swap that already exists for the upper bound: when placing the subject
         // would take the frame's floor below a minimum, Lift serves the frame and Gamma carries
         // the subject's midtone.
-        /* SKY     */ { 0.475, 0.602, 0.90, false },
+        // ENABLED once the lower guard was re-anchored on luma -- see the frameFloorMin branch.
+        // The guard existed before this and was inert, because it read the min channel of a pixel
+        // ranked by max channel, so it never saw the crushing it was there to prevent.
+        /* SKY     */ { 0.475, 0.602, 0.90, true  },
         /* WATER   */ { 0.0,   0.0,   1.00, false },
         /* SKIN    */ { 0.125, 0.278, 0.35, true  },   // the hand-graded interview, unchanged
         /* VEG     */ { 0.0,   0.0,   1.00, false },
@@ -809,7 +812,8 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
                                               const float* lut, int lutSize,
                                               double subjFloor, double subjMid, double frameCeiling,
                                               double fLo, double frameFloorMax,
-                                              double frameFloorMin = -1.0)
+                                              double frameFloorMin = -1.0,
+                                              double fLoY = -1.0)
 {
     MagicTone out;
     const double pe = P0[8], con = P0[9], roll = P0[12];
@@ -859,12 +863,32 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     // Gamma keeps the subject's midtone, Gain keeps the ceiling -- still three conditions on three
     // controls.
     //
+    // AND IT IS ANCHORED ON LUMA, NOT ON THE MIN CHANNEL -- which is the whole reason it was inert.
+    //
+    // fLo is the MIN channel of the pixel ranked p0.1 by MAX channel, and those are two different
+    // pixels. A saturated pixel has a bright max and a min at zero, so it ranks nowhere near the
+    // bottom on the ranking while sitting at the bottom of the value being read: the sample this
+    // guard protected was not the darkest thing in the frame by any measure a viewer uses. Swept
+    // 0.00/0.02/0.04/0.06 on the four sky clips and the first three changed nothing at all.
+    //
+    // Third instance of the same defect -- after the black-point encode bug and hot-versus-pin --
+    // and it was found the same way, by the bench reporting a correct picture as 43.8% crushed
+    // until that statistic was re-anchored on luma too. THE NUMBER COMPARED AGAINST A CONSTANT HAS
+    // TO BE THE NUMBER THAT MATTERS.
+    //
+    // fLo keeps its min-channel reading for frameFloorMax above, deliberately: that cap is
+    // load-bearing on every validated face grade, and re-anchoring it would move all of them. The
+    // two guards want different statistics because they are asking different questions -- one is
+    // "did a channel hit zero", the other "did the picture go black".
+    //
     // Negative default means off, so every caller that does not ask for it behaves exactly as it
     // did. The two cannot both fire: a floor cannot be above the cap and below the minimum at once.
-    if (frameFloorMin >= 0.0 && frameLo(lf, gm, gn) < frameFloorMin) {
+    const double loRead = (fLoY >= 0.0) ? fLoY : fLo;
+    auto frameLoY = [&](double l, double g, double n) { return render(loRead, l, g, n); };
+    if (frameFloorMin >= 0.0 && frameLoY(lf, gm, gn) < frameFloorMin) {
         branch |= 4;
         for (int pass = 0; pass < kMagicTonePasses; ++pass) {
-            lf = solve1d(-0.50, 0.50, frameFloorMin, [&](double v) { return frameLo(v, gm, gn); });
+            lf = solve1d(-0.50, 0.50, frameFloorMin, [&](double v) { return frameLoY(v, gm, gn); });
             gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
             gn = solve1d( 0.05,  3.00, frameCeiling, [&](double v) { return render(fHi,  lf, gm, v); });
         }
@@ -1052,6 +1076,11 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
 struct TonePick {
     size_t iLo = 0, iMid = 0, iHi = 0;   // subject p10 / p50 / p90, ranked by luma
     size_t iTop = 0, iBot = 0;           // frame p99.9 / p0.1, ranked by max channel
+    // The frame's darkest pixel BY LUMA, which is a different pixel from iBot and has to be.
+    // Ranking by max channel finds the pixel with the dimmest brightest channel, and a saturated
+    // pixel scores well on that while sitting at zero in its other two -- so the sample iBot
+    // selects is not the darkest thing in the frame by the measure a viewer uses.
+    size_t iBotY = 0;
     size_t subjN = 0;                    // how many samples carried the subject label
     bool   ok = false;
 };
@@ -1070,12 +1099,13 @@ static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, 
     TonePick p;
     if (!region || n < 64) return p;
 
-    std::vector<std::pair<float,size_t>> subjK, allK;
-    subjK.reserve(n / 4 + 1); allK.reserve(n);
+    std::vector<std::pair<float,size_t>> subjK, allK, allY;
+    subjK.reserve(n / 4 + 1); allK.reserve(n); allY.reserve(n);
     for (size_t i = 0; i < n; ++i) {
         float r, g, b;
         at(i, r, g, b);
         allK.push_back({ (float)tone_hi(r, g, b), i });
+        allY.push_back({ (float)tone_luma(r, g, b), i });
         if ((int)region[i] == subject)
             subjK.push_back({ (float)tone_luma(r, g, b), i });
     }
@@ -1090,6 +1120,7 @@ static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, 
     };
     p.iLo  = pct(subjK, 0.10); p.iMid = pct(subjK, 0.50); p.iHi = pct(subjK, 0.90);
     p.iTop = pct(allK,  0.999); p.iBot = pct(allK,  0.001);
+    p.iBotY = pct(allY, 0.001);
     p.ok = true;
     return p;
 }
@@ -1166,6 +1197,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         });
     if (!pk.ok) { out.why = "subject too small"; return out; }
     const size_t iLo = pk.iLo, iMid = pk.iMid, iHi = pk.iHi, iTop = pk.iTop, iBot = pk.iBot;
+    const size_t iBotY = pk.iBotY;
 
     // UNDEREXPOSURE IS NOT LOW KEY, AND THE SUBJECT IS HOW YOU TELL THEM APART.
     //
@@ -1237,10 +1269,14 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     // that produced Magic Grade reading its own output.
     const double mLo = shade(iLo), mMid = shade(iMid), mHi = shade(iHi);
     const double mTop = shadeMax(iTop), mBot = shadeMin(iBot);
+    // The frame floor read as LUMA, from the pixel that is darkest by luma -- a
+    // different sample and a different reading from mBot, which is why it is measured
+    // separately rather than derived from it.
+    const double mBotY = shade(iBotY);
     auto solve_at = [&](double c) {
         return solve_magic_tone_from(mLo, mMid, mHi, mTop, Pe, lut, lutSize,
                                      subjFloorT, subjMidT, c,
-                                     mBot, t.frameFloorMax, t.frameFloorMin);
+                                     mBot, t.frameFloorMax, t.frameFloorMin, mBotY);
     };
 
     // TWO CANDIDATES, NOT A SEARCH -- and the difference is not economy, it is safety.
