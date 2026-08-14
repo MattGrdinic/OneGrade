@@ -343,6 +343,20 @@ int main(int argc, char** argv)
     // still and generating four variants over a thousand-film corpus would spend half an hour
     // computing region masks nothing then reads.
     const bool   degOnly  = argf(argc, argv, "--degrade-only");
+    // SAME DEFECT, DIFFERENT IMPLEMENTATION -- the honest test for whether the model learned
+    // grading or learned this generator.
+    //
+    // The ad-hoc path is display-space arithmetic invented here: gain, contrast about 0.5,
+    // saturation toward luma, lift. A network could separate it on the ARTEFACTS of that
+    // arithmetic -- where it clips, how it quantises -- while knowing nothing about whether a
+    // picture is well graded.
+    //
+    // The plugin path degrades with og::lgg_core and og::apply_trim: the controls OneGrade
+    // actually ships, in the display curve they actually run in. Training on one and validating
+    // on the other asks whether the model recognises a bad grade or recognises my code. It is
+    // also the deployment condition, since anything this ever scores will have been produced by
+    // exactly these controls.
+    const bool   degPlugin = argf(argc, argv, "--degrade-plugin");
 
     og::seg::Segmenter seg;
     {
@@ -404,6 +418,31 @@ int main(int argc, char** argv)
                 const double sat =  0.6 + 1.0 * rnd();          // saturation
                 const double lft =  0.10 * rnd();               // lifted black
                 const double gain = std::pow(2.0, ev);
+                if (degPlugin) {
+                    // Realistic bad-grade territory for the real controls, not extreme values --
+                    // the question is whether a plausible mis-grade is detectable, not a broken one.
+                    const float lf = (float)(-0.15 + 0.30 * rnd());
+                    const float gm = (float)( 0.70 + 0.70 * rnd());
+                    const float gn = (float)( 0.60 + 0.90 * rnd());
+                    const float pe = (float)(-0.40 + 0.80 * rnd());
+                    const float pc = (float)( 0.80 + 0.45 * rnd());
+                    for (size_t i = 0; i < s.px.size(); i += 3) {
+                        float c3[3];
+                        for (int k = 0; k < 3; ++k)
+                            c3[k] = og::lgg_core(s.px[i+k] / 255.f, lf, gm, gn);
+                        og::apply_trim(pe, pc, c3[0], c3[1], c3[2]);
+                        for (int k = 0; k < 3; ++k)
+                            s.px[i+k] = (unsigned char)(og::clamp01(c3[k]) * 255.f + 0.5f);
+                    }
+                    if (*writeDeg) {
+                        std::string stem = basename_of(path);
+                        const size_t d2 = stem.find_last_of('.');
+                        if (d2 != std::string::npos) stem = stem.substr(0, d2);
+                        stbi_write_png((std::string(writeDeg) + "/" + stem + ".png").c_str(),
+                                       s.w, s.h, 3, s.px.data(), s.w * 3);
+                    }
+                    if (degOnly) continue;
+                }
                 for (size_t i = 0; i < s.px.size(); i += 3) {
                     double c3[3];
                     for (int k = 0; k < 3; ++k) c3[k] = s.px[i+k] / 255.0 * gain;

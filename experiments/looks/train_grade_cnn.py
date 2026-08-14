@@ -115,13 +115,17 @@ def main():
     # How many degradation variants each epoch sees. At 121 films, 4 bought data; at 1100 the
     # scenes supply the variety and 4 just makes an epoch 4x longer for the same coverage.
     ap.add_argument("--var-per-epoch", type=int, default=1)
+    # Validation negatives from a DIFFERENT generator than training. Asks whether the model
+    # recognises a bad grade or recognises the code that made one.
+    ap.add_argument("--val-neg", nargs="*", default=None)
     a = ap.parse_args()
 
     films = sorted(f for f in os.listdir(a.pos_dir) if f.lower().endswith((".jpg", ".jpeg", ".png")))
     # Keep only films that have every negative variant, so no film is silently half-present.
+    need = list(a.neg_dirs) + list(a.val_neg or [])
     films = [f for f in films
              if all(os.path.exists(os.path.join(d, os.path.splitext(f)[0] + ".png"))
-                    for d in a.neg_dirs)]
+                    for d in need)]
     random.Random(4242).shuffle(films)
     cut = int(0.75 * len(films))
     tr_films, va_films = films[:cut], films[cut:]
@@ -132,7 +136,12 @@ def main():
 
     tr = DataLoader(Pairs(tr_films, a.pos_dir, a.neg_dirs, True, a.shuffle, 1, a.var_per_epoch),
                     batch_size=16, shuffle=True, num_workers=0)
-    va = DataLoader(Pairs(va_films, a.pos_dir, a.neg_dirs, False, a.shuffle, 1),
+    val_negs = a.val_neg if a.val_neg else a.neg_dirs
+    if a.val_neg:
+        print("CROSS-GENERATOR: train negatives %s -> val negatives %s"
+              % (",".join(os.path.basename(d) for d in a.neg_dirs),
+                 ",".join(os.path.basename(d) for d in val_negs)))
+    va = DataLoader(Pairs(va_films, a.pos_dir, val_negs, False, a.shuffle, 1),
                     batch_size=16, shuffle=False, num_workers=0)
     tr_eval = DataLoader(Pairs(tr_films, a.pos_dir, a.neg_dirs, False, a.shuffle, 1),
                          batch_size=16, shuffle=False, num_workers=0)
