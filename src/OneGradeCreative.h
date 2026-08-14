@@ -107,6 +107,65 @@ struct Tunables {
     // made legible.
     double frameFloorMax = 0.085;
     double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
+
+    // ---------------------------------------------------------------------------------------
+    // PER-SUBJECT TONE TARGETS -- why the solve declined everything that was not a face.
+    //
+    // subjFloor/subjMid above are absolute display values measured on ONE hand-graded interview,
+    // and the old gate refused every other subject rather than apply them. That was right: a
+    // beach frame whose subject came back VEGETATION was destroyed by being driven to a face's
+    // midtone, sky in neon cyan and red pinned flat at zero, while the solve met every condition
+    // it was given.
+    //
+    // But the reason given for the gate does not survive measurement. "A face is the one subject
+    // whose correct lightness is not a matter of taste" predicts skin should be the most
+    // consistent region across films, and it is not: over 350 films SKY lands at 0.634 with a
+    // relative spread of 22%, three times TIGHTER than skin's 73%. (Skin's figure is inflated by
+    // ADE20K class 12 being "person" -- whole body, wardrobe and hair -- so that comparison is
+    // unfair to skin rather than damning; sky has no such confound.) What the numbers do support
+    // is that sky is a better candidate for an absolute target than skin ever was.
+    //
+    // So the gate becomes a LOOKUP rather than a species test. A region with a measured target
+    // gets the tone solve; one without still declines, so nothing is guessed and the default
+    // behaviour for every unmeasured region is exactly what it was before.
+    //
+    // maxCover is per-region for the same reason the target is. The 0.35 ceiling is a
+    // face-plausibility check -- a mask calling 43% of the frame skin has stopped meaning what it
+    // says -- and it is nonsense elsewhere: sky is over 35% of the frame in HALF of all films, and
+    // built in 77%. Applying one ceiling everywhere would reject the very frames the target was
+    // measured on.
+    struct RegionTone {
+        double floor    = 0.0;
+        double mid      = 0.0;
+        double maxCover = 1.0;   // fraction of frame above which the label stops being credible
+        bool   has      = false; // false -> decline, exactly as before
+    };
+    // Indexed by analysis::Region: SKY, WATER, SKIN, VEG, TERRAIN, GROUND, BUILT, OTHER.
+    RegionTone region[analysis::kRegionN] = {
+        // Measured over 851 films: floor 0.475 (MAD 0.218), mid 0.602 (MAD 0.207). Relative
+        // spread 34%, the tightest of any region -- water is next at 42%, skin 71%, built 84%.
+        // maxCover 0.90 because sky is over 35% of frame in half of all films and over 76% in a
+        // tenth; the face ceiling would have rejected the very frames this was measured on.
+        // MEASURED BUT NOT ENABLED, pending the guard below. On the user's four sky clips all
+        // four solved and landed on target (mid 0.600-0.609 against 0.602), but one took Lift
+        // -0.211 and its crushed share went 6.33% -> 23.23% with shadow separation 0.049 -> 0.001.
+        // Two improved and one was unchanged; shipping one-in-four worse is not shipping.
+        //
+        // THE GUARD IS ONE-SIDED AND THAT IS THE BUG. frameFloorMax stops a DARK subject dragging
+        // the frame's black up; nothing stops a BRIGHT subject crushing it down. Sky is simply the
+        // first subject bright enough to push that way, so the asymmetry never surfaced. The fix
+        // is the branch-swap that already exists for the upper bound: when placing the subject
+        // would take the frame's floor below a minimum, Lift serves the frame and Gamma carries
+        // the subject's midtone.
+        /* SKY     */ { 0.475, 0.602, 0.90, false },
+        /* WATER   */ { 0.0,   0.0,   1.00, false },
+        /* SKIN    */ { 0.125, 0.278, 0.35, true  },   // the hand-graded interview, unchanged
+        /* VEG     */ { 0.0,   0.0,   1.00, false },
+        /* TERRAIN */ { 0.0,   0.0,   1.00, false },
+        /* GROUND  */ { 0.0,   0.0,   1.00, false },
+        /* BUILT   */ { 0.0,   0.0,   1.00, false },
+        /* OTHER   */ { 0.0,   0.0,   1.00, false },
+    };
 };
 
 // A TARGET MAY NEVER ASK FOR WHAT THE ACCEPTANCE TEST REJECTS.
@@ -938,7 +997,12 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     // subjects is a DATA question, not a code one: it needs a hand-graded landscape the way the
     // face targets needed a hand-graded interview. Until then a wrong target is worse than none,
     // because the whole point of the button is that its bad cases are impossible rather than rare.
-    if (subject != analysis::R_SKIN) { out.why = "not a face"; return out; }
+    if (subject < 0 || subject >= analysis::kRegionN || !t.region[subject].has) {
+        out.why = "no target for this subject";
+        return out;
+    }
+    const double subjFloorT = t.region[subject].floor;
+    const double subjMidT   = t.region[subject].mid;
 
     // AND ONLY WHEN THE MASK PLAUSIBLY IS A FACE. Coverage is the tell, the same tell
     // skin_trustworthy() already uses at 25% for the chromatic mask: a face occupies a modest
@@ -955,7 +1019,10 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     {
         size_t cover = 0;
         for (size_t i = 0; i < n; ++i) if ((int)S.region[i] == subject) ++cover;
-        if ((double)cover > 0.35 * (double)n) { out.why = "face too large to be one"; return out; }
+        if ((double)cover > t.region[subject].maxCover * (double)n) {
+            out.why = "region too large to be credible";
+            return out;
+        }
     }
 
     float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
@@ -1046,7 +1113,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         return tone_hi(r, g, b);
     };
     MagicTone r = solve_magic_tone_from(shade(iLo), shade(iMid), shade(iHi), shadeMax(iTop),
-                                        Pe, lut, lutSize, t.subjFloor, t.subjMid, t.frameCeiling,
+                                        Pe, lut, lutSize, subjFloorT, subjMidT, t.frameCeiling,
                                         shadeMin(iBot), t.frameFloorMax);
     r.rawExp = Pe[10];
     r.sMidNeutral = (float)neutralMid(0.0);
