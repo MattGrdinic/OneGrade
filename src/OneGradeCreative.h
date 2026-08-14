@@ -106,6 +106,30 @@ struct Tunables {
     // brightened, but "lost a good bit of its original intent". Low-key has to survive being
     // made legible.
     double frameFloorMax = 0.085;
+
+    // THE OTHER SIDE OF THE SAME GUARD, and it was missing until sky.
+    //
+    // frameFloorMax stops a DARK subject dragging the frame's black up. Nothing stopped a BRIGHT
+    // subject crushing it down, because with skin as the only subject nothing was ever bright
+    // enough to push that way. Placing a sky's shadows sent Lift to -0.211 on one clip and took
+    // its crushed share from 6.33% to 23.23%, shadow separation collapsing 0.049 -> 0.001.
+    //
+    // A guard fitted to the only case that had ever come up looked complete for as long as that
+    // was the only case.
+    // INERT AT THIS VALUE, AND THE VALUE IS NOT THE PROBLEM. Swept 0.00/0.02/0.04/0.06 on the
+    // four sky clips: the first three changed nothing at all and 0.06 moved one clip from 23.2%
+    // crushed to 12.5%, still worse than the 6.3% Creative gave it.
+    //
+    // The guard is anchored on the wrong statistic. `crushed%` counts EVERY pixel whose MIN
+    // channel is at or under 1/255; fLo is the min channel of ONE pixel, the one ranked p0.1 by
+    // MAX channel. A saturated pixel ranks high on max while its min sits at zero, so the pixel
+    // being guarded is not the darkest pixel by the measure that matters and the two barely track.
+    //
+    // Same shape as the black-point encode bug and hot-versus-pin: the number compared against a
+    // constant has to be the number that matters. Fixing it means a separate statistic for this
+    // guard -- a percentile of per-pixel MIN across the frame -- rather than reusing fLo, which is
+    // shared with frameFloorMax and would move every validated face grade if changed.
+    double frameFloorMin = 0.020;
     double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
 
     // ---------------------------------------------------------------------------------------
@@ -722,7 +746,8 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
                                               const float P0[analysis::kParamN],
                                               const float* lut, int lutSize,
                                               double subjFloor, double subjMid, double frameCeiling,
-                                              double fLo, double frameFloorMax)
+                                              double fLo, double frameFloorMax,
+                                              double frameFloorMin = -1.0)
 {
     MagicTone out;
     const double pe = P0[8], con = P0[9], roll = P0[12];
@@ -759,6 +784,25 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
         branch |= 1;
         for (int pass = 0; pass < kMagicTonePasses; ++pass) {
             lf = solve1d(-0.50, 0.50, frameFloorMax, [&](double v) { return frameLo(v, gm, gn); });
+            gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
+            gn = solve1d( 0.05,  3.00, frameCeiling, [&](double v) { return render(fHi,  lf, gm, v); });
+        }
+    }
+
+    // ...AND THE SAME SWAP WHEN THE SUBJECT IS TOO BRIGHT.
+    //
+    // Exactly the branch above with the comparison reversed, because it is exactly the same
+    // failure: Lift is global, so pulling a bright subject's shadows DOWN onto their target takes
+    // the whole picture with it and the foreground goes to black. Lift serves the frame's floor,
+    // Gamma keeps the subject's midtone, Gain keeps the ceiling -- still three conditions on three
+    // controls.
+    //
+    // Negative default means off, so every caller that does not ask for it behaves exactly as it
+    // did. The two cannot both fire: a floor cannot be above the cap and below the minimum at once.
+    if (frameFloorMin >= 0.0 && frameLo(lf, gm, gn) < frameFloorMin) {
+        branch |= 4;
+        for (int pass = 0; pass < kMagicTonePasses; ++pass) {
+            lf = solve1d(-0.50, 0.50, frameFloorMin, [&](double v) { return frameLo(v, gm, gn); });
             gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
             gn = solve1d( 0.05,  3.00, frameCeiling, [&](double v) { return render(fHi,  lf, gm, v); });
         }
@@ -1114,7 +1158,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     };
     MagicTone r = solve_magic_tone_from(shade(iLo), shade(iMid), shade(iHi), shadeMax(iTop),
                                         Pe, lut, lutSize, subjFloorT, subjMidT, t.frameCeiling,
-                                        shadeMin(iBot), t.frameFloorMax);
+                                        shadeMin(iBot), t.frameFloorMax, t.frameFloorMin);
     r.rawExp = Pe[10];
     r.sMidNeutral = (float)neutralMid(0.0);
     return r;

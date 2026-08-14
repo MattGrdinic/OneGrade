@@ -173,6 +173,8 @@ int main(int argc, char** argv)
     tun.rawExpMax    = argd(argc, argv, "--raw-exp-max",   tun.rawExpMax);
     tun.subjNeutralMid = argd(argc, argv, "--subj-neutral-mid", tun.subjNeutralMid);
     tun.frameCeiling = argd(argc, argv, "--frame-ceiling", tun.frameCeiling);
+    tun.frameFloorMin= argd(argc, argv, "--frame-floor-min", tun.frameFloorMin);
+    tun.frameFloorMax= argd(argc, argv, "--frame-floor-max", tun.frameFloorMax);
     tun.magicUnit  = argd(argc, argv, "--unit",         tun.magicUnit);
     const int   cam = (int)argd(argc, argv, "--camera", og::grade::kCreativeCamera);
     const int   enc = (int)argd(argc, argv, "--encode", og::grade::kCreativeEncode);
