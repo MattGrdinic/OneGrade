@@ -81,3 +81,5 @@ training-data/**
 !training-data/looks/*/films.txt
 !training-data/corpus/
 !training-data/corpus/films.txt
+!training-data/labeling/
+!training-data/labeling/preferences.json
