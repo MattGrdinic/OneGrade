@@ -65,20 +65,23 @@ PAGE = """<!doctype html>
   .hint { color:var(--dim); }
 </style>
 <header>
-  <strong>Which grade do you prefer?</strong>
+  <strong>Is one of these clearly better?</strong>
   <div class="bar"><i id="fill"></i></div>
   <span class="count" id="count"></span>
 </header>
 <main id="stage"></main>
 <footer>
-  <button class="act" id="tie">Too close to call &nbsp;<kbd>&darr;</kbd></button>
+  <button class="act" id="tie">No clear winner &nbsp;<kbd>&darr;</kbd></button>
   <button class="act" id="back">Undo &nbsp;<kbd>&larr;&#8617;</kbd></button>
   <button class="act" id="save">Download results</button>
-  <span class="hint">Pick with <kbd>&larr;</kbd> / <kbd>&rarr;</kbd> or click an image</span>
+  <span class="hint">Only pick a side when it is <b>clearly</b> better &mdash; otherwise <kbd>&darr;</kbd>. Ties are data, not skipped questions.</span>
 </footer>
 <script>
 const PAIRS = __PAIRS__;
-const KEY = "onegrade-prefs-v1";
+// Versioned per run. The first pass stored under v1, and reusing that key would have loaded 144
+// stale answers into the new page and shown "all done" before a single judgement -- the saved
+// progress is keyed by name, not by which pairs it belongs to.
+const KEY = "onegrade-prefs-__VER__";
 let done = JSON.parse(localStorage.getItem(KEY) || "[]");
 
 const stage = document.getElementById("stage");
@@ -116,7 +119,7 @@ function choose(side) {
   const win = side === "tie" ? null : (side === "L" ? p.left : p.right);
   const lose = side === "tie" ? null : (side === "L" ? p.right : p.left);
   done.push({
-    stem: p.stem, axis: p.axis,
+    stem: p.stem, axis: p.axis, level: p.level, dir: p.dir,
     chosen: win ? win.dir : null, rejected: lose ? lose.dir : null,
     chosen_file: win ? win.file : null,
     tie: side === "tie", at: new Date().toISOString()
@@ -153,31 +156,27 @@ def main():
         print(__doc__)
         return 2
     d = sys.argv[1]
+    ver = sys.argv[2] if len(sys.argv) > 2 else os.path.basename(os.path.normpath(d))
     man = json.load(open(os.path.join(d, "manifest.json")))
 
     pairs = []
     for still in man["stills"]:
-        by_axis = {}
-        base = None
+        base = next((v for v in still["variants"] if v["axis"] == "base"), None)
+        if not base:
+            continue
+        # EVERY PAIR IS BASE VERSUS A STEP OFF IT, at three magnitudes per direction.
+        #
+        # The lo-versus-hi form of the first pass answered only "which side", and with one
+        # judgement per shot per axis that could never reach significance. Base-versus-step asks
+        # the actionable question directly -- is the solve already right, and if not, how far out
+        # is it -- and repeating it at 0.5x, 1x and 2x turns a tie into information rather than a
+        # discarded row: the size at which ties stop is the tolerance on that target.
         for v in still["variants"]:
             if v["axis"] == "base":
-                base = v
-            else:
-                by_axis.setdefault(v["axis"], {})[v["dir"]] = v
-        # The primary question: for this shot, which DIRECTION along this axis is better. It is
-        # the most informative pair available, because both sides are equally far from the solve.
-        for axis, d2 in by_axis.items():
-            if -1 in d2 and 1 in d2:
-                pairs.append({"stem": still["stem"], "axis": axis,
-                              "a": d2[-1], "b": d2[1]})
-        # And whether the solve itself beats a step off it, which is the question that says
-        # whether the current targets are already right for this shot.
-        if base:
-            for axis, d2 in list(by_axis.items())[:2]:
-                for dd in (-1, 1):
-                    if dd in d2:
-                        pairs.append({"stem": still["stem"], "axis": axis + "_vs_base",
-                                      "a": base, "b": d2[dd]})
+                continue
+            pairs.append({"stem": still["stem"], "axis": v["axis"],
+                          "level": v.get("level", 0), "dir": v["dir"],
+                          "a": base, "b": v})
 
     # Deterministic shuffle, and a deterministic left/right flip: reproducible between rebuilds,
     # but not ordered in any way the person can pattern-match.
@@ -193,12 +192,13 @@ def main():
     for p in pairs:
         flip = nxt() < 0.5
         out.append({"stem": p["stem"], "axis": p["axis"],
+                    "level": p["level"], "dir": p["dir"],
                     "left": p["b"] if flip else p["a"],
                     "right": p["a"] if flip else p["b"]})
 
     path = os.path.join(d, "label.html")
     with open(path, "w") as f:
-        f.write(PAGE.replace("__PAIRS__", json.dumps(out)))
+        f.write(PAGE.replace("__PAIRS__", json.dumps(out)).replace("__VER__", ver))
     print("%d pairs from %d stills -> %s" % (len(out), len(man["stills"]), path))
     print("Open it directly in a browser; no server needed.")
     return 0

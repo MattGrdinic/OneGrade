@@ -133,13 +133,27 @@ static og::grade::Measurements measure(const Frame& f, int cam, int enc, oga::Sa
 // THE AXES A COLORIST ACTUALLY REACHES FOR, and the ones the tone solve already owns. Deltas are
 // sized to be clearly visible without being absurd: the useful judgement is "which of these two
 // plausible grades do I prefer", not "which of these is broken".
-struct Axis { const char* name; int idx; float delta; };
+struct Axis { const char* name; int idx; float delta; int level; };
+
+// SEVERAL MAGNITUDES PER AXIS, NOT ONE.
+//
+// The first pass asked "lo or hi" at a single step and got coin flips on four of five axes: with
+// one judgement per shot per axis, the per-axis n is capped at the number of stills and only
+// unanimity could ever have shown up. A binary question also yields one bit, when what the solver
+// needs is a SIZE.
+//
+// Presenting the same axis at 0.5x, 1x and 2x turns it into a threshold measurement. Small steps
+// get called a tie, large ones get a winner, and the magnitude where that flips is the tolerance
+// on that target -- which is the number a constant can actually be moved by.
+//
+// Only the two axes that showed anything. Exposure was the one signal (every face shot wanted
+// less, 5 of 5) and lift is the one whose current value the data weakly endorsed (8/10 to the
+// solve). Gamma and gain were coin flips with few ties, so they were visible and simply had no
+// consistent direction; warmth drew six of eleven ties, so its step was below the discrimination
+// threshold. Spending clicks on those again would dilute the two questions worth answering.
 static const Axis kAxes[] = {
-    { "lift",    3, 0.055f },
-    { "gamma",   4, 0.130f },
-    { "gain",    5, 0.130f },
-    { "warmth",  6, 0.090f },
-    { "expo",    8, 0.260f },
+    { "expo",  8, 0.130f, 1 }, { "expo",  8, 0.260f, 2 }, { "expo",  8, 0.520f, 3 },
+    { "lift",  3, 0.028f, 1 }, { "lift",  3, 0.055f, 2 }, { "lift",  3, 0.110f, 3 },
 };
 static const int kAxisN = (int)(sizeof(kAxes) / sizeof(kAxes[0]));
 
@@ -263,7 +277,8 @@ int main(int argc, char** argv)
         char buf[512];
         const std::string base = stem + "__base.jpg";
         render(R.P, base);
-        snprintf(buf, sizeof buf, "      {\"file\": \"%s\", \"axis\": \"base\", \"dir\": 0}",
+        snprintf(buf, sizeof buf,
+                 "      {\"file\": \"%s\", \"axis\": \"base\", \"dir\": 0, \"level\": 0}",
                  base.c_str());
         manifest += buf;
 
@@ -274,11 +289,14 @@ int main(int argc, char** argv)
                 P[kAxes[a].idx] += dir * kAxes[a].delta;
                 // Gamma and gain are multiplicative and must stay positive; the others are free.
                 if (kAxes[a].idx == 4 || kAxes[a].idx == 5) P[kAxes[a].idx] = std::max(0.05f, P[kAxes[a].idx]);
-                const std::string file = stem + "__" + kAxes[a].name + (dir < 0 ? "_lo" : "_hi") + ".jpg";
+                char nm[128];
+                snprintf(nm, sizeof nm, "%s__%s_%s%d.jpg", stem.c_str(), kAxes[a].name,
+                         dir < 0 ? "lo" : "hi", kAxes[a].level);
+                const std::string file = nm;
                 render(P, file);
                 snprintf(buf, sizeof buf,
-                         ",\n      {\"file\": \"%s\", \"axis\": \"%s\", \"dir\": %d}",
-                         file.c_str(), kAxes[a].name, dir);
+                         ",\n      {\"file\": \"%s\", \"axis\": \"%s\", \"dir\": %d, \"level\": %d}",
+                         file.c_str(), kAxes[a].name, dir, kAxes[a].level);
                 manifest += buf;
             }
         }
