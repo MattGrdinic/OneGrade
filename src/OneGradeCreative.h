@@ -93,6 +93,22 @@ struct Tunables {
     double subjMid      = 0.278;
     double frameCeiling = 0.968;
 
+    // AIM LOWER, SETTLE FOR WHAT THE FRAME ALLOWS.
+    //
+    // 0.968 came from one hand-graded interview and survived being tested against 851 films, which
+    // is why it is still the ceiling of the range rather than replaced by the corpus median. But
+    // that frame is underexposed, and fitting the only number to the worst shot is how a starting
+    // point ends up tuned for footage nobody wants to shoot. Swept 0.890/0.920/0.968 on five clips:
+    // four were VISUALLY IDENTICAL at all three and the fifth -- the badly lit one -- clipped a
+    // face below 0.968. So the low end costs nothing on footage that was lit, and the high end is
+    // needed only where the frame cannot give it.
+    //
+    // Hence a range, not a value: ask for frameCeilingLow, and walk back up only as far as the
+    // frame forces. Infeasible here means the ceiling started fighting the subject (branch 2) --
+    // the one branch whose far side is a washed-out picture, and the same test Bias holds at.
+    // Equal to frameCeiling disables the search and restores the single-value behaviour exactly.
+    double frameCeilingLow = 0.890;
+
     // Where an underexposed subject's NEUTRAL midtone has to reach before the tone solve runs.
     // Read off the frames that already work: their subjects sit near this without help, so a shot
     // below it is one the grade stage cannot rescue on its own.
@@ -727,6 +743,7 @@ struct MagicTone {
     // 200k samples -- which is what makes Bias a target move rather than a parameter drift.
     float sLo = 0.f, sMid = 0.f, sHi = 0.f, fHi = 0.f, fLo = 0.f;
     float rawExp = 0.f;   // scene-linear stops added to rescue an underexposed subject
+    float ceil = 0.f;     // the frame highlight target actually solved against, after the search
     float frameLo = 0.f;  // the frame's own floor, which placing the subject must not wash out
     float sMidNeutral = 0.f;   // the subject's midtone before any of this, for diagnosis
     const char* why = "";   // which decline, when ok is false -- see solve_white_balance
@@ -1156,9 +1173,38 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
         return tone_hi(r, g, b);
     };
-    MagicTone r = solve_magic_tone_from(shade(iLo), shade(iMid), shade(iHi), shadeMax(iTop),
-                                        Pe, lut, lutSize, subjFloorT, subjMidT, t.frameCeiling,
-                                        shadeMin(iBot), t.frameFloorMax, t.frameFloorMin);
+    // The five readings are independent of the ceiling, so take them once and let the search vary
+    // the one argument it is searching over. Recomputing them per probe would be harmless but
+    // would make it look as though the measurement moved with the target, which is the confusion
+    // that produced Magic Grade reading its own output.
+    const double mLo = shade(iLo), mMid = shade(iMid), mHi = shade(iHi);
+    const double mTop = shadeMax(iTop), mBot = shadeMin(iBot);
+    auto solve_at = [&](double c) {
+        return solve_magic_tone_from(mLo, mMid, mHi, mTop, Pe, lut, lutSize,
+                                     subjFloorT, subjMidT, c,
+                                     mBot, t.frameFloorMax, t.frameFloorMin);
+    };
+
+    // TWO CANDIDATES, NOT A SEARCH -- and the difference is not economy, it is safety.
+    //
+    // Bisecting for the lowest feasible ceiling was written first and is wrong by construction: a
+    // bisection converges TO the boundary, so the value it returns is always within its tolerance
+    // of infeasible. On the underexposed clip it settled at 0.9339 while 0.9340 crosses into the
+    // ceiling-gives-way branch and blows the face to 0.993 -- a grade balanced on a knife edge,
+    // where the next frame of the same shot, or the first touch of Bias, falls off it. Fifth time
+    // this project has met a discontinuity at a boundary, after Rolloff at 0, RAW Temp at 6500, the
+    // halfway-armed anchor and the ceiling target that asked for what the acceptance test forbids.
+    //
+    // Both endpoints are validated values, which is the other half of the argument. 0.968 is the
+    // hand-graded interview; 0.890 was checked on five clips. Anything between them is a number
+    // nobody has looked at, so there is nothing to gain by landing on one.
+    double ceil = t.frameCeilingLow;
+    MagicTone r = solve_at(ceil);
+    if (t.frameCeilingLow < t.frameCeiling && (!r.ok || (r.branch & 2))) {
+        ceil = t.frameCeiling;
+        r = solve_at(ceil);
+    }
+    r.ceil = (float)ceil;
     r.rawExp = Pe[10];
     r.sMidNeutral = (float)neutralMid(0.0);
     return r;

@@ -1066,6 +1066,54 @@ int main() {
         check(ok, "a hand edit re-bases Bias instead of being solved away");
     }
 
+    // 33. THE FRAME CEILING HAS TWO CANDIDATES AND NOTHING BETWEEN THEM.
+    //
+    //     Both endpoints are validated: 0.968 is the hand-graded interview, 0.890 was checked on
+    //     five clips where it was visually indistinguishable. Everything in between is a number
+    //     nobody has looked at, so the search is a choice between two, not a solve.
+    //
+    //     Written after the bisection version was tried and was wrong BY CONSTRUCTION. A bisection
+    //     converges to the feasibility boundary, so whatever it returns is within its tolerance of
+    //     infeasible: on the underexposed clip it settled at 0.9339 while 0.9340 crosses into the
+    //     ceiling-gives-way branch and blows the face from 0.566 to 0.993. The grade was correct
+    //     and balanced on a knife edge, which is the same defect as the four Bias discontinuities
+    //     -- and the reason to pin the SHAPE here rather than the two numbers, since re-fitting an
+    //     endpoint is expected and re-introducing a search is not.
+    //
+    //     Self-checking in the same style as test 31: the sweep must actually reach both endpoints,
+    //     or it would pass by never exercising the fallback at all.
+    {
+        og::grade::Tunables tn;
+        bool ok = true, sawLow = false, sawHigh = false;
+        for (int step = 0; step <= 14 && ok; ++step) {
+            // One knob: how hot the frame's top is. Low, and the subject and the ceiling can both
+            // be had at 0.890; high, and holding the ceiling starts costing the subject, which is
+            // exactly the condition the second candidate exists for.
+            const float hl = 0.50f + 0.02f * (float)step;
+            og::analysis::SampleSet S;
+            const int N = 256;
+            for (int i = 0; i < N; ++i) {
+                float v; uint8_t reg;
+                if      (i <  40) { v = 0.30f + 0.0015f * (float)i;         reg = og::analysis::R_SKIN; }
+                else if (i < 236) { v = 0.32f + 0.0012f * (float)(i - 40);  reg = og::analysis::R_VEG;  }
+                else              { v = hl;                                 reg = og::analysis::R_VEG;  }
+                S.rgb.push_back(v); S.rgb.push_back(v); S.rgb.push_back(v);
+                S.region.push_back(reg);
+            }
+            float P0[13]; neutral13(P0);
+            P0[8] = 0.55f;
+            const og::grade::MagicTone r = og::grade::solve_magic_tone(
+                S, og::analysis::R_SKIN, 1, 1, nullptr, 0, P0, tn);
+            if (!r.ok) continue;                       // a decline is a legitimate answer
+            const bool low  = std::fabs(r.ceil - tn.frameCeilingLow) < 1e-5;
+            const bool high = std::fabs(r.ceil - tn.frameCeiling)    < 1e-5;
+            ok &= (low || high);
+            sawLow |= low; sawHigh |= high;
+        }
+        ok &= sawLow && sawHigh;
+        check(ok, "the frame ceiling picks between two validated values, never a solved-for edge");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

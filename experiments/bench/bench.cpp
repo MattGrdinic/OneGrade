@@ -173,6 +173,7 @@ int main(int argc, char** argv)
     tun.rawExpMax    = argd(argc, argv, "--raw-exp-max",   tun.rawExpMax);
     tun.subjNeutralMid = argd(argc, argv, "--subj-neutral-mid", tun.subjNeutralMid);
     tun.frameCeiling = argd(argc, argv, "--frame-ceiling", tun.frameCeiling);
+    tun.frameCeilingLow = argd(argc, argv, "--frame-ceiling-low", tun.frameCeilingLow);
     tun.frameFloorMin= argd(argc, argv, "--frame-floor-min", tun.frameFloorMin);
     tun.frameFloorMax= argd(argc, argv, "--frame-floor-max", tun.frameFloorMax);
     tun.magicUnit  = argd(argc, argv, "--unit",         tun.magicUnit);
@@ -313,9 +314,11 @@ int main(int argc, char** argv)
         if (!noTone) {
             if (R.tone.ok)
                 snprintf(toneNote, sizeof toneNote,
-                         " tone L%+.3f G%.3f g%.3f x%.2fEV -> subj %.3f/%.3f/%.3f spread %.3f  hi %.3f",
+                         " tone L%+.3f G%.3f g%.3f x%.2fEV -> subj %.3f/%.3f/%.3f spread %.3f"
+                         "  hi %.3f (want %.3f, br %d)",
                          R.tone.lift, R.tone.gamma, R.tone.gain, R.tone.rawExp, R.tone.subjLo,
-                         R.tone.mid, R.tone.subjHi, R.tone.subjHi - R.tone.subjLo, R.tone.frameHi);
+                         R.tone.mid, R.tone.subjHi, R.tone.subjHi - R.tone.subjLo, R.tone.frameHi,
+                         R.tone.ceil, R.tone.branch);
             else if (R.tone.why[0])
                 snprintf(toneNote, sizeof toneNote, " tone declined: %s (neutral subj mid %.3f, %.2fEV)",
                          R.tone.why, R.tone.sMidNeutral, R.tone.rawExp);

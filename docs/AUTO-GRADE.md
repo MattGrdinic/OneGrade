@@ -473,7 +473,7 @@ they made them:
 |---|---|---|---|
 | subject's shadows | 0.125 | Lift | *"reduce the contrast on the face"* |
 | subject's midtone | 0.278 | Gamma | *"bring the overall contrast down"* |
-| frame's highlight | 0.968 | Gain | *"remove the hot spot"* |
+| frame's highlight | 0.890, or 0.968 | Gain | *"remove the hot spot"* |
 
 Two of three are about the subject, because **legibility is a property of the thing being looked
 at**. That is also why the pre-existing anti-crush guard never helped: it protects the *frame's*
@@ -645,10 +645,40 @@ sweep looked clean.
 | `subjFloor` | 0.125 | one hand-graded interview, then lowered on the user's call for more contrast |
 | `subjMid` | 0.278 | the same frame |
 | `frameCeiling` | 0.968 | the same frame; Creative's own picture sat at 0.993 with 1.12% clipped |
+| `frameCeilingLow` | 0.890 | 851 films' median, then checked on five clips — see below |
 | `frameFloorMax` | 0.085 | where the healthy frames' black points sit (0.04–0.08) |
 | `subjNeutralMid` | 0.28 | reproduces the user's own 2.13 EV as 2.20 EV |
 | coverage gate | 35% | above `skin_trustworthy()`'s 25%, since a label is not a hue window |
 
-**All of the tone targets come from one frame.** They are placeholders with the right shape, not
-fitted values, and every one is a bench flag: `--subj-floor --subj-mid --frame-ceiling
+**All of the tone targets come from one frame** — except the low ceiling, which is the first to
+come from anywhere else. They are placeholders with the right shape, not fitted values, and every
+one is a bench flag: `--subj-floor --subj-mid --frame-ceiling --frame-ceiling-low
 --subj-neutral-mid --raw-exp-max --no-tone`.
+
+### The ceiling is a range, and it resolves per frame
+
+851 films put their median frame ceiling at **0.890**, with only 16% clipping — well under the
+0.968 this was fitted to. But swept on footage, four of five face clips were *visually identical*
+across 0.850–0.968, and the fifth (`00095358`) clipped on the face at anything below 0.968:
+lowering the target makes the ceiling harder to hold alongside the subject, so the solve takes the
+ceiling-gives-way branch, drops the ceiling condition entirely and lands at **0.993**. Lowering the
+ceiling to reduce clipping produced more of it.
+
+The user's reading is what resolved it: the one shot that needs 0.968 *is not properly lit*, so
+fitting the single constant to it overfits for bad footage — while the corpus median cannot simply
+replace it either, because films sit at 0.890 by being **lit** for it. So `solve_magic_tone` asks
+for `frameCeilingLow` and re-solves at `frameCeiling` only when the first attempt declines or takes
+branch 2. Four clips hold 0.890; `00095358` walks up and reproduces its validated grade exactly.
+
+**Two candidates, never a search between them.** Bisecting for the lowest feasible ceiling was
+written first and is wrong by construction — a bisection converges *to* the boundary, so its answer
+is always within tolerance of infeasible. It settled at 0.9339 on that clip while 0.9340 crosses
+the branch and blows the face 0.566 → 0.993: a correct grade balanced one ten-thousandth from a
+cliff that the next frame, or the first touch of Bias, falls off. The fifth boundary discontinuity
+here after Rolloff at 0, RAW Temp at 6500, the halfway-armed anchor and the ceiling target that
+asked for what the acceptance test forbids. Both endpoints are values someone has looked at;
+nothing in between is. Test 33 pins the shape, not the numbers.
+
+Bias needed no change: `tone_targets_of` reads the ceiling a grade **achieves** from its live
+parameters, so it picks up whichever endpoint was used without being told — the hand-edit fix
+paying for itself on a feature written after it.

@@ -531,7 +531,10 @@ a compositor to capture most of the value: **report what it found**. A read-only
 regions and their coverage, or an exported matte, would let the user put a Resolve node on the sky
 with the plugin's own segmentation informing where. That is a panel change, not a kernel change.
 
-### The ceiling: measured, tested on footage, and DEFERRED (2026-08-14)
+### The ceiling: measured, tested on footage, and SHIPPED as a range (2026-08-14)
+
+**Outcome first: `frameCeilingLow = 0.890` with `frameCeiling = 0.968` as the fallback.** The
+history below is why it is a pair of validated values and not a search between them.
 
 Across 851 films the median frame ceiling is **0.890** and only **16% clip**, while OneGrade
 targets `frameCeiling` **0.968** — above where 71% of professional films sit. That looked like the
@@ -553,10 +556,32 @@ and all three have been independently checked: `subjMid` and the lift target hel
 preference test (`training-data/labeling2`), and `frameCeiling` holds here. **One shot the user
 graded by hand has out-predicted 851 films every time it has been tested.**
 
-### Where a ceiling change could still come from
+### What shipped instead: a range, resolved per frame
 
-Not from a corpus median. The fallback is what binds: the value cannot go below the point where
-frames start falling into the ceiling-gives-way branch, and that threshold is per-shot. A ceiling
-that adapted — lower when the frame has room, held when the subject would be sacrificed — is a
-different feature from a different constant, and it needs the subject/surround separation work
-below rather than another number.
+The user's read of the sweep is what unlocked it — *"the difference between all values was mostly
+invisible \[and] the one shot that needed 0.968 is simply not properly lit, so I don't want to
+overfit for bad footage."* That is not an argument for either constant. It is an argument for
+**asking for 0.890 and accepting 0.968 when the frame insists**, which is a different feature from
+a different number: the fallback is per-shot, so the choice has to be too.
+
+`solve_magic_tone` now solves at `frameCeilingLow` and re-solves at `frameCeiling` if the first
+attempt declines or takes the ceiling-gives-way branch. On the five face clips: four hold 0.890,
+and `00095358` walks up to 0.968 and reproduces its validated grade exactly
+(L −0.069 · G 1.809 · g 0.511, subject high 0.566). Bias is unaffected — `tone_targets_of` reads
+the ceiling a grade *achieves* off its live parameters, so it picks up whichever was used without
+being told, which is the defect-4 fix paying for itself. Zero jumps on both clips at
+`--bias-inc=0.002`.
+
+**A bisection was written first and was wrong by construction — worth keeping, because it looked
+strictly better.** Searching for the *lowest feasible* ceiling converges TO the feasibility
+boundary, so its answer is always within tolerance of infeasible. On `00095358` it settled at
+**0.9339**, and **0.9340** crosses into the ceiling-gives-way branch and blows the face from 0.566
+to **0.993**. The grade it produced was correct and sat one ten-thousandth from a cliff, where the
+next frame of the same shot or the first touch of Bias falls off it. **Fifth discontinuity at a
+boundary in this project**, after Rolloff at 0, RAW Temp at 6500, the halfway-armed anchor, and the
+ceiling target that asked for what the acceptance test forbids.
+
+The two-point form has no edge to sit on and no interpolation to justify: both endpoints are
+values someone has looked at, and everything between them is not. Pinned by test 33, which asserts
+the *shape* rather than the numbers — re-fitting an endpoint is expected, re-introducing a search
+is not.
