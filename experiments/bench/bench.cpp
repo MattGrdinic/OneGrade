@@ -483,14 +483,26 @@ int main(int argc, char** argv)
         // complaint that "the blacks are crushed" is.
         std::vector<unsigned char> out((size_t)f.w * f.h * 3);
         std::vector<float> outCh; outCh.reserve((size_t)f.w * f.h * 3 / 64 + 8);
-        long long crushed = 0, total = 0;
+        // TWO CRUSH MEASURES, because the first one lies on saturated footage.
+        //
+        // `crushed` is per-pixel MIN CHANNEL at or under 1/255, and on a deep blue sky the min
+        // channel is red essentially everywhere -- near zero because that is the COLOUR, not
+        // because detail was lost. It reported 43.8% on a desert landscape the user confirmed
+        // looks correct, with the waveform showing red pinned flat across the full width and the
+        // picture holding texture throughout.
+        //
+        // `crushedY` asks the question that was meant: is the LUMINANCE at the floor, which is
+        // when detail is actually gone. Same shape as hot versus pin -- a threshold on the wrong
+        // quantity describes the filter rather than the footage.
+        long long crushed = 0, crushedY = 0, total = 0;
         for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
             float r, g, b;
             full_chain(cam, enc, P, lutData, lutSize, 1.f,
                        f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
             if ((k & 63) == 0) { outCh.push_back(r); outCh.push_back(g); outCh.push_back(b); }
             const float mn = std::min(r, std::min(g, b));
-            if (mn <= 0.004f) ++crushed;          // at or under 1/255: detail that is gone
+            if (mn <= 0.004f) ++crushed;          // min channel -- confounded by saturation
+            if (0.2126f*r + 0.7152f*g + 0.0722f*b <= 0.004f) ++crushedY;
             ++total;
             out[k*3+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
             out[k*3+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
@@ -517,8 +529,13 @@ int main(int argc, char** argv)
         double sep10 = 0.0;
         {
             std::vector<float> srcL; srcL.reserve((size_t)f.w * f.h / 64 + 8);
+            // ANCHOR ON LUMA, NOT MIN CHANNEL. Selecting the two anchor pixels by percentiles of
+            // per-pixel MIN picks whatever is least saturated in the frame's dominant hue -- on a
+            // blue sky that is a red-starved SKY pixel, so this measured how far apart two bits of
+            // sky ended up rather than anything about shadows. Placing sky on a target compresses
+            // exactly that, which is how a working grade read as destroyed shadow detail.
             for (size_t k = 0; k < (size_t)f.w * f.h; k += 64)
-                srcL.push_back(std::min(f.px[k*3], std::min(f.px[k*3+1], f.px[k*3+2])));
+                srcL.push_back(0.2126f*f.px[k*3] + 0.7152f*f.px[k*3+1] + 0.0722f*f.px[k*3+2]);
             if (srcL.size() > 8) {
                 auto q = [&](double t) {
                     size_t i = (size_t)(t * (srcL.size() - 1));
@@ -532,8 +549,9 @@ int main(int argc, char** argv)
                 sep10 = (double)(g1 - g0);
             }
         }
-        printf("%-24s %6s %6s %6s %6.3f %6.2f %6.3f  post-LUT blk / %% crushed / shadow sep\n",
-               "", "", "", "", postBlk, 100.0 * (double)crushed / (double)total, sep10);
+        printf("%-24s %6s %6s %6.3f %6.2f %6.2f %6.3f  blk / %%crushMin / %%crushY / shadowSep\n",
+               "", "", "", postBlk, 100.0 * (double)crushed / (double)total,
+               100.0 * (double)crushedY / (double)total, sep10);
         std::string op = outDir + "/" + std::string(nm);
         stbi_write_png(op.c_str(), f.w, f.h, 3, out.data(), f.w * 3);
     }
