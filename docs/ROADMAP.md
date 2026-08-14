@@ -476,3 +476,57 @@ segmentation degrades exactly when the shot most needs it.
 The fix is the same ordering argument as the RAW Exposure rescue, applied one stage earlier:
 normalise exposure *before* segmenting, so the model sees a picture it can read. Contained, and
 probably the highest-value item left on this feature.
+
+---
+
+## Region masks in the RENDER, not just the analysis (user's idea, 2026-08-14)
+
+> "professionals create contrast by smart use of lighting... they do so even by not crushing or
+> clipping, but by using contrast ratios wisely. Of course this is the one key thing we can't do
+> for footage — without masks we have global control over the image."
+
+That is the correct diagnosis of the ceiling on everything in `docs/AUTO-GRADE.md` §10. Lift,
+Gamma and Gain are global, so placing a subject moves the whole frame, and every guard in the tone
+solve exists to limit that damage: `frameFloorMax` stops a dark subject dragging the frame's black
+up, the ceiling-gives-way branch stops a bright window crushing a face, and the missing lower
+guard is the same problem from the other side. **They are all workarounds for having one control
+where the picture wants two.**
+
+### The masks already exist
+
+`og::seg::Segmenter` runs on every Magic Grade press and produces per-region labels, and
+`assign_regions()` already maps them onto samples. Nothing new is needed to KNOW where the sky is.
+What is missing is any way to act on it: `og::process()` takes one parameter vector for the whole
+frame.
+
+### Why it is a big change rather than a hook
+
+- **Golden rule, in full.** Per-region parameters mean the mask has to reach the GPU and be sampled
+  per pixel, in all four implementations (`OneGradePipeline.h`, Metal, OpenCL, CUDA). Param-count
+  and buffer changes in every one.
+- **A label mask is not a matte.** Segmentation output is nearest-neighbour class IDs at 256x256
+  against a 4K frame. Applied directly it would produce visible blocky edges on every region
+  boundary. It needs feathering, and probably guided filtering against the image, before it can
+  drive anything continuous.
+- **Temporal stability.** Analysis is a button pressed once, so a mask that differs slightly frame
+  to frame never mattered. The moment a mask drives the render it must be stable across a whole
+  clip or it will crawl — and per-frame inference in `render` is exactly what the ~1s button budget
+  was designed to avoid.
+
+### The cheap version worth trying first
+
+Resolve already has qualifiers, windows and its own magic mask. The plugin does not need to become
+a compositor to capture most of the value: **report what it found**. A read-only line naming the
+regions and their coverage, or an exported matte, would let the user put a Resolve node on the sky
+with the plugin's own segmentation informing where. That is a panel change, not a kernel change.
+
+### Evidence the ceiling is real
+
+Measured over 851 films (2026-08-14): the median frame ceiling is **0.890** and only **16% clip**,
+while OneGrade targets `frameCeiling` **0.968** — above where 71% of professional films sit. That
+constant came from the same single hand-graded interview as the subject targets, and unlike those
+it has never been checked against anything. **Lowering it is testable today with no mask work at
+all**, and is the cheapest thing on this page. (The matching floor question is currently
+unanswerable: the corpus floor statistic is anchored on per-pixel min channel, which measures
+saturation rather than crushing — see the bench fix of the same date.)
+
