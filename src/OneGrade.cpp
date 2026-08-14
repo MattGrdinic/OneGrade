@@ -3076,10 +3076,20 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             // skin, and this control is about tonal PLACEMENT -- a colorist reading "Skin Tone
             // Separation" would reasonably expect a hue control. "Face" also states the current
             // limit out loud, which the panel has to do while the slider is inert everywhere else.
-            // SCENE EXPOSURE, MIRRORED. Magic Grade sets it itself when it decides a subject is
-            // underexposed rather than low-key -- that is the one correction it makes BEFORE the
-            // transform -- so it is the control most likely to want a nudge afterwards, and
-            // sending the user to another section to find it breaks the loop they are in.
+            page->addChild(*defineSlider(p_Desc, "toneSep", "Face Tone Separation",
+                "How far the face sits from everything around it in lightness. Magic Grade places the face at a fixed target; this leans that placement, so the face separates from its surround rather than the whole picture moving together. Positive pushes them further apart, negative brings them closer, zero is the grade exactly as Magic Grade left it. Like Bias it moves the TARGETS and solves again rather than nudging sliders, so Lift, Gamma and Gain will move by different amounts to keep the rest of the grade coherent. It needs a Magic grade to lean on, and it is deliberately inert in two cases. On a frame where the subject and its surround already sit at the same lightness there is no direction for 'further apart' to point in. It leans FACES only, which is what the name says: the placement it re-solves was fitted to a subject near the bottom of the tonal range, where Lift has the authority to move a floor, and on a bright subject such as sky that same solve runs Lift to its limit and blows the highlights - so it does nothing there rather than something wrong. The grade itself is unaffected on every subject; it is only the leaning that is limited.",
+                0.0, -1.0, 1.0, 0.01, gMagic));
+
+            // SCENE EXPOSURE, MIRRORED, AND LAST. Magic Grade sets it itself when it decides a
+            // subject is underexposed rather than low-key -- the one correction it makes BEFORE
+            // the camera transform -- so it is the control most likely to want a nudge
+            // afterwards, and sending the user to another section to find it breaks the loop
+            // they are in.
+            //
+            // Below Bias and Face Tone Separation rather than above them because it is not
+            // another way to lean the same solve: those two move the TARGETS and re-solve,
+            // this one changes what the frame was exposed to. It reads as the final trim on
+            // whatever they settled on, which is how it is used.
             //
             // Two faces of one value, like Bias: each writes the other with setValue, which
             // arrives as eChangePluginEdit and is ignored by both handlers, so there is no loop.
@@ -3087,9 +3097,6 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                 "The same Scene Exposure slider as the one under Exposure and White Balance - the two always hold the same value, and moving either moves both. It is repeated here because Magic Grade sets it itself when it reads the subject as underexposed rather than deliberately dark, correcting before the camera transform the way exposing properly would have. That makes it the control most likely to want a nudge after looking at the result.",
                 0.0, -5.0, 5.0, 0.01, gMagic));
 
-            page->addChild(*defineSlider(p_Desc, "toneSep", "Face Tone Separation",
-                "How far the face sits from everything around it in lightness. Magic Grade places the face at a fixed target; this leans that placement, so the face separates from its surround rather than the whole picture moving together. Positive pushes them further apart, negative brings them closer, zero is the grade exactly as Magic Grade left it. Like Bias it moves the TARGETS and solves again rather than nudging sliders, so Lift, Gamma and Gain will move by different amounts to keep the rest of the grade coherent. It needs a Magic grade to lean on, and it is deliberately inert in two cases. On a frame where the subject and its surround already sit at the same lightness there is no direction for 'further apart' to point in. It leans FACES only, which is what the name says: the placement it re-solves was fitted to a subject near the bottom of the tonal range, where Lift has the authority to move a floor, and on a bright subject such as sky that same solve runs Lift to its limit and blows the highlights - so it does nothing there rather than something wrong. The grade itself is unaffected on every subject; it is only the leaning that is limited.",
-                0.0, -1.0, 1.0, 0.01, gMagic));
 
             // WHICH BIAS YOU HAVE, said out loud. The slider runs two different control laws
             // and picks between them on state nothing on the panel shows: with Magic Tone's
