@@ -383,15 +383,15 @@ int main(int argc, char** argv)
             // on screen -- the fitted ceiling is 0.968 and this frame was solved at 0.890, so the
             // solve was asked to reproduce a grade it had never made.
             const og::grade::ToneTargets sepBase = og::grade::tone_targets_of(
-                R.tone.sLo, R.tone.sMid, R.tone.fHi, R.tone.fLo, P, lutData, lutSize, R.tone.sSur);
+                R.tone.sLo, R.tone.sMid, R.tone.fHi, R.tone.fLo, P, lutData, lutSize);
             printf("    sep      lift   gamma    gain   contr    rdL*   d(rdL*)\n");
             double prevR = d.v[oga::D_RDL], prevL = R.tone.lift;
             for (double s = -1.0; s <= 1.0001; s += biasInc) {
                 const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
                     R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
                     lutData, lutSize, tun, R.tone.fLo, 0.0, sepBase,
-                    s, dir, toneSepPer, R.tone.sSur);
-                if (!t.ok) { printf("   %+5.3f   NOT ARMED: %s\n", s, t.why); break; }
+                    s, dir, toneSepPer);
+                if (!t.ok) { printf("   %+5.3f   DECLINED: %s\n", s, t.why); continue; }
                 float Ps[oga::kParamN];
                 for (int k = 0; k < oga::kParamN; ++k) Ps[k] = P[k];
                 Ps[3] = t.lift; Ps[4] = t.gamma; Ps[5] = t.gain; Ps[9] = t.con;

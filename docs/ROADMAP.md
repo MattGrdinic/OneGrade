@@ -690,3 +690,45 @@ branch-swap pattern that already exists twice rather than inventing a fourth con
 Kept in the tree because it is inert and any future law needs it: `TonePick::iSur` (surround p50 by
 luma, falling back to the frame median when the subject fills the frame), `MagicTone::sSur/surr/con`,
 `ToneTargets::surr`, and the fourth coordinate pass behind its sentinel.
+
+### The re-solve is fitted for a subject near the BOTTOM of the range (2026-08-14)
+
+Reported on footage: Tone Separation and the colour Separation slider both "snap to over-saturated
+or blown out" on SKY, while both work well on SKIN. Reproduced offline, and it is not a Tone
+Separation bug — **Bias alone shows it**:
+
+```
+armed:   L-0.044  G1.367  g0.656
+bias 0:  L-0.500  G1.367  g0.885     <- Lift pinned at its bound
+bias -0.5 .. -2.0:  flat, held there
+```
+
+Bias 0 is required to be the identity and is not: it steps 0.456 of Lift the instant the slider is
+touched. Everything that re-solves inherits it.
+
+**Cause.** Lift is `lift*(1 - min(v,1))`, so its authority falls off toward white. The three
+conditions were fitted to a face whose floor sits at **0.125**, where Lift has full leverage; a
+sky's floor sits at **0.486**, where it has barely half. The solve runs Lift to its −0.500 bound,
+the subject then misses its midtone, the ceiling-gives-way branch fires, and Gain is allowed past
+Creative's clamp — which is the blown, over-saturated picture.
+
+**Grading once is unaffected**, and that is the whole reason the sky grades looked good: that path
+solves from neutral, where Lift still has room. Only the re-solve, starting from an already-bright
+grade, has nowhere to go.
+
+**Shipped: the anchors are not armed for a subject the re-solve is not fitted for.** That is the
+existing mechanism for "the tone solve declined", so Bias drops to its OFFSET law — which predates
+all of this and works on any subject — and Tone Separation goes inert. Sky keeps a working Bias
+rather than losing one, and no grade changes. Bad cases impossible rather than rare, the same bar
+as the non-face gate on the tone solve itself.
+
+**What a real fix needs: a control assignment that follows the subject's position.** Lift/Gamma/Gain
+for a subject near black is a fitted choice, not a law — for a subject near white the natural
+assignment is different (Gain has the leverage there that Lift has at the bottom). That is the same
+"swap which condition each control serves" pattern as the two existing branches, applied to the
+subject's height in the frame rather than to a guard being crossed. Untested, and it wants the sky
+grades hand-graded first the way the interview was: the targets exist but nothing says what a sky
+grade should do as it is LEANED.
+
+Third design in a row on this feature to fail on structure rather than on tuning, and all three
+found by the bench rather than by reasoning.

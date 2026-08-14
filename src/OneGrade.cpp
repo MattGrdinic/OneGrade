@@ -2074,7 +2074,19 @@ void OneGrade::applyMagicResult(const og::grade::MagicResult& R, const char* src
 
     // Bias re-solves from these; cleared when the tone solve declined, so a drag cannot re-solve
     // against a previous shot's subject.
-    if (R.tone.ok) {
+    //
+    // ...AND CLEARED FOR ANY SUBJECT THE RE-SOLVE IS NOT FITTED FOR, which is the same gate Tone
+    // Separation takes below and for the same measured reason: Lift acts near black, so it places
+    // a face's floor at 0.125 comfortably and runs to its -0.500 bound on a sky's at 0.486. Bias 0
+    // on 00096619 returns L-0.500 against an armed L-0.044 -- a 0.456 step the instant the slider
+    // is touched, with the whole negative half flat against the bound.
+    //
+    // Clearing the anchors is the mechanism that already exists for "the tone solve declined": it
+    // drops Bias back to its OFFSET law, which predates all of this and works on any subject. So
+    // sky keeps a working Bias rather than losing one, and the grade itself is untouched -- it is
+    // only the re-solve that has nowhere to go.
+    const bool toneResolvable = R.tone.ok && R.choice.ok && R.choice.subject == oga::R_SKIN;
+    if (toneResolvable) {
         m_ToneLo->setValue(R.tone.sLo);   m_ToneMid->setValue(R.tone.sMid);
         m_ToneShi->setValue(R.tone.sHi);  m_ToneHi->setValue(R.tone.fHi);
         m_ToneFLo->setValue(R.tone.fLo);
@@ -2089,7 +2101,20 @@ void OneGrade::applyMagicResult(const og::grade::MagicResult& R, const char* src
     // lightness and the question has no answer; the slider then does nothing and says so.
     {
         double dir = 0.0;
-        if (R.tone.ok && R.choice.ok) {
+        // SKIN ONLY, and not because skin is special to the descriptor -- because the SOLVE the
+        // slider re-runs is. Lift is lift*(1 - min(v,1)), so it acts most near black: it has full
+        // authority over a face's floor at 0.125 and barely half over a sky's at 0.486. Re-solving
+        // a bright subject runs Lift to its -0.500 bound, the ceiling then gives way, and the
+        // picture blows out -- measured on 00096619, where Bias 0 alone returns L-0.500 against an
+        // armed L-0.044 and the whole negative half sits flat against the bound.
+        //
+        // Grading once is unaffected and stays enabled for every region: that path solves from
+        // neutral, where Lift still has room. It is only the RE-solve, from an already-bright
+        // grade, that has nowhere to go.
+        //
+        // So the slider goes inert rather than wrong. Bad cases impossible, not rare -- the same
+        // bar as the non-face gate on the tone solve itself, and for very nearly the same reason.
+        if (toneResolvable) {
             m_LastSamples.subject = R.choice.subject;
             const oga::Desc d = oga::describe(m_LastSamples, og::grade::kCreativeCamera,
                                               og::grade::kCreativeEncode <= 2
