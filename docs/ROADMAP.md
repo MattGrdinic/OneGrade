@@ -585,3 +585,44 @@ The two-point form has no edge to sit on and no interpolation to justify: both e
 values someone has looked at, and everything between them is not. Pinned by test 33, which asserts
 the *shape* rather than the numbers — re-fitting an endpoint is expected, re-introducing a search
 is not.
+
+### Tone Separation: the target axis is chosen, and the first choice was wrong (2026-08-14)
+
+The slider re-solves rather than writing parameters, and that part is settled by measurement. The
+`d(rdL*)/dp` row of the descriptor Jacobian on the user's footage is dominated by `lft`, `gam`,
+`gan` and `pCn` — every control the tone solve already owns — with signs that flip between frames
+depending on which side of the contrast pivot the subject sits. Writing any of them directly would
+undo the three conditions that place the subject, which is the failure Bias was rebuilt to avoid.
+So the slider moves a target and re-solves, exactly as Bias does.
+
+**Which target is the open question, and `subjMid` is not it.** Walked across its full range on a
+face clip with the achieved `rdL*` printed beside the parameters: `rdL*` moved −18.05 → −19.96,
+about **1.9 L\* units or 10%**, while Lift went 0.001 → 0.173 and Gamma 1.914 → 0.890. A large,
+obvious change in the picture buying almost nothing in the quantity the control is named after.
+
+Structural, and predictable in hindsight: subject and surround are placed by **one curve**, so
+moving the subject's target drags the surround with it and the gap barely opens. Nothing that
+moves both together can separate them.
+
+**The design that follows: a fourth condition on a fourth control.** Three conditions currently
+place the subject and hold the frame's ceiling; separation needs one on the *surround*. Post
+contrast is the candidate — it pivots at 0.5, which sits between a subject at 0.278 and a brighter
+surround, and it carries the largest consistent `d(rdL*)/dp` in the Jacobian (roughly 20–38 L\* per
+unit against the 1.9 the whole `subjMid` slider managed). Four conditions on four controls stays
+well posed and is the existing coordinate-pass structure with one more pass.
+
+**The risk is real and is the reason this is written down rather than built.** It changes the shape
+of `solve_magic_tone`, which every validated face grade stands on: the pass ordering, the
+convergence argument, the two branch fallbacks and the two acceptance tests would all need
+re-checking against the five clips. That is a deliberate decision, not a drive-by.
+
+Scaffolding that stays either way: `D_RDL/D_RDA/D_RDB`, the `sep`/`sepDir` arguments, and the
+bias/sep line walk (both sliders travel one line from the armed anchor, so the result depends on
+where they are left rather than on the order they were touched). Bench: `--sep-report --sep-jac
+--tone-sep-sweep --tone-sep-per`.
+
+**A bench-side trap worth keeping.** The first sweep passed a default `ToneTargets`, so sep 0
+returned a different grade than the one on screen — the fitted ceiling is 0.968 and the frame had
+been solved at 0.890, so the solve was asked to reproduce a grade it had never made. `applyBias()`
+derives its base correctly; only the new bench path did not. Any caller of
+`solve_magic_tone_bias()` that does not pass `tone_targets_of()` is asking the wrong question.

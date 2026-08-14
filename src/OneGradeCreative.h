@@ -266,6 +266,51 @@ static inline ToneTargets tone_targets_of(double sLo, double sMid, double fHi, d
 static const double kBiasSubjFloorPer = 0.06;
 static const double kBiasCeilingPer   = 0.03;
 
+// TONE SEPARATION moves the subject's MIDTONE, and nothing else -- which is what keeps it a
+// separate control from Bias rather than a second way to drive the same one. Bias owns the
+// subject's floor and the frame's ceiling (Lift and Gain); this owns the midtone (Gamma). Two
+// sliders, two targets, two controls, so they can be compared on one frame without either
+// explaining the other's result.
+//
+// WHY A TARGET AND NOT A PARAMETER. The rdL* row of the descriptor Jacobian, measured on the
+// user's footage, is dominated by lift, gamma, gain and post contrast -- every control the tone
+// solve already owns -- and its signs flip between frames depending on which side of the contrast
+// pivot the subject sits. Writing any of them directly would undo the three conditions that place
+// the subject, which is the failure Bias was rebuilt to avoid ("if I touch the bias slider we kill
+// the grade"). Moving the target and re-solving cannot: the other two conditions still hold.
+//
+// MEASURED AND REJECTED AS THE SEPARATION AXIS -- kept because the plumbing is what any
+// separation law needs, NOT because this one works. Walked across its full range on a face clip
+// with the achieved rdL* beside it: rdL* moved -18.05 to -19.96, about 1.9 L* units or 10%, while
+// Lift went 0.001 -> 0.173 and Gamma 1.914 -> 0.890. An enormous change in the picture for almost
+// none in the quantity the control is named after.
+//
+// The reason is structural and should have been predictable: the subject and its surround are
+// placed by ONE curve, so moving the subject's target drags the surround along with it and the gap
+// between them barely opens. Separation needs the two moved DIFFERENTLY, which means a condition
+// on the surround -- a fourth condition on a fourth control, with post contrast the candidate
+// (it pivots at 0.5, between a subject at 0.278 and a brighter surround, and it carries the
+// largest consistent d(rdL*)/dp in the Jacobian). See docs/ROADMAP.md.
+//
+// This is the fourth time on this feature that a plausible control law produced a confident number
+// and no picture, and the fourth time the bench caught it by rendering the result instead of
+// trusting the solve's own report.
+static const double kToneSepMidPer = 0.05;
+
+// Below this, the subject and its surround are at the same lightness and "further apart" has no
+// direction to point in. The slider goes inert and says so rather than picking one: a control that
+// moves the picture in an arbitrary direction is worse than a control that admits it has nothing
+// to act on. In L* units, where the footage measured so far spans roughly 2 to 34.
+static const double kToneSepMinDL = 3.0;
+
+// The direction "more separated" points in, from the region separation triple. Returns 0 when the
+// two are too close in tone for the question to have an answer.
+static inline double tone_sep_dir(double rdL)
+{
+    if (std::fabs(rdL) < kToneSepMinDL) return 0.0;
+    return (rdL > 0.0) ? 1.0 : -1.0;
+}
+
 // The Cinematic Film Emulation recipe, which Creative Grade starts from. User-validated, and the
 // tint in particular (Gain Temp -0.22 / Gain Tint 0.09) is what gives the look its character --
 // it was identical across all four shots the Gain fit came from.
@@ -910,7 +955,9 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
                                               const float P0[analysis::kParamN],
                                               const float* lut, int lutSize,
                                               const Tunables& t, double fLo, double bias,
-                                              ToneTargets base = ToneTargets())
+                                              ToneTargets base = ToneTargets(),
+                                              double sep = 0.0, double sepDir = 0.0,
+                                              double sepPer = kToneSepMidPer)
 {
     // BIAS LEANS AWAY FROM WHATEVER THE GRADE CURRENTLY MEETS, not from the constants the button
     // was solved to. Pass the conditions a hand edit achieved and the edit survives by
@@ -925,16 +972,27 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
     // only ever let an existing grade through -- it cannot license a new one to wash out.
     const double bFFMax = (base.floorMax >= 0.0) ? std::max(t.frameFloorMax, base.floorMax)
                                                  : t.frameFloorMax;
-    auto at = [&](double b) {
+    // ONE LINE FROM THE ANCHOR TO WHEREVER BOTH SLIDERS CURRENTLY SIT, walked by a single
+    // parameter. With two sliders the feasible region is an area rather than an interval, and
+    // bisecting each axis in turn would make the result depend on which was bisected first --
+    // which is the same defect as keeping the last value when a drag runs out of road: the grade
+    // would depend on the order the user touched the controls rather than on where they left them.
+    //
+    // A straight line from the origin depends only on the endpoint, so it is path-independent by
+    // construction. With sep = 0 it reduces to exactly the interval the bias bisection used to
+    // walk, point for point, which is why the existing behaviour is unchanged rather than
+    // approximately preserved.
+    auto at = [&](double u) {
+        const double b = bias * u, s = sep * u * sepDir;
         return solve_magic_tone_from(
             sLo, sMid, sHi, fHi, P0, lut, lutSize,
             std::min(0.40, std::max(0.00, bFloor + b * kBiasSubjFloorPer)),
-            bMid,
+            std::min(0.60, std::max(0.05, bMid + s * sepPer)),
             std::min(kFrameCeilingMax, std::max(0.60, bCeil - b * kBiasCeilingPer)),
             fLo, bFFMax);
     };
     MagicTone feasible = at(0.0);
-    if (!feasible.ok) return at(bias);   // never armed by Magic Tone -- let the caller fall back
+    if (!feasible.ok) return at(1.0);   // never armed by Magic Tone -- let the caller fall back
 
     // THE CEILING GIVING WAY IS A STEP IN THE PICTURE, so it bounds the slider like a decline.
     //
@@ -960,10 +1018,10 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
         return s.ok && ((s.branch & 2) == (feasible.branch & 2));
     };
 
-    MagicTone mt = at(bias);
+    MagicTone mt = at(1.0);
     if (sameShape(mt)) return mt;
 
-    double lo = 0.0, hi = bias;          // lo keeps the assignment, hi does not
+    double lo = 0.0, hi = 1.0;           // lo keeps the assignment, hi does not
     for (int i = 0; i < 18; ++i) {
         const double mid = 0.5 * (lo + hi);
         const MagicTone s = at(mid);

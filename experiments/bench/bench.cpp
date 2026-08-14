@@ -191,6 +191,11 @@ int main(int argc, char** argv)
     // which is the only way to see a discontinuity without dragging a slider in Resolve.
     // Both separation triples per frame -- the band stand-in and the region version beside it.
     const bool  sepReport = argf(argc, argv, "--sep-report");
+    // The rdL*/rdb* rows of the descriptor Jacobian, to choose the slider's controls by measurement.
+    const bool  sepJac    = argf(argc, argv, "--sep-jac");
+    // The Tone Separation slider: walk it, and vary how far one unit moves the subject's midtone.
+    const bool  toneSepSweep = argf(argc, argv, "--tone-sep-sweep");
+    const double toneSepPer  = argd(argc, argv, "--tone-sep-per", og::grade::kToneSepMidPer);
     const bool  biasSweep = argf(argc, argv, "--bias-sweep");
     // How often the sweep writes a frame. 0 prints the table and writes nothing.
     const double biasStep = argd(argc, argv, "--bias-step", 0.5);
@@ -359,6 +364,42 @@ int main(int argc, char** argv)
                     std::fabs(back.gamma - Ph[4]) < 0.02 &&
                     std::fabs(back.gain - Ph[5]) < 0.01) ? "<- PRESERVED" : "<- LOST");
             for (int k = 0; k < oga::kParamN; ++k) P[k] = Ph[k];   // sweep from the edited grade
+        }
+
+        // TONE SEPARATION, walked the way a hand walks it, with the ACHIEVED rdL* beside the
+        // parameters. The parameters alone cannot answer the only question that matters -- whether
+        // the subject actually ended up further from its surround -- and a slider that moves Gamma
+        // convincingly while separation stays put is exactly the kind of plausible-but-wrong result
+        // this bench exists to catch.
+        if (toneSepSweep && R.tone.ok) {
+            const double dir = og::grade::tone_sep_dir(d.v[oga::D_RDL]);
+            printf("    tone separation: rdL* %+.2f -> direction %+.0f%s\n",
+                   d.v[oga::D_RDL], dir,
+                   dir == 0.0 ? "  (INERT: subject and surround are at the same lightness)" : "");
+            // THE CONDITIONS THE GRADE ACTUALLY MEETS, exactly as applyBias() supplies them.
+            // Passing a default ToneTargets here made sep 0 return a different grade than the one
+            // on screen -- the fitted ceiling is 0.968 and this frame was solved at 0.890, so the
+            // solve was asked to reproduce a grade it had never made.
+            const og::grade::ToneTargets sepBase = og::grade::tone_targets_of(
+                R.tone.sLo, R.tone.sMid, R.tone.fHi, R.tone.fLo, P, lutData, lutSize);
+            printf("    sep      lift   gamma    gain    rdL*   d(rdL*)\n");
+            double prevR = d.v[oga::D_RDL], prevL = R.tone.lift;
+            for (double s = -1.0; s <= 1.0001; s += biasInc) {
+                const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                    R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
+                    lutData, lutSize, tun, R.tone.fLo, 0.0, sepBase,
+                    s, dir, toneSepPer);
+                if (!t.ok) { printf("   %+5.3f   NOT ARMED: %s\n", s, t.why); break; }
+                float Ps[oga::kParamN];
+                for (int k = 0; k < oga::kParamN; ++k) Ps[k] = P[k];
+                Ps[3] = t.lift; Ps[4] = t.gamma; Ps[5] = t.gain;
+                const oga::Desc ds = oga::describe(S, cam, enc <= 2 ? enc : 1, Ps);
+                printf("   %+5.3f  %+7.3f %7.3f %7.3f %+7.2f  %+7.2f%s\n",
+                       s, t.lift, t.gamma, t.gain, ds.v[oga::D_RDL],
+                       ds.v[oga::D_RDL] - prevR,
+                       std::fabs(t.lift - prevL) > 0.02 ? "   <-- JUMP" : "");
+                prevR = ds.v[oga::D_RDL]; prevL = t.lift;
+            }
         }
 
         if (biasAt > -998.0 && R.tone.ok) {
@@ -563,6 +604,20 @@ int main(int argc, char** argv)
         // BOTH SEPARATION TRIPLES, side by side, because the whole question is whether the region
         // version says something the band version cannot. Printing only the new one would make it
         // impossible to tell a real improvement from a differently-scaled number.
+        // WHICH CONTROLS MOVE THE SUBJECT AWAY FROM ITS SURROUND, measured rather than reasoned
+        // about. The slider has to spend controls the tone solve does not own, or it undoes the
+        // three conditions that place the subject -- and which controls those are is a property of
+        // the footage and the region, not something to argue from the pipeline order.
+        if (sepJac) {
+            const oga::Jac J = oga::jacobian(S, cam, enc <= 2 ? enc : 1, P);
+            printf("%-24s   d(rdL*)/dp:", "");
+            for (int p = 0; p < oga::kParamN; ++p)
+                printf(" %s%+.2f", oga::param_name(p), J.at(oga::D_RDL, p));
+            printf("\n%-24s   d(rdb*)/dp:", "");
+            for (int p = 0; p < oga::kParamN; ++p)
+                printf(" %s%+.2f", oga::param_name(p), J.at(oga::D_RDB, p));
+            printf("\n");
+        }
         if (sepReport) {
             printf("%-24s   band dL* %+7.2f da* %+7.2f db* %+7.2f | region %s dL* %+7.2f "
                    "da* %+7.2f db* %+7.2f\n", "",
