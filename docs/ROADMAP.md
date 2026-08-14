@@ -217,11 +217,22 @@ find where it looks right, and that number becomes the constant — the same loo
 every fit in this project. There is no way to guess the right amount of separation from first
 principles, and no ground truth for it yet beyond a single hand grade.
 
-**Blocked on nothing technical.** The open question is what it should move when the regions are
-wrong — top/bottom thirds are a stand-in that only holds for landscape-shaped frames, so on a
-shot where the subjects aren't stacked vertically the slider would push apart two things that
-aren't the subjects. Either ship it with that caveat and let the panel show the regions it
-found, or wait for real region masks.
+**Blocked on one thing, and it is not what this entry used to claim.** It read "blocked on nothing
+technical", on the reasoning that it only needed real region masks. Those shipped in 1.4.x — and
+`describe()` was never rewired to use them. Checked 2026-08-14: `d.v[D_DL]` is still
+`bandL[2]/bandN[2] - bandL[0]/bandN[0]`, the top third minus the bottom third via `S.band`, while
+`S.region` sits unused a few lines away.
+
+So the stand-in this entry warned about is still what the descriptor measures, and the failure it
+predicted is the COMMON case rather than an edge one. A centred subject puts hair and background
+in the top band and clothing in the bottom, so band `dL*` reports the gap between two parts of
+**one** subject and calls it separation. Portraits are most of what has a face in them, and the
+frame that prompted this work — a centred close-up with deep contrast and no clipping — is exactly
+that shape.
+
+**The prerequisite is a region-based separation triple**, subject against everything else, added as
+NEW descriptors rather than by redefining `D_DL`, so the existing steerable set and the tests
+pinning it stay untouched.
 
 ---
 
