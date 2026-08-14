@@ -531,13 +531,32 @@ a compositor to capture most of the value: **report what it found**. A read-only
 regions and their coverage, or an exported matte, would let the user put a Resolve node on the sky
 with the plugin's own segmentation informing where. That is a panel change, not a kernel change.
 
-### Evidence the ceiling is real
+### The ceiling: measured, tested on footage, and DEFERRED (2026-08-14)
 
-Measured over 851 films (2026-08-14): the median frame ceiling is **0.890** and only **16% clip**,
-while OneGrade targets `frameCeiling` **0.968** — above where 71% of professional films sit. That
-constant came from the same single hand-graded interview as the subject targets, and unlike those
-it has never been checked against anything. **Lowering it is testable today with no mask work at
-all**, and is the cheapest thing on this page. (The matching floor question is currently
-unanswerable: the corpus floor statistic is anchored on per-pixel min channel, which measures
-saturation rather than crushing — see the bench fix of the same date.)
+Across 851 films the median frame ceiling is **0.890** and only **16% clip**, while OneGrade
+targets `frameCeiling` **0.968** — above where 71% of professional films sit. That looked like the
+cheapest change available: one constant, no masks, no model.
 
+**Swept on footage at 0.968 / 0.930 / 0.890 / 0.850 and rejected.** Four of the five face clips
+looked *identical* across the whole range despite Gain dropping about 20%, and the fifth got
+worse: `00095358` clips on the face at every value below 0.968. Lowering the target makes the
+ceiling harder to satisfy alongside the subject, so the solve takes the **ceiling-gives-way**
+branch, abandons the ceiling condition entirely, and lands at **0.993** — nearly blown, and worse
+than the 0.968 it started from. Lowering the ceiling to reduce clipping produced more of it.
+
+**The corpus median is not transferable.** Films sit at 0.890 because they are *lit* for it. The
+statistic describes the reference footage, not what this footage wants, and nothing in the
+measurement could have revealed that — it took the pictures.
+
+Worth keeping as a methodological note. Three constants now come from one hand-graded interview,
+and all three have been independently checked: `subjMid` and the lift target held under the
+preference test (`training-data/labeling2`), and `frameCeiling` holds here. **One shot the user
+graded by hand has out-predicted 851 films every time it has been tested.**
+
+### Where a ceiling change could still come from
+
+Not from a corpus median. The fallback is what binds: the value cannot go below the point where
+frames start falling into the ceiling-gives-way branch, and that threshold is per-shot. A ceiling
+that adapted — lower when the frame has room, held when the subject would be sacrificed — is a
+different feature from a different constant, and it needs the subject/surround separation work
+below rather than another number.
