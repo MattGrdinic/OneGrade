@@ -27,6 +27,7 @@ venv/
 experiments/bench/bench
 experiments/bench/out/
 experiments/looks/looks
+experiments/looks/variants
 experiments/segmentation/e2e
 experiments/segmentation/wbtest
 experiments/segmentation/rawclasses
@@ -64,6 +65,8 @@ experiments/looks/runs/
 #                        ground truth a target gets fitted to, so it is tracked
 #   corpus/films.txt     a deterministic sample of the film index; makes the 1000-film
 #                        grade-quality corpus rebuildable from the repo alone
+#   labeling/           generated grade variants + the labelling page. Regenerate with
+#                        variants + make_labeler.py; the pixels derive from the stills below.
 #   onegrade-training/   the user's own camera-log stills and the bench's graded output.
 #                        Not copyrighted, but 16-bit UHD frames at ~46 MB each -- they would
 #                        add over half a gigabyte and are irreplaceable rather than

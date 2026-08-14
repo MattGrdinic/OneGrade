@@ -6,8 +6,13 @@ NCNN   := $(ROOT)/build/ncnn
 # checkout of stb anywhere in the tree.
 CXXFLAGS := -std=c++17 -O2 -I$(ROOT)/src -I$(ROOT)/third_party/ncnn/src -I$(NCNN)/src -I.
 
+all: looks variants
+
+variants: variants.cpp $(ROOT)/src/OneGradeCreative.h $(ROOT)/src/OneGradeAnalysis.h $(ROOT)/src/OneGradeSegment.h
+	$(CXX) $(CXXFLAGS) variants.cpp $(NCNN)/src/libncnn.a -o variants
+
 looks: looks.cpp $(ROOT)/src/OneGradeCreative.h $(ROOT)/src/OneGradeAnalysis.h $(ROOT)/src/OneGradeSegment.h
 	$(CXX) $(CXXFLAGS) looks.cpp $(NCNN)/src/libncnn.a -o looks
 
 clean:
-	rm -f looks
+	rm -f looks variants
