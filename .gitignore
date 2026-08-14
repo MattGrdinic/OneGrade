@@ -39,6 +39,8 @@ training-data/**
 !training-data/looks/
 !training-data/looks/*/
 !training-data/looks/*/films.txt
+!training-data/corpus/
+!training-data/corpus/films.txt
 # Compiled probes in experiments/ -- these were tracked as Mach-O arm64 binaries, 9 MB of
 # build output that only ever worked on one machine.
 experiments/segmentation/e2e
