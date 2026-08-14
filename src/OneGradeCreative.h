@@ -1073,7 +1073,7 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
         return solve_magic_tone_from(
             sLo, sMid, sHi, fHi, P0, lut, lutSize,
             std::min(0.40, std::max(0.00, bFloor + b * kBiasSubjFloorPer)),
-            bMid,
+            std::min(0.60, std::max(0.05, bMid + s * sepDir * sepPer)),
             std::min(kFrameCeilingMax, std::max(0.60, bCeil - b * kBiasCeilingPer)),
             fLo, bFFMax, kFrameFloorMinOff, kFloorReadUnset,
             sSur,

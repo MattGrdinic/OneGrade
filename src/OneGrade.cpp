@@ -547,6 +547,12 @@ private:
     OFX::DoubleParam*  m_MagicAnchor;  // the control's value before the move
     OFX::DoubleParam*  m_MagicSepAt;   // Separation position when that anchor was captured
     OFX::DoubleParam*  m_BiasMirror;   // second face of autoBias, shown in the Magic section
+    // TONE SEPARATION: how far the subject is pushed from its surround in lightness, and which
+    // way "further" points on this frame. The direction is a MEASUREMENT (the sign of the region
+    // separation triple's dL*), stored because it must not be recomputed mid-drag -- a subject
+    // that crosses its surround mid-slider would flip the control under the user's hand.
+    OFX::DoubleParam*  m_ToneSep;
+    OFX::DoubleParam*  m_ToneSepDir;
     OFX::StringParam*  m_MagicNote;
     OFX::StringParam*  m_MagicWhy;    // the reasoning, in a sentence
     OFX::BooleanParam* m_ShowAnalysis;
@@ -648,6 +654,8 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_MagicAnchor  = fetchDoubleParam("magicAnchor");
     m_MagicSepAt   = fetchDoubleParam("magicSepAt");
     m_BiasMirror   = fetchDoubleParam("autoBiasMirror");
+    m_ToneSep      = fetchDoubleParam("toneSep");
+    m_ToneSepDir   = fetchDoubleParam("toneSepDir");
     m_MagicNote    = fetchStringParam("magicNote");
     m_MagicWhy     = fetchStringParam("magicWhy");
     m_BiasArmed    = fetchBooleanParam("biasArmed");
@@ -1829,9 +1837,17 @@ void OneGrade::applyBias()
         m_ToneTMid->getValue(base.mid);
         m_ToneTCeil->getValue(base.ceil);
         m_ToneTFMax->getValue(base.floorMax);
+        // ONE SOLVE FOR BOTH SLIDERS. Bias and Tone Separation move different targets -- the
+        // subject's floor and the frame's ceiling against the subject's midtone -- but they move
+        // them in the same picture, so solving them separately would let each undo the other.
+        // Both travel one line from the armed anchor, so the result depends on where they are
+        // left rather than on which was touched last.
+        double sep = 0.0, sepDir = 0.0;
+        m_ToneSep->getValue(sep);
+        m_ToneSepDir->getValue(sepDir);
         const og::grade::MagicTone mt = og::grade::solve_magic_tone_bias(
             tLo, tMid, tShi, tHi, Pc, lutOk ? m_Lut.data.data() : nullptr, lutOk ? m_Lut.size : 0,
-            tn, tFLo, bias, base);
+            tn, tFLo, bias, base, sep, sepDir);
         if (mt.ok) {
             m_Lift->setValue(mt.lift);
             m_Gamma->setValue(mt.gamma);
@@ -2065,6 +2081,23 @@ void OneGrade::applyMagicResult(const og::grade::MagicResult& R, const char* src
     } else {
         m_ToneLo->setValue(-1.0);  m_ToneMid->setValue(-1.0);
         m_ToneShi->setValue(-1.0); m_ToneHi->setValue(-1.0); m_ToneFLo->setValue(-1.0);
+    }
+
+    // WHICH WAY "FURTHER APART" POINTS, measured once and frozen. The subject is stamped onto the
+    // sample set here rather than inside solve_magic, which chooses it -- so the descriptor and
+    // the grade cannot disagree about who the subject was. Zero means the two sit at the same
+    // lightness and the question has no answer; the slider then does nothing and says so.
+    {
+        double dir = 0.0;
+        if (R.tone.ok && R.choice.ok) {
+            m_LastSamples.subject = R.choice.subject;
+            const oga::Desc d = oga::describe(m_LastSamples, og::grade::kCreativeCamera,
+                                              og::grade::kCreativeEncode <= 2
+                                                  ? og::grade::kCreativeEncode : 1, R.P);
+            dir = og::grade::tone_sep_dir(d.v[oga::D_RDL]);
+        }
+        m_ToneSepDir->setValue(dir);
+        m_ToneSep->setValue(0.0);
     }
 
     const oga::MagicChoice& c = R.choice;
@@ -2490,6 +2523,10 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     }
     else if (p_ParamName == "separation" && p_Args.reason == OFX::eChangeUserEdit) {
         applySeparation();
+    }
+    else if (p_ParamName == "toneSep" && p_Args.reason == OFX::eChangeUserEdit) {
+        applyBias();        // same solve; Tone Separation is the other target it moves
+        setEnabledness();
     }
     else if (p_ParamName == "autoBias" && p_Args.reason == OFX::eChangeUserEdit) {
         m_BiasMirror->setValue(m_AutoBias->getValue());
@@ -2926,6 +2963,9 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             // edit survive: at bias 0 the solve is asked for what is already on screen.
             anch("toneTFloor", -1.0); anch("toneTMid", -1.0); anch("toneTCeil", -1.0);
             anch("toneTFMax", -1.0);
+            // The measured direction, saved with the project so Tone Separation still knows which
+            // way to lean after a reload rather than going inert until the button is pressed again.
+            anch("toneSepDir", 0.0);
         }
 
         PushButtonParamDescriptor* apply = p_Desc.definePushButtonParam("probeApply");
@@ -3113,6 +3153,10 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             page->addChild(*defineSlider(p_Desc, "autoBiasMirror", "Bias",
                 "The same Bias slider as the one under Base and Creative Grade - the two always hold the same value, and moving either moves both. It is repeated here because Magic Grade produces a Creative grade with a colour move on top, and the tonal lean is the next thing you will want after looking at the result.",
                 0.0, -2.0, 2.0, 0.01, gMagic));
+
+            page->addChild(*defineSlider(p_Desc, "toneSep", "Tone Separation",
+                "How far the subject sits from everything around it in lightness. Magic Grade places the subject at a fixed target; this leans that placement, so the subject separates from its surround rather than the whole picture moving together. Positive pushes them further apart, negative brings them closer, zero is the grade exactly as Magic Grade left it. Like Bias it moves the TARGETS and solves again rather than nudging sliders, so Lift, Gamma and Gain will move by different amounts to keep the rest of the grade coherent. It needs a Magic grade to lean on, and it does nothing on a frame where the subject and its surround are already at the same lightness - there is no direction for further apart to point in.",
+                0.0, -1.0, 1.0, 0.01, gMagic));
 
             // WHICH BIAS YOU HAVE, said out loud. The slider runs two different control laws
             // and picks between them on state nothing on the panel shows: with Magic Tone's
