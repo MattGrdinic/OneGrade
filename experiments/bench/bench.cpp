@@ -203,6 +203,7 @@ int main(int argc, char** argv)
     const double hlLift  = argd(argc, argv, "--hl-lift",    0.0);
     const double hlGamma = argd(argc, argv, "--hl-gamma",   1.0);
     const double hlGain  = argd(argc, argv, "--hl-gain",    1.0);
+    const double hlHiGain= argd(argc, argv, "--hl-hi-gain", 1.0);   // pull the HELD area down
     const bool   hlShow  = argf(argc, argv, "--hl-show");           // write the mask itself
     // The Tone Separation slider: walk it, and vary how far one unit moves the subject's midtone.
     const bool  toneSepSweep = argf(argc, argv, "--tone-sep-sweep");
@@ -607,14 +608,24 @@ int main(int argc, char** argv)
                 if (m > 0.5f) ++masked;
                 const float w = 1.f - m;          // the ROOM: everything the highlights are not
                 if (hlShow) { r = g = b = m; }
-                else if (w > 0.f) {
-                    // The user's own fix, weighted by the mask: lift and gamma up on the room,
-                    // highlights left alone. Applied in the display curve because that is where
-                    // they made it and where the qualifier's numbers mean something.
+                else {
+                    // TWO GRADES, PARTITIONED BY THE MASK -- which is the actual feature, not the
+                    // half of it that only protects. Holding highlights where they were cannot
+                    // recover a window the base grade already threw away: on this frame the base
+                    // blew it identically with the mask on and off, and the mask was working.
+                    //
+                    // So the held area gets its own gain, pulled DOWN, while the room is lifted.
+                    // "Dial the bright areas back and pump the darker up" is one move on a frame
+                    // whose range was captured, and it is two ends of one control.
+                    //
+                    // m + w == 1 by construction, so this is a partition and not a double-apply.
                     float lr = og::lgg_core(r, (float)hlLift, (float)hlGamma, (float)hlGain);
                     float lg = og::lgg_core(g, (float)hlLift, (float)hlGamma, (float)hlGain);
                     float lb = og::lgg_core(b, (float)hlLift, (float)hlGamma, (float)hlGain);
-                    r += w * (lr - r); g += w * (lg - g); b += w * (lb - b);
+                    float hr = og::lgg_core(r, 0.f, 1.f, (float)hlHiGain);
+                    float hg = og::lgg_core(g, 0.f, 1.f, (float)hlHiGain);
+                    float hb = og::lgg_core(b, 0.f, 1.f, (float)hlHiGain);
+                    r = w*lr + m*hr; g = w*lg + m*hg; b = w*lb + m*hb;
                 }
             }
             if ((k & 63) == 0) { outCh.push_back(r); outCh.push_back(g); outCh.push_back(b); }
