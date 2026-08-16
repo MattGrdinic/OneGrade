@@ -551,6 +551,7 @@ private:
     // way "further" points on this frame. The direction is a MEASUREMENT (the sign of the region
     // separation triple's dL*), stored because it must not be recomputed mid-drag -- a subject
     // that crosses its surround mid-slider would flip the control under the user's hand.
+    OFX::StringParam*  m_SepNote;      // why Face Tone Separation is or is not available
     OFX::DoubleParam*  m_RawExpMirror; // second face of rawExp, shown in the Magic section
     OFX::DoubleParam*  m_ToneSep;
     OFX::DoubleParam*  m_ToneSepDir;
@@ -655,6 +656,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_MagicAnchor  = fetchDoubleParam("magicAnchor");
     m_MagicSepAt   = fetchDoubleParam("magicSepAt");
     m_BiasMirror   = fetchDoubleParam("autoBiasMirror");
+    m_SepNote      = fetchStringParam("sepNote");
     m_RawExpMirror = fetchDoubleParam("rawExpMirror");
     m_ToneSep      = fetchDoubleParam("toneSep");
     m_ToneSepDir   = fetchDoubleParam("toneSepDir");
@@ -2126,6 +2128,21 @@ void OneGrade::applyMagicResult(const og::grade::MagicResult& R, const char* src
         }
         m_ToneSepDir->setValue(dir);
         m_ToneSep->setValue(0.0);
+
+        // WHICH KIND OF UNAVAILABLE, not just that it is. A face shot can fail three different
+        // ways and only one of them -- a mask so large it stopped being a face -- is fixed by
+        // parking on another frame and pressing again. "Unavailable" alone would send the user
+        // hunting on every shot, including the ones where hunting cannot work.
+        char note[64];
+        if (dir != 0.0)              snprintf(note, sizeof note, "Active");
+        else if (!R.choice.ok)       snprintf(note, sizeof note, "No subject found on this frame");
+        else if (!R.tone.ok)         snprintf(note, sizeof note, "Not solved: %s",
+                                              R.tone.why[0] ? R.tone.why : "declined");
+        else if (R.choice.subject != oga::R_SKIN)
+                                     snprintf(note, sizeof note, "Faces only - subject is %s",
+                                              oga::region_name(R.choice.subject));
+        else                         snprintf(note, sizeof note, "Face matches its surround in tone");
+        m_SepNote->setValue(note);
     }
 
     const oga::MagicChoice& c = R.choice;
@@ -2358,6 +2375,20 @@ void OneGrade::setEnabledness()
         m_BiasNote->setValue(solving ? "Re-solves L/G/G around your edits"
                                      : "Offsets Lift/Gamma/Gain together");
     }
+    // FACE TONE SEPARATION IS OFTEN UNAVAILABLE, so the panel has to show that rather than let
+    // the user drag a live-looking slider that does nothing. Greyed rather than hidden, and for
+    // the reason the user asked for it: a control that vanishes cannot tell you that another
+    // frame might arm it, and this one frequently is armed on the next frame along. The note
+    // beside it carries the reason -- greying alone is only half the truth, the same lesson as
+    // the encode override.
+    {
+        double dir = 0.0;
+        m_ToneSepDir->getValue(dir);
+        m_ToneSep->setEnabled(dir != 0.0);
+        std::string sn; m_SepNote->getValue(sn);
+        if (sn.empty()) m_SepNote->setValue("Press Magic Grade to arm this");
+    }
+
     // Nothing to choose between until a press has produced a segmentation. Greyed rather than
     // hidden, so the control is visible as something the button will fill in.
     m_MagicSubject->setEnabled(m_HaveMagicBase);
@@ -3079,6 +3110,15 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             page->addChild(*defineSlider(p_Desc, "toneSep", "Face Tone Separation",
                 "How far the face sits from everything around it in lightness. Magic Grade places the face at a fixed target; this leans that placement, so the face separates from its surround rather than the whole picture moving together. Positive pushes them further apart, negative brings them closer, zero is the grade exactly as Magic Grade left it. Like Bias it moves the TARGETS and solves again rather than nudging sliders, so Lift, Gamma and Gain will move by different amounts to keep the rest of the grade coherent. It needs a Magic grade to lean on, and it is deliberately inert in two cases. On a frame where the subject and its surround already sit at the same lightness there is no direction for 'further apart' to point in. It leans FACES only, which is what the name says: the placement it re-solves was fitted to a subject near the bottom of the tonal range, where Lift has the authority to move a floor, and on a bright subject such as sky that same solve runs Lift to its limit and blows the highlights - so it does nothing there rather than something wrong. The grade itself is unaffected on every subject; it is only the leaning that is limited.",
                 0.0, -1.0, 1.0, 0.01, gMagic));
+
+            StringParamDescriptor* sn = p_Desc.defineStringParam("sepNote");
+            sn->setLabels("Separation", "Separation", "Separation");
+            sn->setStringType(eStringTypeLabel);
+            sn->setDefault("");
+            sn->setHint("Whether Face Tone Separation can act on this shot, and when it cannot, why. It needs Magic Grade to have solved a FACE: it re-solves the placement the grade was fitted to, and that fit assumes a subject near the bottom of the tonal range, so it is offered on faces and withheld everywhere else rather than applied wrongly. 'Not solved' means the face was found but the grade declined it - a mask covering too much of frame is the common one, and parking on a frame where the face is smaller and pressing Magic Grade again will often arm it. 'Faces only' means this shot's subject is something else, and no frame of it will change that.");
+            sn->setEnabled(false);
+            sn->setParent(*gMagic);
+            page->addChild(*sn);
 
             // SCENE EXPOSURE, MIRRORED, AND LAST. Magic Grade sets it itself when it decides a
             // subject is underexposed rather than low-key -- the one correction it makes BEFORE
