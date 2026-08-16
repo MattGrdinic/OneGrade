@@ -279,6 +279,41 @@ static inline void apply_trim(float postExp, float postCon, float& r, float& g, 
 }
 
 // full per-pixel process. in/out are RGB (alpha handled by caller).
+// ---------------------------------------------------------------------------------------
+// HIGHLIGHT MASK — a luminance qualifier, per pixel.
+//
+// Deliberately NOT local. A qualifier is a function of the pixel's own value and nothing else, so
+// it fits this scalar per-pixel function exactly as it stands: no neighbourhood, no second pass,
+// no change to how the three kernels mirror it. Anything that needed neighbouring pixels -- real
+// local tone mapping, a spatial blur on the mask -- would not.
+//
+// Matches Resolve's Luminance qualifier, on its 0..100 scale, so the four numbers a colourist
+// reads off that panel can be typed straight in: Low / High with L.Soft / H.Soft widening the
+// ramp either side. Returns 1 inside the window and 0 outside.
+//
+// SMOOTHSTEP, NOT A LINEAR RAMP, at both ends. A linear ramp has a corner where it meets flat,
+// and a corner in a mask is a visible contour line in a gradient -- exactly where this gets used,
+// on a window or a sky. The cubic is C1 at both joins and costs two multiplies.
+//
+// THE SOFTNESS IS IN LUMINANCE, NOT IN SPACE, and that is the whole limitation. Where the
+// threshold lands on a steep edge -- a window frame -- the mask edge is stable. Where it lands
+// inside noise, noise crosses it differently every frame and the mask shimmers. Resolve solves
+// that with a spatial blur that a per-pixel function cannot have.
+static inline float smooth01(float t)
+{
+    t = clamp01(t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static inline float highlight_mask(float Y, float lo, float hi, float lsoft, float hsoft)
+{
+    // Guard the degenerate width so a zero-soft edge is a hard step rather than a divide by zero.
+    const float le = fmaxf(lsoft, 1e-4f), he = fmaxf(hsoft, 1e-4f);
+    const float rise = smooth01((Y - (lo - le)) / (2.0f * le));
+    const float fall = 1.0f - smooth01((Y - (hi - he)) / (2.0f * he));
+    return rise * fall;
+}
+
 static inline void process(int cam, int enc, const float* P, float inR, float inG, float inB,
                            float& outR, float& outG, float& outB)
 {

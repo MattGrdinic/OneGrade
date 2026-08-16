@@ -193,6 +193,17 @@ int main(int argc, char** argv)
     const bool  sepReport = argf(argc, argv, "--sep-report");
     // The rdL*/rdb* rows of the descriptor Jacobian, to choose the slider's controls by measurement.
     const bool  sepJac    = argf(argc, argv, "--sep-jac");
+    // HIGHLIGHT MASK PROTOTYPE. Numbers are on Resolve's 0..100 qualifier scale so a colourist's
+    // own settings can be typed straight in and the two compared on one frame.
+    const bool   hlOn    = argf(argc, argv, "--hl");
+    const double hlLow   = argd(argc, argv, "--hl-low",   -1.0);   // -1 = derive it from the frame
+    const double hlHigh  = argd(argc, argv, "--hl-high",  100.0);
+    const double hlLSoft = argd(argc, argv, "--hl-lsoft",   2.6);
+    const double hlHSoft = argd(argc, argv, "--hl-hsoft",   2.6);
+    const double hlLift  = argd(argc, argv, "--hl-lift",    0.0);
+    const double hlGamma = argd(argc, argv, "--hl-gamma",   1.0);
+    const double hlGain  = argd(argc, argv, "--hl-gain",    1.0);
+    const bool   hlShow  = argf(argc, argv, "--hl-show");           // write the mask itself
     // The Tone Separation slider: walk it, and vary how far one unit moves the subject's midtone.
     const bool  toneSepSweep = argf(argc, argv, "--tone-sep-sweep");
     const double toneSepPer  = argd(argc, argv, "--tone-sep-per", og::grade::kToneSepMidPer);
@@ -545,11 +556,67 @@ int main(int argc, char** argv)
         // `crushedY` asks the question that was meant: is the LUMINANCE at the floor, which is
         // when detail is actually gone. Same shape as hot versus pin -- a threshold on the wrong
         // quantity describes the filter rather than the footage.
+        // THE MASK READS THE NODE'S INPUT, NOT ITS OUTPUT -- the same thing a Resolve qualifier
+        // dropped on a node sees. Reading the graded result would make the mask move as the room
+        // is lifted, so the control would chase its own output: the defect that made Magic Grade
+        // converge over three presses and the reason Bias re-solves from a frozen anchor.
+        //
+        // Realised by rendering with the grade curve NEUTRAL and everything else as set, which is
+        // exactly "the picture before Lift/Gamma/Gain".
+        float Pmask[oga::kParamN];
+        for (int k = 0; k < oga::kParamN; ++k) Pmask[k] = P[k];
+        Pmask[3] = 0.f; Pmask[4] = 1.f; Pmask[5] = 1.f;   // lift / gamma / gain
+        Pmask[8] = 0.f; Pmask[9] = 1.f;                   // post exposure / contrast
+
+        double hlLowUse = hlLow;
+        if (hlOn && hlLow < 0.0) {
+            // DERIVE THE THRESHOLD RATHER THAN TYPE IT, which is what makes this a slider. The
+            // window is the bright population; put the edge where that population starts. p98 of
+            // the pre-grade display luminance is a first cut, not a fitted number.
+            std::vector<float> ymask;
+            for (size_t k = 0; k < (size_t)f.w * f.h; k += 64) {
+                float r, g, b;
+                og::process(cam, enc, Pmask, f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+                ymask.push_back(0.2126f*r + 0.7152f*g + 0.0722f*b);
+            }
+            if (ymask.size() > 8) {
+                auto q = [&](double t) {
+                    size_t i = (size_t)(t * (ymask.size() - 1));
+                    std::nth_element(ymask.begin(), ymask.begin() + i, ymask.end());
+                    return (double)ymask[i];
+                };
+                hlLowUse = 100.0 * q(0.98);
+                printf("    highlight mask: input luma p50 %.1f p90 %.1f p98 %.1f p99.9 %.1f"
+                       " -> Low %.1f\n",
+                       100.0*q(0.50), 100.0*q(0.90), 100.0*q(0.98), 100.0*q(0.999), hlLowUse);
+            }
+        }
+        long long masked = 0;
+
         long long crushed = 0, crushedY = 0, total = 0;
         for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
             float r, g, b;
             full_chain(cam, enc, P, lutData, lutSize, 1.f,
                        f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+            if (hlOn) {
+                float mr, mg, mb;
+                og::process(cam, enc, Pmask, f.px[k*3], f.px[k*3+1], f.px[k*3+2], mr, mg, mb);
+                const float Y = 100.f * (0.2126f*mr + 0.7152f*mg + 0.0722f*mb);
+                const float m = og::highlight_mask(Y, (float)hlLowUse, (float)hlHigh,
+                                                   (float)hlLSoft, (float)hlHSoft);
+                if (m > 0.5f) ++masked;
+                const float w = 1.f - m;          // the ROOM: everything the highlights are not
+                if (hlShow) { r = g = b = m; }
+                else if (w > 0.f) {
+                    // The user's own fix, weighted by the mask: lift and gamma up on the room,
+                    // highlights left alone. Applied in the display curve because that is where
+                    // they made it and where the qualifier's numbers mean something.
+                    float lr = og::lgg_core(r, (float)hlLift, (float)hlGamma, (float)hlGain);
+                    float lg = og::lgg_core(g, (float)hlLift, (float)hlGamma, (float)hlGain);
+                    float lb = og::lgg_core(b, (float)hlLift, (float)hlGamma, (float)hlGain);
+                    r += w * (lr - r); g += w * (lg - g); b += w * (lb - b);
+                }
+            }
             if ((k & 63) == 0) { outCh.push_back(r); outCh.push_back(g); outCh.push_back(b); }
             const float mn = std::min(r, std::min(g, b));
             if (mn <= 0.004f) ++crushed;          // min channel -- confounded by saturation
@@ -627,6 +694,11 @@ int main(int argc, char** argv)
                    R.choice.ok ? oga::region_name(R.choice.subject) : "-",
                    d.v[oga::D_RDL], d.v[oga::D_RDA], d.v[oga::D_RDB]);
         }
+        if (hlOn)
+            printf("    highlight mask: Low %.1f High %.1f soft %.1f/%.1f -> %.2f%% of frame"
+                   " held, room lift %+.3f gamma %.3f gain %.3f\n",
+                   hlLowUse, hlHigh, hlLSoft, hlHSoft,
+                   100.0 * (double)masked / (double)total, hlLift, hlGamma, hlGain);
         std::string op = outDir + "/" + std::string(nm);
         stbi_write_png(op.c_str(), f.w, f.h, 3, out.data(), f.w * 3);
     }
