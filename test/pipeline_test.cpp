@@ -21,9 +21,16 @@ static bool close(float a, float b, float eps = 1e-3f) { return std::fabs(a - b)
 static bool finite3(float r, float g, float b) { return std::isfinite(r) && std::isfinite(g) && std::isfinite(b); }
 
 // neutral parameter vector: temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp
-static void neutral(float P[12]) { for (int i=0;i<12;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
 // Full 13-wide vector (adds P[12] rolloff) for tests that chain whole nodes together.
-static void neutral13(float P[13]) { for (int i=0;i<13;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
+// Neutral for the WHOLE array, Range Balance included: latch 0 is what turns it off, and a
+// fixture that left it uninitialised would enable the stage with a garbage threshold.
+static void neutral13(float P[og::analysis::kParamN])
+{
+    for (int i=0;i<og::analysis::kParamN;i++) P[i]=0.f;
+    P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f;
+    P[13]=0.f; P[14]=2.6f; P[15]=1.f; P[16]=0.f; P[17]=1.f;   // range balance: off
+}
+static void neutral(float P[og::analysis::kParamN]) { neutral13(P); }
 
 // ---- synthetic frames for the scene-descriptor / Jacobian tests (OneGradeAnalysis.h) ----
 // Deterministic noise, so percentiles are non-degenerate but every run is identical.
@@ -162,7 +169,7 @@ int main() {
 
     // 5. Full pipeline is finite for every camera x encode x sample input
     {
-        float P[12]; neutral(P);
+        float P[og::analysis::kParamN]; neutral(P);
         bool ok = true;
         for (int cam = 0; cam <= 11; ++cam)
           for (int enc = 0; enc <= 5; ++enc)
@@ -175,7 +182,7 @@ int main() {
 
     // 6. Gain pivots black: a black input stays black under gain
     {
-        float P[12]; neutral(P); P[5] = 2.0f;            // gain = 2
+        float P[og::analysis::kParamN]; neutral(P); P[5] = 2.0f;            // gain = 2
         float r,g,b; og::process(1, 0, P, 0.f, 0.f, 0.f, r, g, b);
         check(close(r,0.f,2e-3f)&&close(g,0.f,2e-3f)&&close(b,0.f,2e-3f), "gain pins black");
     }
@@ -183,8 +190,8 @@ int main() {
     // 7. Lift pivots white: diffuse white (BMD/DI code ~0.5139 -> linear 1.0) unchanged by lift
     {
         const float whiteCode = og::di_encode(1.0f);     // camera code that decodes to linear 1.0
-        float P0[12]; neutral(P0);
-        float P1[12]; neutral(P1); P1[3] = -0.25f;        // lift down
+        float P0[og::analysis::kParamN]; neutral(P0);
+        float P1[og::analysis::kParamN]; neutral(P1); P1[3] = -0.25f;        // lift down
         float a0,b0,c0, a1,b1,c1;
         og::process(1, 0, P0, whiteCode, whiteCode, whiteCode, a0, b0, c0);
         og::process(1, 0, P1, whiteCode, whiteCode, whiteCode, a1, b1, c1);
@@ -193,8 +200,8 @@ int main() {
 
     // 8. Lift does not amplify superwhites (BMD/DI code 1.0 -> linear ~100)
     {
-        float P0[12]; neutral(P0);
-        float P1[12]; neutral(P1); P1[3] = -0.25f;
+        float P0[og::analysis::kParamN]; neutral(P0);
+        float P1[og::analysis::kParamN]; neutral(P1); P1[3] = -0.25f;
         float a0,b0,c0, a1,b1,c1;
         og::process(1, 5, P0, 1.0f, 1.0f, 1.0f, a0, b0, c0);   // enc=5 linear so we compare raw
         og::process(1, 5, P1, 1.0f, 1.0f, 1.0f, a1, b1, c1);
@@ -203,8 +210,8 @@ int main() {
 
     // 9. RAW exposure: +1 stop doubles scene-linear (linear output path)
     {
-        float P0[12]; neutral(P0);
-        float P1[12]; neutral(P1); P1[10] = 1.0f;    // +1 stop
+        float P0[og::analysis::kParamN]; neutral(P0);
+        float P1[og::analysis::kParamN]; neutral(P1); P1[10] = 1.0f;    // +1 stop
         float a0,b0,c0, a1,b1,c1;
         og::process(1, 5, P0, 0.5f, 0.5f, 0.5f, a0, b0, c0);   // enc=5 = linear output
         og::process(1, 5, P1, 0.5f, 0.5f, 0.5f, a1, b1, c1);
@@ -214,9 +221,9 @@ int main() {
 
     // 10. RAW temperature: neutral at 6500; warmer raises R / lowers B, cooler the reverse
     {
-        float P6[12]; neutral(P6);                    // rawTemp = 6500 (neutral)
-        float Pw[12]; neutral(Pw); Pw[11] = 9000.f;   // warmer
-        float Pc[12]; neutral(Pc); Pc[11] = 4000.f;   // cooler
+        float P6[og::analysis::kParamN]; neutral(P6);                    // rawTemp = 6500 (neutral)
+        float Pw[og::analysis::kParamN]; neutral(Pw); Pw[11] = 9000.f;   // warmer
+        float Pc[og::analysis::kParamN]; neutral(Pc); Pc[11] = 4000.f;   // cooler
         float r6,g6,b6, rw,gw,bw, rc,gc,bc;
         og::process(1, 0, P6, 0.5f, 0.5f, 0.5f, r6, g6, b6);
         og::process(1, 0, Pw, 0.5f, 0.5f, 0.5f, rw, gw, bw);
@@ -229,8 +236,8 @@ int main() {
     //     Output Transform (DWG/DI -> delivery) must reproduce a single Full Grade node.
     //     This is what lets one group share a Pre-Clip decode and a Post-Clip look.
     {
-        float Pn[13]; neutral13(Pn);
-        float Pg[13]; neutral13(Pg);                 // a real look on the output node
+        float Pn[og::analysis::kParamN]; neutral13(Pn);
+        float Pg[og::analysis::kParamN]; neutral13(Pg);                 // a real look on the output node
         Pg[2]=0.25f; Pg[3]=0.06f; Pg[4]=1.10f; Pg[5]=0.92f; Pg[6]=-0.09f;
         float worst = 0.f;
         for (int look = 0; look < 2; ++look) {
@@ -254,7 +261,7 @@ int main() {
     // 12. A neutral node must not clip out-of-gamut negatives on the scene-referred
     //     hand-off encodes — that clip is what broke the role split (safe_pow floors at 0).
     {
-        float P[13]; neutral13(P);
+        float P[og::analysis::kParamN]; neutral13(P);
         bool sawNegative = false, ok = true;
         for (int cam = 0; cam < 12 && ok; ++cam)
             for (int i = 1; i <= 40; ++i) {
@@ -286,7 +293,7 @@ int main() {
     //         LSB, median over the whole cube 0 LSB. See exportCube() for the full note.
     {
         const int N = 33;
-        float P[13]; neutral13(P);
+        float P[og::analysis::kParamN]; neutral13(P);
         P[3] = 0.08f; P[4] = 1.1f; P[5] = 0.85f; P[2] = 0.2f; P[0] = -0.15f;   // a real grade
 
         bool ok = true;
@@ -346,14 +353,14 @@ int main() {
         for (int enc : {0, 1, 2}) {                    // Scene OETF, gamma 2.2, gamma 2.4
             for (int cam : {0, 2, 11}) {
                 for (float x = 0.10f; x <= 0.90f; x += 0.08f) {
-                    float P0[13]; neutral13(P0);
+                    float P0[og::analysis::kParamN]; neutral13(P0);
                     float n_r, n_g, n_b;
                     og::process(cam, enc, P0, x, x, x, n_r, n_g, n_b);   // neutral = "measured"
 
                     for (auto lgg : { std::array<float,3>{0.05f, 1.15f, 0.80f},
                                       std::array<float,3>{-0.03f, 0.90f, 1.30f},
                                       std::array<float,3>{0.12f, 1.00f, 0.55f} }) {
-                        float P1[13]; neutral13(P1);
+                        float P1[og::analysis::kParamN]; neutral13(P1);
                         P1[3] = lgg[0]; P1[4] = lgg[1]; P1[5] = lgg[2];
                         float a_r, a_g, a_b;
                         og::process(cam, enc, P1, x, x, x, a_r, a_g, a_b);       // actual render
@@ -376,7 +383,7 @@ int main() {
     //     and nothing else would notice.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
 
         oga::SampleSet two = make_frame(0);
         oga::Extras e2 = oga::classify(two, cam, enc);
@@ -404,7 +411,7 @@ int main() {
     //     anywhere in the pipeline shows up here as a control that now means its opposite.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -429,7 +436,7 @@ int main() {
     //     while still producing numbers that look reasonable in isolation.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -439,9 +446,9 @@ int main() {
         for (int p : {2, 5, 6, 9}) {          // density, gain, offset temp, contrast
             double prev = 0.0;
             for (float mag : {0.8f, 0.4f, 0.2f}) {
-                float dp[13] = {0}; dp[p] = mag;
+                float dp[og::analysis::kParamN] = {0}; dp[p] = mag;
                 float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
-                float P1[13]; oga::apply_move(P0, dp, P1);
+                float P1[og::analysis::kParamN]; oga::apply_move(P0, dp, P1);
                 oga::Desc d1 = oga::describe(S, cam, enc, P1);
                 double e = 0.0;
                 for (int d = 0; d < oga::kDescN; ++d)
@@ -459,21 +466,21 @@ int main() {
     //     the exclusion stays honest rather than becoming a way to hide a bad column.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
         oga::Desc d0 = oga::describe(S, cam, enc, P0);
         float scale[oga::kDescN]; desc_scales(J, scale);
-        bool allow[13]; oga::steer_mask(P0, allow);
+        bool allow[og::analysis::kParamN]; oga::steer_mask(P0, allow);
 
         double worst = 0.0;
         for (int p = 0; p < 13; ++p) {
             if (!allow[p]) continue;
             for (float mag : {-0.5f, 0.5f}) {
-                float dp[13] = {0}; dp[p] = mag;
+                float dp[og::analysis::kParamN] = {0}; dp[p] = mag;
                 float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
-                float P1[13]; oga::apply_move(P0, dp, P1);
+                float P1[og::analysis::kParamN]; oga::apply_move(P0, dp, P1);
                 oga::Desc d1 = oga::describe(S, cam, enc, P1);
                 for (int d = 0; d < oga::kDescN; ++d)
                     worst = std::max(worst, (double)std::fabs(pred[d] - (d1.v[d]-d0.v[d]))
@@ -489,7 +496,7 @@ int main() {
     //     Offset Temp is the warm/cool control; it falls out of the measured Jacobian.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -498,28 +505,28 @@ int main() {
         // (a) single intent, single control
         float dd[oga::kDescN] = {0}, w[oga::kDescN] = {0};
         dd[oga::D_B] = -3.0f; w[oga::D_B] = 1.0f;
-        bool allow[13] = {false}; allow[6] = true;
-        float dp[13]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp);
-        float P1[13]; oga::apply_move(P0, dp, P1);
+        bool allow[og::analysis::kParamN] = {false}; allow[6] = true;
+        float dp[og::analysis::kParamN]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp);
+        float P1[og::analysis::kParamN]; oga::apply_move(P0, dp, P1);
         oga::Desc d1 = oga::describe(S, cam, enc, P1);
         const float got = d1.v[oga::D_B] - d0.v[oga::D_B];
 
         bool ok = (P1[6] < 0.f)                    // it reached for NEGATIVE Offset Temp
                && (std::fabs(got - (-3.0f)) < 0.3f);  // and landed within 10% of the ask
-        for (int i = 0; i < 13; ++i) if (!allow[i]) ok &= close(P1[i], P0[i], 1e-6f);
+        for (int i = 0; i < og::analysis::kParamN; ++i) if (!allow[i]) ok &= close(P1[i], P0[i], 1e-6f);
 
         // (b) two intents, two controls — the case a real Magic Grade rule would produce
         float dd2[oga::kDescN] = {0}, w2[oga::kDescN] = {0};
         dd2[oga::D_B] = -3.0f;      w2[oga::D_B] = 1.0f;
         dd2[oga::D_CHROMA] = 2.0f;  w2[oga::D_CHROMA] = 1.0f;
-        bool allow2[13] = {false}; allow2[6] = true; allow2[2] = true;
-        float dp2[13]; oga::solve_intent(J, dd2, w2, allow2, 1e-4f, dp2);
-        float P2[13]; oga::apply_move(P0, dp2, P2);
+        bool allow2[og::analysis::kParamN] = {false}; allow2[6] = true; allow2[2] = true;
+        float dp2[og::analysis::kParamN]; oga::solve_intent(J, dd2, w2, allow2, 1e-4f, dp2);
+        float P2[og::analysis::kParamN]; oga::apply_move(P0, dp2, P2);
         oga::Desc d2 = oga::describe(S, cam, enc, P2);
         ok &= std::fabs((d2.v[oga::D_B]      - d0.v[oga::D_B])      - (-3.0f)) < 0.3f;
         ok &= std::fabs((d2.v[oga::D_CHROMA] - d0.v[oga::D_CHROMA]) - ( 2.0f)) < 0.2f;
         ok &= (P2[6] < 0.f) && (P2[2] > 0.f);      // cooler balance, more density
-        for (int i = 0; i < 13; ++i) if (!allow2[i]) ok &= close(P2[i], P0[i], 1e-6f);
+        for (int i = 0; i < og::analysis::kParamN; ++i) if (!allow2[i]) ok &= close(P2[i], P0[i], 1e-6f);
 
         check(ok, "intent solve: 'bluer' resolves to negative Offset Temp and lands the target");
     }
@@ -538,7 +545,7 @@ int main() {
         // RAW Temp: white_balance() forces identity on 6499 < T < 6501, but the Planckian
         // locus at 6500 K is not D65 (dy = -0.0053), so the skipped adaptation is not an
         // identity and a neutral grey jumps when the slider leaves its default.
-        float P[13]; neutral13(P);
+        float P[og::analysis::kParamN]; neutral13(P);
         float r0,g0,b0, r1,g1,b1;
         og::process(11, 1, P, 0.45f, 0.45f, 0.45f, r0, g0, b0);
         P[11] = 6501.f;
@@ -554,7 +561,7 @@ int main() {
     //     not to weight them.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
 
         oga::SampleSet withSkin = make_frame(2);
         oga::Extras es = oga::classify(withSkin, cam, enc);
@@ -580,7 +587,7 @@ int main() {
     //     gap rather than merely pointing the right way.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -588,14 +595,14 @@ int main() {
 
         float dd[oga::kDescN] = {0}, w[oga::kDescN] = {0};
         dd[oga::D_B] = -8.0f; w[oga::D_B] = 1.0f;          // a big ask, ~3 steps of Offset Temp
-        bool allow[13] = {false}; allow[6] = true;
+        bool allow[og::analysis::kParamN] = {false}; allow[6] = true;
 
-        float dp1[13]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp1);
-        float Pone[13]; oga::apply_move(P0, dp1, Pone);
+        float dp1[og::analysis::kParamN]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp1);
+        float Pone[og::analysis::kParamN]; oga::apply_move(P0, dp1, Pone);
         const float errOne = std::fabs((oga::describe(S, cam, enc, Pone).v[oga::D_B]
                                         - d0.v[oga::D_B]) - (-8.0f));
 
-        float Pit[13];
+        float Pit[og::analysis::kParamN];
         oga::solve_intent_iter(S, cam, enc, P0, dd, w, allow, 1e-4f, 3, Pit);
         const float errIt = std::fabs((oga::describe(S, cam, enc, Pit).v[oga::D_B]
                                        - d0.v[oga::D_B]) - (-8.0f));
@@ -614,14 +621,14 @@ int main() {
     //     and naming the obvious control does not work; the controls overlap too much.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
 
         // The shape of the real case: chroma pulled DOWN by density while other controls push
         // it up, so the net can move opposite to the control a human would blame.
-        float P1[13]; neutral13(P1);
+        float P1[og::analysis::kParamN]; neutral13(P1);
         P1[2] = -0.05f;    // density down
         P1[5] =  1.10f;    // gain up
         P1[6] = -0.05f;    // offset temp down
@@ -665,7 +672,7 @@ int main() {
     //     of the kind a real grade makes.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -673,10 +680,10 @@ int main() {
         float scale[oga::kDescN]; desc_scales(J, scale);
 
         // Several controls at once, in the proportions a look actually uses.
-        float dp[13] = {0};
+        float dp[og::analysis::kParamN] = {0};
         dp[2] = 0.5f; dp[3] = -0.5f; dp[5] = 0.5f; dp[6] = -0.5f;
         float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
-        float P1[13]; oga::apply_move(P0, dp, P1);
+        float P1[og::analysis::kParamN]; oga::apply_move(P0, dp, P1);
         oga::Desc d1 = oga::describe(S, cam, enc, P1);
 
         double worstSigned = 0.0; int wd = 0;
@@ -703,7 +710,7 @@ int main() {
     //     targeting separation would chase noise on footage that has none.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
 
         oga::SampleSet two = make_frame(0);
         oga::classify(two, cam, enc);
@@ -851,8 +858,8 @@ int main() {
         oga::stub_regions(S, cam, enc);
         std::vector<uint8_t> before = S.region;
 
-        float P0[13]; neutral13(P0);
-        float P1[13]; neutral13(P1); P1[6] = -0.20f;      // a firm Offset Temp move
+        float P0[og::analysis::kParamN]; neutral13(P0);
+        float P1[og::analysis::kParamN]; neutral13(P1); P1[6] = -0.20f;      // a firm Offset Temp move
 
         oga::RegionStat a[oga::kRegionN], b[oga::kRegionN];
         oga::region_stats(S, cam, enc, P0, a);
@@ -901,7 +908,7 @@ int main() {
     //     Pinned as CONTINUITY rather than as specific values, because the values are taste and
     //     will move; what must never come back is a step in the middle of a drag.
     {
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         P0[8] = 0.55f;                       // Creative's post-exposure, which render() applies
         og::grade::Tunables tn;
         // A FLAT FRAME, chosen because it actually reaches the limit. The first version of this
@@ -969,7 +976,7 @@ int main() {
     //     (one frame runs Lift 0.122 -> 0.083 -> -0.019 straight through it), and holding on any
     //     branch change at all capped that frame at -0.06 -- zero jumps because nothing moved.
     {
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         P0[8] = 0.55f;
         og::grade::Tunables tn;
         // Found by searching for a configuration where bit 2 actually engages, rather than by
@@ -1012,7 +1019,7 @@ int main() {
     //     because the frame-floor cap is also a constraint and it was still the fitted value, so
     //     re-solving an untouched grade reassigned Lift. Both halves are checked here.
     {
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         P0[8] = 0.55f;
         og::grade::Tunables tn;
         const double sLo = 0.22, sMid = 0.24, sHi = 0.33, fHi = 0.42, fLo = 0.198;
@@ -1022,7 +1029,7 @@ int main() {
         bool ok = m0.ok;
 
         // The grade as armed, then asked for itself.
-        float Pm[13]; for (int k = 0; k < 13; ++k) Pm[k] = P0[k];
+        float Pm[og::analysis::kParamN]; for (int k = 0; k < og::analysis::kParamN; ++k) Pm[k] = P0[k];
         Pm[3] = m0.lift; Pm[4] = m0.gamma; Pm[5] = m0.gain;
         const og::grade::ToneTargets idt =
             og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Pm, nullptr, 0);
@@ -1035,7 +1042,7 @@ int main() {
         // Now a real edit: darker mids, which keeps the highlight where it was. An edit that
         // BLOWS the frame highlight is deliberately not preserved -- honouring it would leave
         // Bias with nowhere to go, which is the whole reason a ceiling condition exists.
-        float Ph[13]; for (int k = 0; k < 13; ++k) Ph[k] = Pm[k];
+        float Ph[og::analysis::kParamN]; for (int k = 0; k < og::analysis::kParamN; ++k) Ph[k] = Pm[k];
         Ph[4] = Pm[4] * 0.85f;
         const og::grade::ToneTargets hnd =
             og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Ph, nullptr, 0);
@@ -1051,7 +1058,7 @@ int main() {
         // grade sitting above it gets its Lift reassigned and the round trip fails. Checked with
         // a value that clears the cap (0.085) while keeping the highlight under the ceiling
         // clamp, because a blown highlight is refused for its own separate and correct reason.
-        float Pf[13]; for (int k = 0; k < 13; ++k) Pf[k] = Pm[k];
+        float Pf[og::analysis::kParamN]; for (int k = 0; k < og::analysis::kParamN; ++k) Pf[k] = Pm[k];
         Pf[3] = Pm[3] + 0.04f;
         const og::grade::ToneTargets flr =
             og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Pf, nullptr, 0);
@@ -1100,7 +1107,7 @@ int main() {
                 S.rgb.push_back(v); S.rgb.push_back(v); S.rgb.push_back(v);
                 S.region.push_back(reg);
             }
-            float P0[13]; neutral13(P0);
+            float P0[og::analysis::kParamN]; neutral13(P0);
             P0[8] = 0.55f;
             const og::grade::MagicTone r = og::grade::solve_magic_tone(
                 S, og::analysis::R_SKIN, 1, 1, nullptr, 0, P0, tn);
@@ -1145,7 +1152,7 @@ int main() {
             S.band.push_back((uint8_t)((i * 3) / N));  // thirds by index, blind to the subject
             S.group.push_back(2); S.mid.push_back(1); S.skin.push_back(0);
         }
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
 
         // No subject named: the triple reads zero rather than guessing, exactly like the skin pair.
         S.subject = -1;

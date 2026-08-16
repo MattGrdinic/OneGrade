@@ -56,7 +56,7 @@
 namespace og {
 namespace analysis {
 
-static const int kParamN = 13;   // matches P[] in OneGradePipeline.h
+static const int kParamN = 18;   // matches P[] in OneGradePipeline.h
 
 // ---------------------------------------------------------------------------------------
 // CIELAB, for the colour half of the descriptor set.
@@ -798,7 +798,9 @@ static inline MagicChoice magic_decide(const RegionStat* st, int click)
 static inline const float* param_steps()
 {
     //                temp  tint  dens  lift  gamma gain  oTmp  oTnt  pExp  pCon  rExp  rTemp  roll
-    static const float s[kParamN] = { 0.05f,0.05f,0.05f,0.02f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,250.f,0.05f };
+    //                then range balance: latch  soft  high  rbLift rbGamma
+    static const float s[kParamN] = { 0.05f,0.05f,0.05f,0.02f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,250.f,0.05f,
+                                      2.0f, 0.5f, 0.05f, 0.02f, 0.05f };
     return s;
 }
 
@@ -848,7 +850,8 @@ struct Jac {
 static inline const char* param_name(int p)
 {
     static const char* n[kParamN] = { "tmp","tnt","dns","lft","gam","gan",
-                                      "oTm","oTn","pEx","pCn","rEx","rTm","rol" };
+                                      "oTm","oTn","pEx","pCn","rEx","rTm","rol",
+                                      "rbL","rbS","rbH","rbF","rbG" };
     return (p >= 0 && p < kParamN) ? n[p] : "?";
 }
 
@@ -956,8 +959,18 @@ static inline void solve_intent(const Jac& J, const float* dd, const float* w,
 // Step-normalised move -> real parameter values, with the ranges the panel enforces.
 static inline void apply_move(const float* P0, const float* dpNorm, float* Pout)
 {
-    static const float lo[kParamN] = { -1.f,-1.f,-1.f, -0.5f, 0.20f, 0.20f, -1.f,-1.f, -3.f, 0.20f, -5.f, 2000.f, 0.f };
-    static const float hi[kParamN] = {  1.f, 1.f, 1.f,  0.5f, 3.00f, 3.00f,  1.f, 1.f,  3.f, 3.00f,  5.f,20000.f, 0.8f };
+    // THREE TABLES ARE SIZED BY kParamN AND INITIALISED BY HAND, and C++ zero-fills any it is
+    // short of rather than refusing to compile. Adding Range Balance silently gave the new
+    // controls a step of 0 (a derivative of "does nothing"), a null name, and -- worst -- a
+    // clamp range of [0,0] here, which wiped them to zero on every solve. Caught by one test;
+    // the other two would have surfaced as a feature that quietly could not be steered.
+    // If a param is added, all three grow with it.
+    //                              temp  tint  dens   lift   gamma  gain  oTmp oTnt  pExp  pCon  rExp   rTemp  roll
+    //                              then range balance: latch  soft  high  rbLift rbGamma
+    static const float lo[kParamN] = { -1.f,-1.f,-1.f, -0.5f, 0.20f, 0.20f, -1.f,-1.f, -3.f, 0.20f, -5.f, 2000.f, 0.f,
+                                       0.f,  0.f, 0.05f, -0.5f, 0.20f };
+    static const float hi[kParamN] = {  1.f, 1.f, 1.f,  0.5f, 3.00f, 3.00f,  1.f, 1.f,  3.f, 3.00f,  5.f,20000.f, 0.8f,
+                                     100.f, 25.f, 2.00f,  0.5f, 3.00f };
     const float* st = param_steps();
     for (int i = 0; i < kParamN; ++i) {
         float v = P0[i] + dpNorm[i]*st[i];

@@ -369,9 +369,42 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     //      lift  : pivot @ white, reach clamped at white so superwhites aren't amplified
     //      gamma : power, pivot @ black & white
     const float dg = (enc == 1) ? 2.2f : (enc == 2) ? 2.4f : 0.0f;   // 0 = Scene OETF
+    float d[3];
+    for (int i=0;i<3;i++) d[i] = (dg > 0.f) ? r709_g_enc(outc[i], dg) : r709_enc(outc[i]);
+
+    // 6b. RANGE BALANCE — hold the bright areas, open the rest.
+    //
+    // For footage whose range WAS captured: a window and an unlit room both inside the sensor's
+    // latitude, where a single curve has to blow one to serve the other. A luminance mask splits
+    // the frame in two and each half gets its own move -- highlights pulled down, everything else
+    // lifted -- which is the "qualifier, invert, second node" dance in Resolve reduced to a few
+    // sliders.
+    //
+    // THE MASK READS THE PRE-GRADE DISPLAY LUMINANCE, computed here before lgg_core touches
+    // anything. Reading the graded value would make the mask move as the room is lifted, so the
+    // control would chase its own output -- the defect that made Magic Grade converge over three
+    // presses and the reason Bias re-solves from a frozen anchor. It is measured off `d`, not off
+    // `v`, and that ordering is the whole of it.
+    //
+    // m + (1-m) == 1, so the two moves are a PARTITION and never a double-apply. Holding the
+    // highlights alone was tried first and does nothing useful: it cannot recover a window an
+    // earlier stage already threw away, which on the test frame was blown identically with the
+    // mask on and off while the mask was working correctly.
+    const float rbLatch = P[13], rbSoft = P[14], rbHigh = P[15], rbLift = P[16], rbGamma = P[17];
+    const bool  rbOn = (rbLatch > 0.f) &&
+                       (rbHigh != 1.f || rbLift != 0.f || rbGamma != 1.f);
+    float rbM = 0.f;
+    if (rbOn)
+        rbM = highlight_mask(100.f*(0.2126f*d[0] + 0.7152f*d[1] + 0.0722f*d[2]),
+                             rbLatch, 100.f, rbSoft, rbSoft);
+
     for (int i=0;i<3;i++) {
-        float v = (dg > 0.f) ? r709_g_enc(outc[i], dg) : r709_enc(outc[i]);
-        v = lgg_core(v, lift, gamma, gain);
+        float v = lgg_core(d[i], lift, gamma, gain);
+        if (rbOn) {
+            const float room = lgg_core(v, rbLift, rbGamma, 1.f);
+            const float high = lgg_core(v, 0.f, 1.f, rbHigh);
+            v = (1.f - rbM)*room + rbM*high;
+        }
         outc[i] = (dg > 0.f) ? r709_g_dec(v, dg) : r709_dec(v);
     }
 
