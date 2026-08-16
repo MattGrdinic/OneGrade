@@ -429,6 +429,7 @@ public:
     void applySeparation();             // rescale the stored magic move without re-deciding
     void armBias(bool reset = false);   // store the current grade as Bias's zero point
     void armToneTargets();              // ...and the conditions it currently meets
+    void setRangeLatch(double p_Time);  // measure Range Balance's latch off the current frame
     void populateMagicSubject();        // rebuild the Subject list from the cached segmentation
     void applyMagicSubject();           // re-grade around the subject the user picked
     void applyMagicResult(const og::grade::MagicResult& R, const char* src, bool repopulate);
@@ -520,6 +521,7 @@ private:
     OFX::BooleanParam* m_BypBalance;
     OFX::BooleanParam* m_BypDensity;
     OFX::BooleanParam* m_BypExposure;
+    OFX::BooleanParam* m_BypRange;
     OFX::BooleanParam* m_BypLut;
     OFX::BooleanParam* m_BypTrim;
 
@@ -554,6 +556,12 @@ private:
     // way "further" points on this frame. The direction is a MEASUREMENT (the sign of the region
     // separation triple's dL*), stored because it must not be recomputed mid-drag -- a subject
     // that crosses its surround mid-slider would flip the control under the user's hand.
+    OFX::DoubleParam*  m_RangeLatch;
+    OFX::DoubleParam*  m_RangeSoft;
+    OFX::DoubleParam*  m_RangeHigh;
+    OFX::DoubleParam*  m_RangeShadow;
+    OFX::DoubleParam*  m_RangeMid;
+    OFX::StringParam*  m_RangeNote;
     OFX::StringParam*  m_SepNote;      // why Face Tone Separation is or is not available
     OFX::DoubleParam*  m_RawExpMirror; // second face of rawExp, shown in the Magic section
     OFX::DoubleParam*  m_ToneSep;
@@ -642,6 +650,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_BypBalance  = fetchBooleanParam("bypassBalance");
     m_BypDensity  = fetchBooleanParam("bypassDensity");
     m_BypExposure = fetchBooleanParam("bypassExposure");
+    m_BypRange    = fetchBooleanParam("bypassRange");
     m_BypLut      = fetchBooleanParam("bypassLut");
     m_BypTrim     = fetchBooleanParam("bypassTrim");
     m_ProbeStatus  = fetchStringParam("probeStatus");
@@ -659,6 +668,12 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_MagicAnchor  = fetchDoubleParam("magicAnchor");
     m_MagicSepAt   = fetchDoubleParam("magicSepAt");
     m_BiasMirror   = fetchDoubleParam("autoBiasMirror");
+    m_RangeLatch   = fetchDoubleParam("rangeLatch");
+    m_RangeSoft    = fetchDoubleParam("rangeSoft");
+    m_RangeHigh    = fetchDoubleParam("rangeHigh");
+    m_RangeShadow  = fetchDoubleParam("rangeShadow");
+    m_RangeMid     = fetchDoubleParam("rangeMid");
+    m_RangeNote    = fetchStringParam("rangeNote");
     m_SepNote      = fetchStringParam("sepNote");
     m_RawExpMirror = fetchDoubleParam("rawExpMirror");
     m_ToneSep      = fetchDoubleParam("toneSep");
@@ -1724,6 +1739,54 @@ void OneGrade::applyAutoGradeClean(double p_Time)
 // is the subject now" and "where should the subject go" can never be answered differently.
 //
 // No-op unless Magic Tone armed this node: the offset path already preserves edits.
+// MEASURE THE LATCH, DO NOT MAKE THE USER FIND IT.
+//
+// The threshold cannot be derived at render: a percentile needs a reduction over the whole image
+// and the kernels are per-pixel, which is the same reason Auto Grade is a button. So it is a saved
+// param with a button beside it -- and that is better than automatic anyway, because a latch that
+// re-measured every frame would move under the grade while you worked.
+//
+// READ BEFORE THE GRADE CURVE, mirroring what the mask itself reads: og::process with Lift/Gamma/
+// Gain and the trim held neutral. Measuring the graded picture would put the latch somewhere the
+// mask never looks.
+//
+// p98 is where the bright population starts on the frames tested. On the user's bedroom interior
+// it gives 72.1 against the 71.6 they dialled by hand in Resolve -- half a point on a 0..100
+// scale. One frame, so it is a starting point the slider then owns, not a fitted constant.
+void OneGrade::setRangeLatch(double p_Time)
+{
+    probeAnalyze(p_Time);
+    const size_t n = m_LastSamples.size();
+    if (n < 512) return;
+
+    float Pn[oga::kParamN];
+    Pn[0]=0.f; Pn[1]=0.f; Pn[2]=(float)m_Density->getValue();
+    Pn[3]=0.f; Pn[4]=1.f; Pn[5]=1.f;
+    Pn[6]=0.f; Pn[7]=0.f; Pn[8]=0.f; Pn[9]=1.f;
+    Pn[10]=(float)m_RawExp->getValue(); Pn[11]=(float)m_RawTemp->getValue(); Pn[12]=0.f;
+    Pn[13]=0.f; Pn[14]=2.6f; Pn[15]=1.f; Pn[16]=0.f; Pn[17]=1.f;
+
+    int cam = 0, enc = 0;
+    m_Camera->getValue(cam); m_Encode->getValue(enc);
+    const int dispEnc = (enc <= 2) ? enc : 1;
+
+    std::vector<float> y; y.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        float r, g, b;
+        og::process(cam, dispEnc, Pn, m_LastSamples.rgb[i*3], m_LastSamples.rgb[i*3+1],
+                    m_LastSamples.rgb[i*3+2], r, g, b);
+        y.push_back(0.2126f*r + 0.7152f*g + 0.0722f*b);
+    }
+    const size_t k = (size_t)(0.98 * (y.size() - 1));
+    std::nth_element(y.begin(), y.begin() + k, y.end());
+    const double latch = std::min(100.0, std::max(0.0, 100.0 * (double)y[k]));
+    m_RangeLatch->setValue(latch);
+
+    char note[64];
+    snprintf(note, sizeof note, "Latch %.1f measured from this frame", latch);
+    m_RangeNote->setValue(note);
+}
+
 void OneGrade::armToneTargets()
 {
     double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0, tFLo = -1.0;
@@ -2269,15 +2332,32 @@ void OneGrade::setEnabledness()
     // The checkboxes themselves stay live for any stage the role owns, so auditioning is
     // one click in and one click out.
     bool bypBal = false, bypDen = false, bypExp = false, bypLut = false, bypTrim = false;
+    bool bypRange = false;
     m_BypBalance->getValue(bypBal);
     m_BypDensity->getValue(bypDen);
     m_BypExposure->getValue(bypExp);
+    m_BypRange->getValue(bypRange);
     m_BypLut->getValue(bypLut);
     m_BypTrim->getValue(bypTrim);
 
     m_BypBalance->setEnabled(look);
     m_BypDensity->setEnabled(look);
     m_BypExposure->setEnabled(look);
+    m_BypRange->setEnabled(look);
+    {
+        // Range Balance belongs to the look, and its own sliders are inert until the latch is
+        // set -- the pipeline tests latch > 0, so the panel says the same thing rather than
+        // leaving three live-looking sliders that do nothing.
+        double latch = 0.0; m_RangeLatch->getValue(latch);
+        const bool rangeLive = look && !bypRange && latch > 0.0;
+        m_RangeLatch->setEnabled(look && !bypRange);
+        m_RangeSoft->setEnabled(rangeLive);
+        m_RangeHigh->setEnabled(rangeLive);
+        m_RangeShadow->setEnabled(rangeLive);
+        m_RangeMid->setEnabled(rangeLive);
+        m_RangeNote->setValue(latch > 0.0 ? "Holding above the latch"
+                                          : "Set the latch to switch this on");
+    }
     m_BypLut->setEnabled(look);
     m_BypTrim->setEnabled(look);
 
@@ -2538,6 +2618,10 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     else if (p_ParamName == "probeAnalyze" && p_Args.reason == OFX::eChangeUserEdit) {
         probeAnalyze(p_Args.time);
     }
+    else if (p_ParamName == "rangeSet" && p_Args.reason == OFX::eChangeUserEdit) {
+        setRangeLatch(p_Args.time);
+        setEnabledness();
+    }
     else if (p_ParamName == "probeApply" && p_Args.reason == OFX::eChangeUserEdit) {
         applyAutoGrade(p_Args.time);
     }
@@ -2669,9 +2753,11 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
     // and nothing for the golden-rule mirror to worry about (the kernels never learn that
     // bypass exists).
     bool bypBal = false, bypDen = false, bypExp = false, bypLut = false, bypTrim = false;
+    bool bypRange = false;
     m_BypBalance->getValueAtTime(p_Time, bypBal);
     m_BypDensity->getValueAtTime(p_Time, bypDen);
     m_BypExposure->getValueAtTime(p_Time, bypExp);
+    m_BypRange->getValueAtTime(p_Time, bypRange);
     m_BypLut->getValueAtTime(p_Time, bypLut);
     m_BypTrim->getValueAtTime(p_Time, bypTrim);
 
@@ -2708,6 +2794,11 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
     params[10] = (float)m_RawExp->getValueAtTime(p_Time);
     params[11] = (float)m_RawTemp->getValueAtTime(p_Time);
     params[12] = (float)m_Rolloff->getValueAtTime(p_Time);
+    params[13] = (float)m_RangeLatch->getValueAtTime(p_Time);
+    params[14] = (float)m_RangeSoft->getValueAtTime(p_Time);
+    params[15] = (float)m_RangeHigh->getValueAtTime(p_Time);
+    params[16] = (float)m_RangeShadow->getValueAtTime(p_Time);
+    params[17] = (float)m_RangeMid->getValueAtTime(p_Time);
 
     // Force the params the role doesn't own to neutral, so the two nodes chain cleanly:
     // the look must be applied once (on the output node), the scene exp/WB stage once (input).
@@ -2716,6 +2807,10 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
         params[3]=0.f; params[4]=1.f; params[5]=1.f;              // lift, gamma, gain
         params[6]=0.f; params[7]=0.f;                             // offset temp/tint
         params[8]=0.f; params[9]=1.f; params[12]=0.f;             // trim exp/contrast/rolloff
+        // Range Balance is part of the LOOK -- it runs in the display curve beside Lift/Gamma/
+        // Gain -- so an Input Transform node must not apply it, or a group split would apply it
+        // twice. Latch 0 is the off switch the pipeline already tests.
+        params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f;
     } else if (role == 2) {     // Output Transform: scene exp/WB already happened upstream
         params[10]=0.f; params[11]=6500.f;                        // rawExp, rawTemp
     }
@@ -2728,6 +2823,7 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
     if (bypBal)  { params[0]=0.f; params[1]=0.f; params[6]=0.f; params[7]=0.f; }  // gain+offset balance
     if (bypDen)  { params[2]=0.f; }                                              // density
     if (bypExp)  { params[3]=0.f; params[4]=1.f; params[5]=1.f; }                // lift/gamma/gain
+    if (bypRange){ params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f; }
     if (bypTrim) { params[8]=0.f; params[9]=1.f; params[12]=0.f; }               // exp/contrast/rolloff
     // bypLut needs no entry here: it already cleared lutOk above, which drops both the LUT
     // sample and its encode override in one go.
@@ -3406,10 +3502,57 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     page->addChild(*defineSlider(p_Desc, "rolloff", "Highlight Rolloff", "Soft-clips bright highlights per channel so lamps/speculars roll off to white instead of clipping to a flat neon patch. Higher = earlier, stronger shoulder. Only active on display-referred output (Rec.709 encodes or any LUT path).", 0.0, 0.0, 1.0, 0.001, gExp));
 
 
-    // ---- 6. Look / Film LUT ----
+    // ---- 4. Range Balance ----
+    //
+    // For footage whose range WAS captured -- a window and an unlit room both inside the sensor's
+    // latitude -- where one curve has to blow one end to serve the other. In Resolve this is a
+    // qualifier, an invert and a second node; here it is a latch and three sliders, which is the
+    // whole reason the plugin exists.
+    GroupParamDescriptor* gRange = p_Desc.defineGroupParam("gRange");
+    gRange->setLabels("4  Range Balance", "4  Range Balance", "4  Range Balance");
+
+    page->addChild(*defineSlider(p_Desc, "rangeLatch", "Latch",
+        "Where the highlight mask starts, on the same 0-100 scale as Resolve's Luminance qualifier - everything brighter than this is held, everything below it is opened up. 0 switches the whole stage off, which is the default. Press 'Set From Frame' to measure it from the shot rather than guessing: it reads the bright population off the current frame and puts the latch where that population starts. Measured against a hand-dialled qualifier on a bedroom interior it landed within half a point.",
+        0.0, 0.0, 100.0, 0.1, gRange));
+
+    PushButtonParamDescriptor* rset = p_Desc.definePushButtonParam("rangeSet");
+    rset->setLabels("Set From Frame", "Set From Frame", "Set From Frame");
+    rset->setHint("Measure the latch from the current frame. Reads the picture as it arrives at this node, before the grade curve, and puts the latch at the start of the bright population. Park the playhead on a frame that shows the highlight you care about - a window, a sky, a practical - and press. It is measured once and then stays put, so the mask cannot drift while you work; press again on another frame if the shot changes.");
+    rset->setParent(*gRange);
+    page->addChild(*rset);
+
+    page->addChild(*defineSlider(p_Desc, "rangeSoft", "Softness",
+        "How gradually the mask fades in at the latch, in the same 0-100 units. Resolve splits this into separate low and high softness; one number covers it here because the two are almost always set together. Raise it if the boundary shows as an edge in a gradient. NOTE this is softness in BRIGHTNESS, not a spatial blur: it feathers across tones rather than across the picture, so it cleans up a hard edge in a smooth gradient but cannot settle a mask boundary that lands inside noise.",
+        2.6, 0.0, 25.0, 0.1, gRange));
+
+    page->addChild(*defineSlider(p_Desc, "rangeHigh", "Highlights",
+        "What happens to the held area - the window, the sky, whatever sits above the latch. Below 1 pulls it down and brings its detail back; 1 leaves it exactly as it was. This is the half that recovers: simply protecting highlights cannot restore a window an earlier stage already blew, so this is what makes the range usable rather than merely undamaged.",
+        1.0, 0.05, 2.0, 0.001, gRange));
+
+    page->addChild(*defineSlider(p_Desc, "rangeShadow", "Shadows",
+        "Raises the floor of everything the mask does NOT hold - the room, in the window case. The same lift as the one under Exposure, but applied only outside the mask, so opening the interior cannot touch the highlight you just recovered.",
+        0.0, -0.5, 0.5, 0.001, gRange));
+
+    page->addChild(*defineSlider(p_Desc, "rangeMid", "Midtones",
+        "Midtone brightness of everything outside the mask. This is usually the main move: a room that was correctly exposed but dark comes up here while the window stays where Highlights put it. Above 1 opens the interior, below 1 closes it down.",
+        1.0, 0.2, 3.0, 0.001, gRange));
+
+    defineBypass(p_Desc, page, "bypassRange",
+                 "Mute this stage at render without losing its values. Range Balance is held off; the sliders grey out but keep their numbers.", gRange);
+
+    StringParamDescriptor* rn = p_Desc.defineStringParam("rangeNote");
+    rn->setLabels("Range", "Range", "Range");
+    rn->setStringType(eStringTypeLabel);
+    rn->setDefault("Set the latch to switch this on");
+    rn->setHint("Whether Range Balance is doing anything. The stage is off entirely while the latch is 0, which is the default, so a fresh node renders exactly as it did before this feature existed.");
+    rn->setEnabled(false);
+    rn->setParent(*gRange);
+    page->addChild(*rn);
+
+    // ---- 5. Look / Film LUT ----
     scanLuts();
     GroupParamDescriptor* gLut = p_Desc.defineGroupParam("gLut");
-    gLut->setLabels("4  Look / Film LUT", "4  Look / Film LUT", "4  Look / Film LUT");
+    gLut->setLabels("5  Look / Film LUT", "5  Look / Film LUT", "5  Look / Film LUT");
     defineBypass(p_Desc, page, "bypassLut",
                  "Mute the LUT at render without losing the selection. This also hands Output Encode back to you: a selected LUT normally pins the encode to the curve it was authored for, so a bypass that left the encode pinned would still be changing the picture. The 'In effect' line under Output Encode says so while this is on.", gLut);
 
@@ -3457,7 +3600,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     // ---- 7. Trim (after LUT) ----  final display-space trims on top of the look/LUT
     GroupParamDescriptor* gTrim = p_Desc.defineGroupParam("gTrim");
-    gTrim->setLabels("5  Trim (after LUT)", "5  Trim (after LUT)", "5  Trim (after LUT)");
+    gTrim->setLabels("6  Trim (after LUT)", "6  Trim (after LUT)", "6  Trim (after LUT)");
     defineBypass(p_Desc, page, "bypassTrim",
                  "Mute this stage at render without losing its values. Exposure Trim, Contrast and Highlight Rolloff are held neutral; the sliders grey out but keep their numbers.", gTrim);
     {
@@ -3490,7 +3633,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     // ---- 5. Output ----
     GroupParamDescriptor* gOut = p_Desc.defineGroupParam("gOutput");
-    gOut->setLabels("6  Output", "6  Output", "6  Output");
+    gOut->setLabels("7  Output", "7  Output", "7  Output");
     ChoiceParamDescriptor* enc = p_Desc.defineChoiceParam("outEncode");
     enc->setLabels("Output Encode", "Output Encode", "Output Encode");
     enc->setHint("Your delivery curve — the transfer function baked into the render. Rec.709 (Gamma 2.2) is the default: it matches what web/streaming platforms like YouTube assume, where most exports end up. Pick Rec.709 (Gamma 2.4) for broadcast/reference delivery, or Rec.709 (Scene) for a scene-referred hand-off. This is NOT the same setting as the project's Timeline Color Space and should not be changed to match it — on macOS the timeline must be Rec.709 (Scene) so Resolve's viewer agrees with QuickTime/YouTube, whatever you deliver in (see Setup / Help). The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you pick, so a wheel move reads linearly in that curve. An active LUT takes this over and greys it out, because the LUT can only be fed the curve it was authored for (Film Look -> Cineon, Custom Look -> Rec.709 Scene) — the 'In effect' line below always names what is actually being rendered. LUT Mix does not hand it back: Mix blends the LUT in and out within that curve, so Mix 0 still previews the curve the blend happens in. Set LUT Mode to None to get the choice back.");
@@ -3566,7 +3709,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     // ---- 8. Setup / Help ----
     GroupParamDescriptor* gHelp = p_Desc.defineGroupParam("gHelp");
-    gHelp->setLabels("7  Setup / Help", "7  Setup / Help", "7  Setup / Help");
+    gHelp->setLabels("8  Setup / Help", "8  Setup / Help", "8  Setup / Help");
     gHelp->setOpen(false);
     // The panel truncates these strings, so `text` must stay short enough to read at the
     // default OpenFX panel width (~45 chars) and carry the instruction on its own; the
