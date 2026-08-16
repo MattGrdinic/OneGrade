@@ -81,7 +81,10 @@ __device__ float og_r709e(float L){ return (L<0.018f)?(4.5f*L):(1.099f*og_pow(L,
 __device__ float og_r709d(float V){ return (V<0.081f)?(V/4.5f):og_pow((V+0.099f)/1.099f,1.0f/0.45f); }
 __device__ float og_r709ge(float L, float g){ return og_pow(L,1.0f/g); }
 __device__ float og_r709gd(float V, float g){ return og_pow(V,g); }
-__device__ float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=v*gain; v=v+lift*(1.0f-fminf(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); }
+__device__ float og_lggc(float v,float gain,float lift,float gamma){ v=v*gain; v=v+lift*(1.0f-fminf(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma); return v; }
+__device__ float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=og_lggc(v,gain,lift,gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); }
+__device__ float og_sm01(float t){ t=fminf(fmaxf(t,0.0f),1.0f); return t*t*(3.0f-2.0f*t); }
+__device__ float og_hlmask(float Y,float lo,float hi,float ls,float hs){ float le=fmaxf(ls,1e-4f),he=fmaxf(hs,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le))*(1.0f-og_sm01((Y-(hi-he))/(2.0f*he))); }
 __device__ float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2f(x+A)+B)*C):(x*M); }
 __device__ float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2f(x/C-B)-A):(x/M); }
 
@@ -130,7 +133,16 @@ __global__ void OneGradeKernel(int W,int H,const float* P,int cam,int enc,const 
         float outc[3];
         if(enc<=3){ float x2[3]; og_DWGtoXYZ(w,x2); og_XYZto709(x2,outc); } else { outc[0]=w[0];outc[1]=w[1];outc[2]=w[2]; }  // 709 primaries for Scene/2.2/2.4/Cineon
         float dg=(enc==1)?2.2f:((enc==2)?2.4f:0.0f);                  // grade curve follows output (pure gamma vs Scene OETF)
-        for(int k=0;k<3;k++) outc[k]=og_lgg(outc[k],gain,lift,gamma,dg);  // LGG in Rec.709 display curve
+        float d[3]; for(int k=0;k<3;k++) d[k]=(dg>0.0f)?og_r709ge(outc[k],dg):og_r709e(outc[k]);
+        // Range Balance — mask on the PRE-grade display luma, so it cannot chase its own output.
+        const float rbL=P[13],rbS=P[14],rbH=P[15],rbF=P[16],rbG=P[17];
+        const bool rbOn=(rbL>0.0f)&&(rbH!=1.0f||rbF!=0.0f||rbG!=1.0f);
+        const float rbM=rbOn?og_hlmask(100.0f*(0.2126f*d[0]+0.7152f*d[1]+0.0722f*d[2]),rbL,100.0f,rbS,rbS):0.0f;
+        for(int k=0;k<3;k++){
+            float v=og_lggc(d[k],gain,lift,gamma);
+            if(rbOn){ float rm=og_lggc(v,1.0f,rbF,rbG), hi3=og_lggc(v,rbH,0.0f,1.0f); v=rm*(1.0f-rbM)+hi3*rbM; }
+            outc[k]=(dg>0.0f)?og_r709gd(v,dg):og_r709d(v);
+        }
         float e[3]={og_enc(enc,outc[0]),og_enc(enc,outc[1]),og_enc(enc,outc[2])};
         if(lutN>=2 && lutMix>0.0f){ float s[3]; og_sampleLUT(lut,lutN,e,s); for(int k=0;k<3;k++) e[k]=e[k]+(s[k]-e[k])*lutMix; }
         float ex=exp2f(P[8]); for(int k=0;k<3;k++) e[k]=(e[k]*ex-0.5f)*P[9]+0.5f;  // post-LUT trim
@@ -147,8 +159,8 @@ void RunCudaKernel(void* p_Stream, int p_Width, int p_Height, const float* p_Par
     dim3 blocks((p_Width + threads.x - 1) / threads.x, (p_Height + threads.y - 1) / threads.y, 1);
 
     float* d_params = nullptr;
-    cudaMalloc(&d_params, sizeof(float) * 13);
-    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 13, cudaMemcpyHostToDevice, stream);
+    cudaMalloc(&d_params, sizeof(float) * 18);
+    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 18, cudaMemcpyHostToDevice, stream);
 
     int lutN = (p_Lut && p_LutSize >= 2) ? p_LutSize : 0;
     float* d_lut = nullptr;

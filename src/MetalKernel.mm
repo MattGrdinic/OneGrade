@@ -96,10 +96,19 @@ inline float og_r709e(float L){ return (L<0.018f)?(4.5f*L):(1.099f*og_pow(L,0.45
 inline float og_r709d(float V){ return (V<0.081f)?(V/4.5f):og_pow((V+0.099f)/1.099f,1.0f/0.45f); }
 inline float og_r709ge(float L, float g){ return og_pow(L,1.0f/g); }
 inline float og_r709gd(float V, float g){ return og_pow(V,g); }
+inline float og_lggc(float v, float gain, float lift, float gamma){
+    v=v*gain; v=v+lift*(1.0f-min(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma);   // negatives pass through (see og::process)
+    return v;
+}
 inline float og_lgg(float L, float gain, float lift, float gamma, float dg){
     float v = (dg>0.0f) ? og_r709ge(L,dg) : og_r709e(L);
-    v=v*gain; v=v+lift*(1.0f-min(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma);   // negatives pass through (see og::process)
+    v = og_lggc(v,gain,lift,gamma);
     return (dg>0.0f) ? og_r709gd(v,dg) : og_r709d(v);
+}
+inline float og_smooth01(float t){ t=clamp(t,0.0f,1.0f); return t*t*(3.0f-2.0f*t); }
+inline float og_hlmask(float Y,float lo,float hi,float ls,float hs){
+    float le=max(ls,1e-4f), he=max(hs,1e-4f);
+    return og_smooth01((Y-(lo-le))/(2.0f*le)) * (1.0f-og_smooth01((Y-(hi-he))/(2.0f*he)));
 }
 inline float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2(x+A)+B)*C):(x*M); }
 inline float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2(x/C-B)-A):(x/M); }
@@ -152,7 +161,22 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
         if(density!=0.0f){ float3 l=float3(og_dienc(w.x),og_dienc(w.y),og_dienc(w.z)); float3 hsv=og_rgb2hsv(l); hsv.y=fmin(fmax(hsv.y*(1.0f+density),0.0f),1.0f); l=og_hsv2rgb(hsv); w=float3(og_didec(l.x),og_didec(l.y),og_didec(l.z)); } // density in DI-log
         float3 outc = (enc<=3) ? og_XYZto709(og_DWGtoXYZ(w)) : w;                 // output primaries (linear): 709 for Scene/2.2/2.4/Cineon
         float dg = (enc==1) ? 2.2f : (enc==2) ? 2.4f : 0.0f;                      // grade curve follows output (pure gamma vs Scene OETF)
-        outc.x=og_lgg(outc.x,gain,lift,gamma,dg); outc.y=og_lgg(outc.y,gain,lift,gamma,dg); outc.z=og_lgg(outc.z,gain,lift,gamma,dg); // LGG
+        float3 d = float3((dg>0.0f)?og_r709ge(outc.x,dg):og_r709e(outc.x),
+                          (dg>0.0f)?og_r709ge(outc.y,dg):og_r709e(outc.y),
+                          (dg>0.0f)?og_r709ge(outc.z,dg):og_r709e(outc.z));
+        // Range Balance — mask on the PRE-grade display luma, so it cannot chase its own output.
+        float rbL=P[13], rbS=P[14], rbH=P[15], rbF=P[16], rbG=P[17];
+        bool rbOn = (rbL>0.0f) && (rbH!=1.0f || rbF!=0.0f || rbG!=1.0f);
+        float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*d.x+0.7152f*d.y+0.0722f*d.z),rbL,100.0f,rbS,rbS) : 0.0f;
+        float3 v3 = float3(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma));
+        if(rbOn){
+            float3 room = float3(og_lggc(v3.x,1.0f,rbF,rbG),og_lggc(v3.y,1.0f,rbF,rbG),og_lggc(v3.z,1.0f,rbF,rbG));
+            float3 high = float3(og_lggc(v3.x,rbH,0.0f,1.0f),og_lggc(v3.y,rbH,0.0f,1.0f),og_lggc(v3.z,rbH,0.0f,1.0f));
+            v3 = room*(1.0f-rbM) + high*rbM;
+        }
+        outc = float3((dg>0.0f)?og_r709gd(v3.x,dg):og_r709d(v3.x),
+                      (dg>0.0f)?og_r709gd(v3.y,dg):og_r709d(v3.y),
+                      (dg>0.0f)?og_r709gd(v3.z,dg):og_r709d(v3.z)); // LGG
         float3 e = float3(og_enc(enc,outc.x), og_enc(enc,outc.y), og_enc(enc,outc.z));
         if(lutN>=2 && lutMix>0.0f){ float3 s=og_sampleLUT(lut,lutN,e); e = e + (s-e)*lutMix; }  // LUT + mix
         float ex=exp2(P[8]); e = (e*ex - 0.5f)*P[9] + 0.5f;                                     // post-LUT trim (exposure, contrast)
@@ -238,7 +262,7 @@ void RunMetalKernel(void* p_CmdQ, int p_Width, int p_Height, const float* p_Para
     [computeEncoder setBuffer:dstDeviceBuf offset:0 atIndex:8];
     [computeEncoder setBytes:&p_Width  length:sizeof(int) atIndex:11];
     [computeEncoder setBytes:&p_Height length:sizeof(int) atIndex:12];
-    [computeEncoder setBytes:p_Params  length:sizeof(float)*13 atIndex:13];
+    [computeEncoder setBytes:p_Params  length:sizeof(float)*18 atIndex:13];
     [computeEncoder setBytes:&p_Camera length:sizeof(int) atIndex:14];
     [computeEncoder setBytes:&p_Encode length:sizeof(int) atIndex:15];
     [computeEncoder setBytes:&lutN     length:sizeof(int) atIndex:16];

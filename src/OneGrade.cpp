@@ -61,7 +61,10 @@
 // consequence — the params are unaffected either way. See docs/AUTO-GRADE.md.
 static const bool kAnalysisDebugUI = false;
 
-#define kParamCount 13 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff
+// MUST equal og::analysis::kParamN and the P[] the kernels index. Three separate places size
+// buffers off this, and a mismatch is silent on GPU: wrong values, no error, a different picture.
+#define kParamCount 18 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff,
+                       // rbLatch,rbSoft,rbHigh,rbLift,rbGamma
 
 // Folder scanned for built-in / film-look LUTs (Resolve's default LUT install).
 // Resolve puts this somewhere different on every platform, so it has to be resolved at
