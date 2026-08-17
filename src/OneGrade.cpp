@@ -3396,9 +3396,14 @@ static DoubleParamDescriptor* defineSlider(OFX::ImageEffectDescriptor& p_Desc, c
 
 void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX::ContextEnum /*p_Context*/)
 {
-    // Register the on-screen shape. Hosts that do not implement overlay interacts ignore this;
-    // the sliders drive the same parameters either way, and the render never consults the class.
+    // Register the on-screen shape. THE SUPPORT LIBRARY DROPS THIS SILENTLY when the host reports
+    // kOfxImageEffectPropSupportsOverlays == 0 (ofxsImageEffect.cpp:545) -- no error, no log, the
+    // property simply never gets set and no overlay ever appears. That is the fifth instance of
+    // this project's oldest shape: a missing capability degrading in silence rather than saying
+    // so. So we read the same flag and put the answer on the panel, where "I don't see the shape"
+    // becomes a fact instead of a guess.
     p_Desc.setOverlayInteractDescriptor(new RangeShapeOverlayDescriptor);
+    const bool hostOverlays = OFX::getImageEffectHostDescription()->supportsOverlays;
 
     ClipDescriptor* srcClip = p_Desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     srcClip->addSupportedComponent(ePixelComponentRGBA);
@@ -3976,7 +3981,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         sh->appendOption("Ellipse");
         sh->appendOption("Rectangle");
         sh->setDefault(0);
-        sh->setHint("Restrict Range Balance to part of the frame. The shape multiplies the brightness mask rather than replacing it, so what gets held is whatever is BOTH above the latch and inside the shape - a window pane picked out by the latch, with a bright pillow across the room excluded because it is somewhere else. None means the whole frame, which is how this behaves with the shape switched off.");
+        sh->setHint("Restrict Range Balance to part of the frame. The shape multiplies the brightness mask rather than replacing it, so what gets held is whatever is BOTH above the latch and inside the shape - a window pane picked out by the latch, with a bright pillow across the room excluded because it is somewhere else. None means the whole frame, which is how this behaves with the shape switched off. TO AIM IT: turn Show Mask on and drag the Centre and Size sliders - the matte shows the shape's edge directly. Some hosts also draw a draggable outline on the viewer; the Host line under Setup / Help says whether this one does.");
         sh->setParent(*gRange);
         page->addChild(*sh);
     }
@@ -4191,7 +4196,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // default OpenFX panel width (~45 chars) and carry the instruction on its own; the
     // full explanation goes in the hint, which the host shows on hover.
     auto helpLine = [&](const char* name, const char* label, const char* text,
-                        const char* hint = nullptr) {
+                        const char* hint = nullptr) {  // NOLINT
         StringParamDescriptor* s = p_Desc.defineStringParam(name);
         s->setLabels(label, label, label);
         s->setStringType(eStringTypeLabel);
@@ -4201,6 +4206,15 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         s->setParent(*gHelp);
         page->addChild(*s);
     };
+
+    // What this host actually supports, rather than what OFX allows. Right now that is one line,
+    // because one capability is in question; it is the place to put the next one.
+    helpLine("hostCaps", "Host",
+             hostOverlays ? "On-screen shape handles: supported"
+                          : "On-screen shape handles: not supported",
+             hostOverlays
+               ? "This host reports OFX overlay support, so Range Balance's Shape draws an outline and a draggable centre handle over the viewer."
+               : "This host reports no OFX overlay support, so the Shape cannot draw an outline or a draggable handle on the viewer - position it with the Centre and Size sliders instead. The shape itself works exactly the same either way; only the on-screen widget is missing.");
     helpLine("help0", "Requires", "Project > Color Management, NOT color managed:");
     helpLine("help1", "Color Science", "DaVinci YRGB");
     helpLine("help2", "Timeline Color Space", "Rec.709 (Scene) - required on macOS",
