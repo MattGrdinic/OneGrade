@@ -168,8 +168,8 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
         float rbL=P[13], rbS=P[14], rbH=P[15], rbF=P[16], rbG=P[17];
         bool rbW = (P[18]>0.5f);
         bool rbOn = (rbL>0.0f) && (rbW || rbH!=1.0f || rbF!=0.0f || rbG!=1.0f);
-        float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*d.x+0.7152f*d.y+0.0722f*d.z),rbL,100.0f,rbS,rbS) : 0.0f;
         float3 v3 = float3(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma));
+        float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*v3.x+0.7152f*v3.y+0.0722f*v3.z),rbL,100.0f,rbS,rbS) : 0.0f;
         if(rbOn){
             float3 room = float3(og_lggc(v3.x,1.0f,rbF,rbG),og_lggc(v3.y,1.0f,rbF,rbG),og_lggc(v3.z,1.0f,rbF,rbG));
             float3 high = float3(og_lggc(v3.x,rbH,0.0f,1.0f),og_lggc(v3.y,rbH,0.0f,1.0f),og_lggc(v3.z,rbH,0.0f,1.0f));

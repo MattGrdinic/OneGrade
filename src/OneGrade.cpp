@@ -1766,7 +1766,9 @@ void OneGrade::setRangeLatch(double p_Time)
 
     float Pn[oga::kParamN];
     Pn[0]=0.f; Pn[1]=0.f; Pn[2]=(float)m_Density->getValue();
-    Pn[3]=0.f; Pn[4]=1.f; Pn[5]=1.f;
+    // Read through the GRADE, not around it -- the same picture the mask itself reads. Measuring
+    // the flat pre-grade image is what made the latch unmatchable against a Resolve qualifier.
+    Pn[3]=(float)m_Lift->getValue(); Pn[4]=(float)m_Gamma->getValue(); Pn[5]=(float)m_Gain->getValue();
     Pn[6]=0.f; Pn[7]=0.f; Pn[8]=0.f; Pn[9]=1.f;
     Pn[10]=(float)m_RawExp->getValue(); Pn[11]=(float)m_RawTemp->getValue(); Pn[12]=0.f;
     Pn[13]=0.f; Pn[14]=2.6f; Pn[15]=1.f; Pn[16]=0.f; Pn[17]=1.f;

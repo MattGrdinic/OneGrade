@@ -124,8 +124,8 @@ const char* KernelSource = "\n" \
 "    float3 d=(float3)((dg>0.0f)?og_r709ge(outc.x,dg):og_r709e(outc.x),(dg>0.0f)?og_r709ge(outc.y,dg):og_r709e(outc.y),(dg>0.0f)?og_r709ge(outc.z,dg):og_r709e(outc.z)); \n" \
 "    int rbW=(rbWs>0.5f);                                                                                     \n" \
 "    int rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f);                                             \n" \
-"    float rbM=rbOn?og_hlmask(100.0f*(0.2126f*d.x+0.7152f*d.y+0.0722f*d.z),rbL,100.0f,rbS,rbS):0.0f;             \n" \
 "    float3 v3=(float3)(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma)); \n" \
+"    float rbM=rbOn?og_hlmask(100.0f*(0.2126f*v3.x+0.7152f*v3.y+0.0722f*v3.z),rbL,100.0f,rbS,rbS):0.0f;          \n" \
 "    if(rbOn){ float3 rm=(float3)(og_lggc(v3.x,1.0f,rbF,rbG),og_lggc(v3.y,1.0f,rbF,rbG),og_lggc(v3.z,1.0f,rbF,rbG)); \n" \
 "             float3 hi3=(float3)(og_lggc(v3.x,rbH,0.0f,1.0f),og_lggc(v3.y,rbH,0.0f,1.0f),og_lggc(v3.z,rbH,0.0f,1.0f)); \n" \
 "             v3=rm*(1.0f-rbM)+hi3*rbM; }                                                                        \n" \

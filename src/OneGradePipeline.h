@@ -396,13 +396,25 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     // point of it -- so the preview alone is enough to switch the stage on.
     const bool  rbOn = (rbLatch > 0.f) &&
                        (rbShow || rbHigh != 1.f || rbLift != 0.f || rbGamma != 1.f);
+    // AFTER THE GRADE CURVE, BEFORE RANGE BALANCE'S OWN MOVES -- which is what a Resolve
+    // qualifier sees when you drop it on a node, and the distinction the first version got wrong.
+    //
+    // Only Range Balance's OWN three moves can make the mask chase itself; Lift/Gamma/Gain cannot,
+    // because they run once and are not driven by the mask. Excluding them too was over-correction
+    // and it cost the selection: pre-grade the picture is flat, so a bright pillow and a window
+    // sit within a few points of each other and NO threshold separates them. The user could not
+    // match Resolve's window selection at any latch for exactly this reason. After the grade the
+    // two are far apart and the same threshold picks the window alone.
+    float v3[3];
+    for (int i=0;i<3;i++) v3[i] = lgg_core(d[i], lift, gamma, gain);
+
     float rbM = 0.f;
     if (rbOn)
-        rbM = highlight_mask(100.f*(0.2126f*d[0] + 0.7152f*d[1] + 0.0722f*d[2]),
+        rbM = highlight_mask(100.f*(0.2126f*v3[0] + 0.7152f*v3[1] + 0.0722f*v3[2]),
                              rbLatch, 100.f, rbSoft, rbSoft);
 
     for (int i=0;i<3;i++) {
-        float v = lgg_core(d[i], lift, gamma, gain);
+        float v = v3[i];
         if (rbOn) {
             const float room = lgg_core(v, rbLift, rbGamma, 1.f);
             const float high = lgg_core(v, 0.f, 1.f, rbHigh);

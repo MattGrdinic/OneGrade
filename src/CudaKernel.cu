@@ -138,9 +138,10 @@ __global__ void OneGradeKernel(int W,int H,const float* P,int cam,int enc,const 
         const float rbL=P[13],rbS=P[14],rbH=P[15],rbF=P[16],rbG=P[17];
         const bool rbW=(P[18]>0.5f);
         const bool rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f);
-        const float rbM=rbOn?og_hlmask(100.0f*(0.2126f*d[0]+0.7152f*d[1]+0.0722f*d[2]),rbL,100.0f,rbS,rbS):0.0f;
+        float v3[3]; for(int k=0;k<3;k++) v3[k]=og_lggc(d[k],gain,lift,gamma);
+        const float rbM=rbOn?og_hlmask(100.0f*(0.2126f*v3[0]+0.7152f*v3[1]+0.0722f*v3[2]),rbL,100.0f,rbS,rbS):0.0f;
         for(int k=0;k<3;k++){
-            float v=og_lggc(d[k],gain,lift,gamma);
+            float v=v3[k];
             if(rbOn){ float rm=og_lggc(v,1.0f,rbF,rbG), hi3=og_lggc(v,rbH,0.0f,1.0f); v=rm*(1.0f-rbM)+hi3*rbM; }
             outc[k]=(dg>0.0f)?og_r709gd(v,dg):og_r709d(v);
         }
