@@ -836,3 +836,45 @@ locked or not. Lowering the latch to include the dark parts of the window also g
 Locking makes that workflow *possible* — you can now drop the latch and push hard without the
 selection running away — but separating "dark, and outside the window" from "dark, and in the
 room" is spatial, and lands with the blur architecture.
+
+### The silk pillow, and two cheap fixes that were measured and do not work (2026-08-17)
+
+The bedroom frame is the useful one precisely because the window holds unblown mountain detail —
+and at the measured latch of 58.2 the mask also takes the **silk pillow**. Two per-pixel ideas were
+tried against the frame before reaching for anything spatial. Both fail, and knowing why saves
+building either.
+
+**A CHROMA GATE DOES NOT SEPARATE THEM.** Resolve's qualifier is HSL and ours is only the L, so the
+obvious cheap move is to add a hue/saturation window — still per-pixel, still kernel-shaped, no
+neighbourhood. Measured over the held pixels, window strip against everything else:
+
+| | a* | b* | Y |
+|---|---|---|---|
+| window | −5.05 (p10..p90 −7.64..+1.79) | +1.49 | 91.8 |
+| not-window (pillow) | −1.45 (−6.14..−0.58) | +1.52 | 63.1 |
+
+b* is **identical to two decimal places** and the a* ranges overlap across most of their width.
+Daylight through glass and interior-lit white silk are the same colour here. An HSL qualifier buys
+nothing on this frame.
+
+**NEITHER DOES A THREE-CLASS SPLIT.** The frame plainly has three populations, so 2-class Otsu
+putting its edge in the lower gap looked like the whole story. Multi-level Otsu gives lower 30.3 /
+**upper 62.6**, with class means at 23.2 (room) / 35.8 (bedding) / 87.8 (window) — barely above the
+shipping 58.2, and coverage 7.56% against 8.01%. The reason is in that middle mean: **the held
+pillow pixels are SPECULARS**, the bright tail of the bedding class, not a class of their own. A
+silk specular is genuinely as bright as a mountain, so no threshold on brightness will ever
+separate them. The user's instinct — that this wants a shape, not a level — is correct.
+
+**The one lever that does help is the slider already there.** Raising the latch 58.2 → 65 drops
+**62%** of the non-window held pixels (69,040 → 26,299) for **1.5%** of the window (597,383 →
+588,718). Past 65 it turns bad fast: 75 costs the window 17%. So the measured latch is a starting
+point that is worth a nudge up on frames with speculars, which is what the Latch slider is for —
+but it is a trade, not a fix.
+
+**Conclusion: the pillow needs spatial support, and a polygon is not the answer for this plugin.**
+The user reached that themselves and gave the right reason — a shape tool diverges from "make this
+easier than the native controls", because Resolve's own power windows already do shapes well and
+better. What OneGrade can add that Resolve makes tedious is a mask that is *measured* rather than
+drawn. The nearest thing with real leverage is the blur/feather architecture already queued, which
+turns a per-pixel qualifier into a region one — a specular the size of a pillow crease survives a
+blur very differently from a window pane.
