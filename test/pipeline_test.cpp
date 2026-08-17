@@ -21,16 +21,10 @@ static bool close(float a, float b, float eps = 1e-3f) { return std::fabs(a - b)
 static bool finite3(float r, float g, float b) { return std::isfinite(r) && std::isfinite(g) && std::isfinite(b); }
 
 // neutral parameter vector: temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp
-// Full 13-wide vector (adds P[12] rolloff) for tests that chain whole nodes together.
 // Neutral for the WHOLE array, Range Balance included: latch 0 is what turns it off, and a
-// fixture that left it uninitialised would enable the stage with a garbage threshold.
-static void neutral13(float P[og::analysis::kParamN])
-{
-    for (int i=0;i<og::analysis::kParamN;i++) P[i]=0.f;
-    P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f;
-    P[13]=0.f; P[14]=2.6f; P[15]=1.f; P[16]=0.f; P[17]=1.f;   // range balance: off
-    P[18]=0.f; P[19]=1.f; P[20]=1.f;                          // show mask, hi gamma, lo gain
-}
+// fixture that left it uninitialised would enable the stage with a garbage threshold. Defers to
+// the shipping definition so a new parameter cannot be neutral in the plugin and garbage here.
+static void neutral13(float P[og::analysis::kParamN]) { og::analysis::neutral_params(P); }
 static void neutral(float P[og::analysis::kParamN]) { neutral13(P); }
 
 // ---- synthetic frames for the scene-descriptor / Jacobian tests (OneGradeAnalysis.h) ----
@@ -1223,6 +1217,44 @@ int main() {
         ok &= !t.ok && t.gap < og::grade::kRangeGapMin;
         ok &= (w.gap > og::grade::kRangeGapMin && s.gap > og::grade::kRangeGapMin);
         check(ok, "the range latch splits by population, not by percentile");
+    }
+
+    // 36. The locked mask holds its shape while the grade under it moves.
+    // Range Balance's mask reads the graded picture, so changing exposure re-cuts it -- which is
+    // the defect the reference grade in P[21..23] exists to remove. Measured as coverage: run a
+    // ramp through the stage twice, once with the reference following the grade and once with it
+    // held, and count how many samples come out held.
+    {
+        bool ok = true;
+        auto coverage = [](float gain, bool lock) {
+            float P[og::analysis::kParamN]; neutral13(P);
+            P[5]  = gain;                       // the grade that moves under the mask
+            P[13] = 45.f;                       // latch
+            P[14] = 2.6f;
+            P[18] = 1.f;                        // render the matte: the mask IS the output
+            P[21] = 0.f; P[22] = 1.f;
+            P[23] = lock ? 1.0f : gain;         // reference: held, or following the grade
+            int held = 0;
+            for (int i = 0; i < 200; ++i) {
+                const float v = (float)i / 199.f;
+                float r, g, b;
+                og::process(/*cam=*/1, /*enc=*/1, P, v, v, v, r, g, b);
+                if (r > 0.5f) ++held;
+            }
+            return held;
+        };
+        const int base = coverage(1.00f, false);
+        ok &= (base > 10 && base < 190);        // the latch actually cuts the ramp somewhere
+
+        // UNLOCKED: brightening pulls more of the picture over the latch, darkening pulls less.
+        ok &= (coverage(1.60f, false) > base);
+        ok &= (coverage(0.60f, false) < base);
+
+        // LOCKED: the same two grades select exactly what the reference grade selected.
+        ok &= (coverage(1.60f, true) == base);
+        ok &= (coverage(0.60f, true) == base);
+
+        check(ok, "a locked mask keeps its coverage while the grade under it moves");
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");

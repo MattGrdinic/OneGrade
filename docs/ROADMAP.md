@@ -785,3 +785,54 @@ took (no image fetch), leaves the viewer alone rather than switching the matte o
 threshold lands on a steep edge (a window frame) the mask is stable, and where it lands inside
 noise the mask shimmers frame to frame. A per-pixel kernel cannot have a neighbourhood; this is
 the blur architecture, and it is the next thing this feature needs.
+
+## A mode selector for the panel (user's idea, 2026-08-17)
+
+Twelve groups and growing. `setOpen()` per group (2026-08-17) decides what a colorist sees on
+drop, and that is a stopgap: one static answer for every kind of work. The user's plan is a **mode
+selector that switches the control surface by work type** — a "just make it look right" mode
+showing the two buttons and a look, a shot-matching mode, a delivery mode, a full manual mode.
+
+Groups are already the unit this would switch, and `setEnabledness()` already runs every param's
+visibility from one place on load and on change, so the mechanism is mostly present: a mode choice
+param plus `setIsSecret()` per group instead of a fixed `setOpen()`. **What needs deciding is not
+the plumbing but the modes** — which controls belong to which kind of work — and that is a
+question about how the plugin is used, not about the code. Worth doing after the panel stops
+changing shape every release.
+
+## Range Balance: locking the mask against the grade under it (2026-08-17)
+
+Shipped as **Lock Mask**. The mask reads the picture AFTER the grade curve, which is what lets it
+tell a window from a bright pillow — and is also what makes it slide when exposure moves. Measured
+on the bedroom frame with the latch pinned at 58.2, as the solved Gain rises:
+
+| solved gain | unlocked | locked |
+|---|---|---|
+| low  | 7.45% held | 7.96% |
+| mid  | 8.56% | 7.89% |
+| high | **19.39%** | 7.89% |
+
+The held region nearly triples under a control that was supposed to be adjusting it, so "pull the
+window down" quietly becomes "change what the window is".
+
+**The fix is a reference grade, not a branch.** `P[21..23]` carry the Lift/Gamma/Gain the mask is
+evaluated against; `resolveConfig()` writes the live grade there when unlocked and the captured
+grade when locked. The four render paths see three floats and have no idea a lock exists — a
+branch out there would be a second definition of the mask with nothing to say which one a frame
+used. Cost is two extra `lgg_core` calls per pixel, because `d` is already in hand.
+
+**It locks against the grade curve only.** RAW Exposure and Density sit upstream of `d`, so
+anchoring them would mean running the whole chain a second time per pixel. They still move the
+mask, the hint says so, and they are not what a mask gets nudged by while you dial it.
+
+**A locked mask is never auto-refreshed** — `refreshRangeLatch()` returns early. Lock means the
+selection holds while the grade moves, and Magic Grade is the largest instance of the grade
+moving; re-measuring would also not preserve it, since Otsu re-run on the new grade can land on a
+different population.
+
+**What this does NOT solve, and the user named it in the same breath:** a window contains content
+as dark as things in the room, and a luminance qualifier cannot tell those apart at any latch,
+locked or not. Lowering the latch to include the dark parts of the window also grabs the room.
+Locking makes that workflow *possible* — you can now drop the latch and push hard without the
+selection running away — but separating "dark, and outside the window" from "dark, and in the
+room" is spatial, and lands with the blur architecture.

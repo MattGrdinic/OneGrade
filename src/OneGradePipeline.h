@@ -414,12 +414,31 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     // sit within a few points of each other and NO threshold separates them. The user could not
     // match Resolve's window selection at any latch for exactly this reason. After the grade the
     // two are far apart and the same threshold picks the window alone.
-    float v3[3];
-    for (int i=0;i<3;i++) v3[i] = lgg_core(d[i], lift, gamma, gain);
+    //
+    // ...BUT THE MASK READS A REFERENCE GRADE, NOT THE LIVE ONE (P[21..23]).
+    //
+    // "After the grade curve" makes the selection possible and makes it MOVE: change exposure and
+    // the same threshold now cuts the picture somewhere else, so the held region grows or shrinks
+    // under a control that was supposed to be adjusting it. The caller decides what the reference
+    // is -- unlocked it writes the live Lift/Gamma/Gain here and nothing changes, locked it writes
+    // the values that were in effect when the latch was measured, and the mask stops moving.
+    //
+    // One code path either way. A branch on "is it locked" would be a second definition of the
+    // mask, and there is nothing here that could tell you which one a given frame used.
+    //
+    // Two extra lgg_core calls per pixel is the whole cost, because `d` is already in hand. That
+    // is also why the reference is the GRADE CURVE and not the entire chain: anchoring RAW
+    // Exposure or Density would mean running everything upstream a second time, and those are not
+    // the controls a mask gets nudged by while you dial it.
+    float v3[3], ref[3];
+    for (int i=0;i<3;i++) {
+        v3[i]  = lgg_core(d[i], lift, gamma, gain);
+        ref[i] = lgg_core(d[i], P[21], P[22], P[23]);
+    }
 
     float rbM = 0.f;
     if (rbOn)
-        rbM = highlight_mask(100.f*(0.2126f*v3[0] + 0.7152f*v3[1] + 0.0722f*v3[2]),
+        rbM = highlight_mask(100.f*(0.2126f*ref[0] + 0.7152f*ref[1] + 0.0722f*ref[2]),
                              rbLatch, rbSoft);
 
     for (int i=0;i<3;i++) {

@@ -205,6 +205,12 @@ int main(int argc, char** argv)
     const double hlHiGain= argd(argc, argv, "--hl-hi-gain", 1.0);   // pull the HELD area down
     const double hlHiGamma=argd(argc, argv, "--hl-hi-gamma",1.0);   // ...and put its detail back
     const bool   hlShow  = argf(argc, argv, "--hl-show");           // write the mask itself
+    // Lock the mask against the grade: the reference grade the mask reads is captured BEFORE the
+    // exposure move under test, so the selection stops following it. Pass the grade to lock at.
+    const bool   hlLock  = argf(argc, argv, "--hl-lock");
+    const double hlLockL = argd(argc, argv, "--hl-lock-lift",  0.0);
+    const double hlLockG = argd(argc, argv, "--hl-lock-gamma", 1.0);
+    const double hlLockN = argd(argc, argv, "--hl-lock-gain",  1.0);
     // The Tone Separation slider: walk it, and vary how far one unit moves the subject's midtone.
     const bool  toneSepSweep = argf(argc, argv, "--tone-sep-sweep");
     const double toneSepPer  = argd(argc, argv, "--tone-sep-per", og::grade::kToneSepMidPer);
@@ -606,6 +612,16 @@ int main(int argc, char** argv)
             P[13] = (float)hlLowUse;  P[14] = (float)hlSoft;   P[15] = (float)hlHiGain;
             P[16] = (float)hlLift;    P[17] = (float)hlGamma;   P[18] = hlShow ? 1.f : 0.f;
             P[19] = (float)hlHiGamma; P[20] = (float)hlGain;
+            // The mask's reference grade -- the live grade unless locked, mirroring resolveConfig().
+            P[21] = hlLock ? (float)hlLockL : P[3];
+            P[22] = hlLock ? (float)hlLockG : P[4];
+            P[23] = hlLock ? (float)hlLockN : P[5];
+            // THE COVERAGE PROBE HAS TO READ THE REFERENCE GRADE, NOT THE LIVE ONE. Pmask renders
+            // through P[3..5], and the mask inside og::process() runs lgg_core on P[21..23] -- so
+            // the probe reproduces it only if those are the numbers it grades with. Left as the
+            // live grade it silently measured the OLD, unlockable definition and reported a locked
+            // mask drifting exactly as much as an unlocked one.
+            Pmask[3] = P[21]; Pmask[4] = P[22]; Pmask[5] = P[23];
         }
         long long masked = 0;
 
@@ -701,9 +717,10 @@ int main(int argc, char** argv)
         }
         if (hlOn)
             printf("    highlight mask: latch %.1f soft %.1f -> %.2f%% of frame held"
-                   " | held gain %.3f gamma %.3f | rest lift %+.3f gamma %.3f gain %.3f\n",
+                   " | held gain %.3f gamma %.3f | rest lift %+.3f gamma %.3f gain %.3f%s\n",
                    hlLowUse, hlSoft, 100.0 * (double)masked / (double)total,
-                   hlHiGain, hlHiGamma, hlLift, hlGamma, hlGain);
+                   hlHiGain, hlHiGamma, hlLift, hlGamma, hlGain,
+                   hlLock ? "  [mask LOCKED]" : "");
         std::string op = outDir + "/" + std::string(nm);
         stbi_write_png(op.c_str(), f.w, f.h, 3, out.data(), f.w * 3);
     }

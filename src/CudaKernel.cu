@@ -134,12 +134,13 @@ __global__ void OneGradeKernel(int W,int H,const float* P,int cam,int enc,const 
         if(enc<=3){ float x2[3]; og_DWGtoXYZ(w,x2); og_XYZto709(x2,outc); } else { outc[0]=w[0];outc[1]=w[1];outc[2]=w[2]; }  // 709 primaries for Scene/2.2/2.4/Cineon
         float dg=(enc==1)?2.2f:((enc==2)?2.4f:0.0f);                  // grade curve follows output (pure gamma vs Scene OETF)
         float d[3]; for(int k=0;k<3;k++) d[k]=(dg>0.0f)?og_r709ge(outc[k],dg):og_r709e(outc[k]);
-        // Range Balance — mask on the PRE-grade display luma, so it cannot chase its own output.
+        // Range Balance — the mask reads a REFERENCE grade (P[21..23]), not the live one, so
+        // moving exposure cannot slide the selection under you. See highlight_mask() in the header.
         const float rbL=P[13],rbS=P[14],rbH=P[15],rbF=P[16],rbG=P[17];
         const bool rbW=(P[18]>0.5f); const float rbHg=P[19], rbLg=P[20];
         const bool rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f||rbHg!=1.0f||rbLg!=1.0f);
-        float v3[3]; for(int k=0;k<3;k++) v3[k]=og_lggc(d[k],gain,lift,gamma);
-        const float rbM=rbOn?og_hlmask(100.0f*(0.2126f*v3[0]+0.7152f*v3[1]+0.0722f*v3[2]),rbL,rbS):0.0f;
+        float v3[3],rf[3]; for(int k=0;k<3;k++){ v3[k]=og_lggc(d[k],gain,lift,gamma); rf[k]=og_lggc(d[k],P[23],P[21],P[22]); }
+        const float rbM=rbOn?og_hlmask(100.0f*(0.2126f*rf[0]+0.7152f*rf[1]+0.0722f*rf[2]),rbL,rbS):0.0f;
         for(int k=0;k<3;k++){
             float v=v3[k];
             if(rbOn){ float rm=og_lggc(v,rbLg,rbF,rbG), hi3=og_lggc(v,rbH,0.0f,rbHg); v=rm*(1.0f-rbM)+hi3*rbM; }
@@ -162,8 +163,8 @@ void RunCudaKernel(void* p_Stream, int p_Width, int p_Height, const float* p_Par
     dim3 blocks((p_Width + threads.x - 1) / threads.x, (p_Height + threads.y - 1) / threads.y, 1);
 
     float* d_params = nullptr;
-    cudaMalloc(&d_params, sizeof(float) * 21);
-    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 21, cudaMemcpyHostToDevice, stream);
+    cudaMalloc(&d_params, sizeof(float) * 24);
+    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 24, cudaMemcpyHostToDevice, stream);
 
     int lutN = (p_Lut && p_LutSize >= 2) ? p_LutSize : 0;
     float* d_lut = nullptr;

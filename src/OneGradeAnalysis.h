@@ -56,7 +56,7 @@
 namespace og {
 namespace analysis {
 
-static const int kParamN = 21;   // matches P[] in OneGradePipeline.h
+static const int kParamN = 24;   // matches P[] in OneGradePipeline.h
 
 // THE NEUTRAL PARAMETER SET, IN ONE PLACE. It used to be a brace-initialiser copied into a dozen
 // functions, and every one of them silently zero-filled whatever the param count had grown by
@@ -79,7 +79,10 @@ static inline void neutral_params(float* P)
     P[15]=1.f;  P[19]=1.f;                           //   held gain / gamma
     P[16]=0.f;  P[17]=1.f;  P[20]=1.f;               //   rest lift / gamma / gain
     P[18]=0.f;                                       //   show mask
-    static_assert(kParamN == 21, "neutral_params() needs an entry for every parameter");
+    // The mask's REFERENCE grade. Neutral means "no lock": the caller writes the live Lift/Gamma/
+    // Gain here and the mask reads the picture as graded, exactly as it did before the lock existed.
+    P[21]=0.f;  P[22]=1.f;  P[23]=1.f;
+    static_assert(kParamN == 24, "neutral_params() needs an entry for every parameter");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -824,7 +827,8 @@ static inline const float* param_steps()
     //                temp  tint  dens  lift  gamma gain  oTmp  oTnt  pExp  pCon  rExp  rTemp  roll
     //                then range balance: latch  soft  high  rbLift rbGamma
     static const float s[kParamN] = { 0.05f,0.05f,0.05f,0.02f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,250.f,0.05f,
-                                      2.0f, 0.5f, 0.05f, 0.02f, 0.05f, 0.f, 0.05f, 0.05f };
+                                      2.0f, 0.5f, 0.05f, 0.02f, 0.05f, 0.f, 0.05f, 0.05f,
+                                      0.f, 0.f, 0.f };
     return s;
 }
 
@@ -864,6 +868,12 @@ static inline void steer_mask(const float* P0, bool* allow)
     allow[12] = false;                                        // rolloff: step at 0, and the
                                                               // pin fit already owns it
     if (std::fabs(P0[11] - 6500.0f) < 2.0f) allow[11] = false; // rawTemp: sitting in the dead band
+    // Range Balance's Show Mask and the mask's three reference-grade slots are not controls a
+    // solver may reach for: the first replaces the picture with a matte, and the other three
+    // define WHERE THE MASK IS rather than what the grade does. Their steps are 0, so they would
+    // contribute a zero row anyway -- excluding them here just saves two describe() passes each.
+    allow[18] = false;
+    allow[21] = allow[22] = allow[23] = false;
 }
 
 struct Jac {
@@ -875,7 +885,8 @@ static inline const char* param_name(int p)
 {
     static const char* n[kParamN] = { "tmp","tnt","dns","lft","gam","gan",
                                       "oTm","oTn","pEx","pCn","rEx","rTm","rol",
-                                      "rbL","rbS","rbH","rbF","rbG","rbW","rbHg","rbLg" };
+                                      "rbL","rbS","rbH","rbF","rbG","rbW","rbHg","rbLg",
+                                      "rfF","rfG","rfN" };
     return (p >= 0 && p < kParamN) ? n[p] : "?";
 }
 
@@ -992,9 +1003,11 @@ static inline void apply_move(const float* P0, const float* dpNorm, float* Pout)
     //                              temp  tint  dens   lift   gamma  gain  oTmp oTnt  pExp  pCon  rExp   rTemp  roll
     //                              then range balance: latch  soft  high  rbLift rbGamma
     static const float lo[kParamN] = { -1.f,-1.f,-1.f, -0.5f, 0.20f, 0.20f, -1.f,-1.f, -3.f, 0.20f, -5.f, 2000.f, 0.f,
-                                       0.f,  0.f, 0.05f, -0.5f, 0.20f, 0.f, 0.20f, 0.20f };
+                                       0.f,  0.f, 0.05f, -0.5f, 0.20f, 0.f, 0.20f, 0.20f,
+                                      -0.5f, 0.20f, 0.20f };
     static const float hi[kParamN] = {  1.f, 1.f, 1.f,  0.5f, 3.00f, 3.00f,  1.f, 1.f,  3.f, 3.00f,  5.f,20000.f, 0.8f,
-                                     100.f, 25.f, 2.00f,  0.5f, 3.00f, 1.f, 3.00f, 3.00f };
+                                     100.f, 25.f, 2.00f,  0.5f, 3.00f, 1.f, 3.00f, 3.00f,
+                                       0.5f, 3.00f, 3.00f };
     const float* st = param_steps();
     for (int i = 0; i < kParamN; ++i) {
         float v = P0[i] + dpNorm[i]*st[i];

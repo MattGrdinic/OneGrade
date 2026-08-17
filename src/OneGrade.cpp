@@ -63,7 +63,7 @@ static const bool kAnalysisDebugUI = false;
 
 // MUST equal og::analysis::kParamN and the P[] the kernels index. Three separate places size
 // buffers off this, and a mismatch is silent on GPU: wrong values, no error, a different picture.
-#define kParamCount 21 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff,
+#define kParamCount 24 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff,
                        // rbLatch,rbSoft,rbHigh,rbLift,rbGamma
 
 // Folder scanned for built-in / film-look LUTs (Resolve's default LUT install).
@@ -576,6 +576,10 @@ private:
     OFX::DoubleParam*  m_RangeShadow;
     OFX::DoubleParam*  m_RangeMid;
     OFX::BooleanParam* m_RangeShow;
+    OFX::BooleanParam* m_RangeLock;      // freeze the mask against the grade under it
+    OFX::DoubleParam*  m_RangeRefLift;   // ...the grade it was frozen at (hidden, saved)
+    OFX::DoubleParam*  m_RangeRefGamma;
+    OFX::DoubleParam*  m_RangeRefGain;
     OFX::DoubleParam*  m_RangeHiMid;
     OFX::DoubleParam*  m_RangeLoGain;
     OFX::StringParam*  m_RangeNote;
@@ -691,6 +695,10 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_RangeShadow  = fetchDoubleParam("rangeShadow");
     m_RangeMid     = fetchDoubleParam("rangeMid");
     m_RangeShow    = fetchBooleanParam("rangeShow");
+    m_RangeLock    = fetchBooleanParam("rangeLock");
+    m_RangeRefLift  = fetchDoubleParam("rangeRefLift");
+    m_RangeRefGamma = fetchDoubleParam("rangeRefGamma");
+    m_RangeRefGain  = fetchDoubleParam("rangeRefGain");
     m_RangeHiMid   = fetchDoubleParam("rangeHiMid");
     m_RangeLoGain  = fetchDoubleParam("rangeLoGain");
     m_RangeNote    = fetchStringParam("rangeNote");
@@ -1822,6 +1830,13 @@ void OneGrade::setRangeLatch(double p_Time, bool p_Reanalyse, bool p_ShowMatte)
         return;
     }
     m_RangeLatch->setValue(RL.latch);
+    // CAPTURE THE GRADE THE LATCH WAS MEASURED AGAINST, always -- whether the Lock is on or not.
+    // The measurement and the reference have to be the same picture or Lock would freeze the mask
+    // somewhere the latch was never chosen for, and the anchor is meaningless until a latch exists
+    // anyway. Ticking Lock afterwards then costs nothing and needs no second button.
+    m_RangeRefLift ->setValue(m_Lift->getValue());
+    m_RangeRefGamma->setValue(m_Gamma->getValue());
+    m_RangeRefGain ->setValue(m_Gain->getValue());
     // Show the matte straight away -- for the BUTTON. Dialling a latch you cannot see is
     // guesswork, and the measured value is a starting point rather than an answer, so the point
     // of pressing it is to put you somewhere close enough to judge. The automatic refresh passes
@@ -1868,6 +1883,14 @@ void OneGrade::refreshRangeLatch()
     double latch = 0.0;
     m_RangeLatch->getValue(latch);
     if (latch <= 0.0 || m_LastSamples.size() < 512) return;
+    // A LOCKED MASK IS NOT REFRESHED. Lock means the selection holds while the grade under it
+    // moves, and Magic Grade moving the grade is the largest instance of exactly that -- a button
+    // silently re-measuring a mask the user locked would break the one promise the control makes.
+    // Re-measuring would also not preserve it: Otsu re-run on the new grade can land on a
+    // different population, so this is not "the same mask, restated".
+    bool lock = false;
+    m_RangeLock->getValue(lock);
+    if (lock) return;
     setRangeLatch(0.0, /*reanalyse=*/false, /*showMatte=*/false);
 }
 
@@ -2448,8 +2471,15 @@ void OneGrade::setEnabledness()
         m_RangeMid->setEnabled(rangeLive);
         m_RangeHiMid->setEnabled(rangeLive);
         m_RangeLoGain->setEnabled(rangeLive);
-        m_RangeNote->setValue(latch > 0.0 ? "Holding above the latch"
-                                          : "Set the latch to switch this on");
+        m_RangeLock->setEnabled(rangeLive);
+        // The note carries the LOCK state because the lock is invisible otherwise: a locked and an
+        // unlocked mask look identical until you move exposure, and by then you are already
+        // wondering why the selection did or did not follow. Same reason encodeNote and biasNote
+        // exist -- greying a control is only half the truth.
+        bool lock = false; m_RangeLock->getValue(lock);
+        m_RangeNote->setValue(latch <= 0.0 ? "Set the latch to switch this on"
+                              : lock       ? "Mask locked: exposure will not move it"
+                                           : "Holding above the latch");
     }
     m_BypLut->setEnabled(look);
     m_BypTrim->setEnabled(look);
@@ -2719,6 +2749,12 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
         setRangeLatch(p_Args.time);
         setEnabledness();
     }
+    // The latch and the lock both change what the note says, and the latch also decides whether
+    // the rest of the group is live at all. Neither re-runs any measurement -- this is the panel
+    // catching up with a value, which is why it is not guarded on eChangeUserEdit.
+    else if (p_ParamName == "rangeLock" || p_ParamName == "rangeLatch") {
+        setEnabledness();
+    }
     else if (p_ParamName == "probeApply" && p_Args.reason == OFX::eChangeUserEdit) {
         applyAutoGrade(p_Args.time);
     }
@@ -2900,6 +2936,18 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
     params[19] = (float)m_RangeHiMid->getValueAtTime(p_Time);
     params[20] = (float)m_RangeLoGain->getValueAtTime(p_Time);
 
+    // THE MASK'S REFERENCE GRADE, resolved here rather than branched on in the kernel. Unlocked it
+    // is the live grade, so the mask reads the graded picture exactly as it did before the lock
+    // existed; locked it is the grade captured when the latch was measured. Either way the four
+    // render paths see one number each and have no idea a lock exists -- a branch out there would
+    // be a second definition of the mask with nothing to say which one a frame used.
+    {
+        bool lock = false; m_RangeLock->getValueAtTime(p_Time, lock);
+        params[21] = lock ? (float)m_RangeRefLift ->getValueAtTime(p_Time) : params[3];
+        params[22] = lock ? (float)m_RangeRefGamma->getValueAtTime(p_Time) : params[4];
+        params[23] = lock ? (float)m_RangeRefGain ->getValueAtTime(p_Time) : params[5];
+    }
+
     // Force the params the role doesn't own to neutral, so the two nodes chain cleanly:
     // the look must be applied once (on the output node), the scene exp/WB stage once (input).
     if (role == 1) {            // Input Transform: no look at all
@@ -2912,6 +2960,7 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
         // twice. Latch 0 is the off switch the pipeline already tests.
         params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f; params[18]=0.f;
         params[19]=1.f; params[20]=1.f;
+        params[21]=0.f; params[22]=1.f; params[23]=1.f;   // ...and the mask's reference grade
     } else if (role == 2) {     // Output Transform: scene exp/WB already happened upstream
         params[10]=0.f; params[11]=6500.f;                        // rawExp, rawTemp
     }
@@ -2925,7 +2974,7 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
     if (bypDen)  { params[2]=0.f; }                                              // density
     if (bypExp)  { params[3]=0.f; params[4]=1.f; params[5]=1.f; }                // lift/gamma/gain
     if (bypRange){ params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f; params[18]=0.f;
-                   params[19]=1.f; params[20]=1.f; }
+                   params[19]=1.f; params[20]=1.f; params[21]=0.f; params[22]=1.f; params[23]=1.f; }
     if (bypTrim) { params[8]=0.f; params[9]=1.f; params[12]=0.f; }               // exp/contrast/rolloff
     // bypLut needs no entry here: it already cleared lutOk above, which drops both the LUT
     // sample and its encode override in one go.
@@ -3648,6 +3697,37 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     rsh->setDefault(false);
     rsh->setParent(*gRange);
     page->addChild(*rsh);
+
+    // LOCK THE MASK AGAINST THE GRADE THAT MOVES UNDER IT.
+    //
+    // The mask reads the picture after the grade curve -- which is what lets it separate a window
+    // from a bright pillow, and also what makes it slide when you change exposure. So the held
+    // region grows or shrinks under the very control you are using to adjust it, and "pull the
+    // window down" ends up changing WHAT the window is.
+    //
+    // Locked, the mask is evaluated against the Lift/Gamma/Gain that were in effect when the latch
+    // was measured, and stops moving. The three anchors are ordinary saved params (hidden, since
+    // they are a captured state rather than a control) so a reloaded project keeps its mask --
+    // instance state would have made the lock quietly evaporate, the way the Bias anchor did
+    // before it was persisted.
+    BooleanParamDescriptor* rlk = p_Desc.defineBooleanParam("rangeLock");
+    rlk->setLabels("Lock Mask", "Lock Mask", "Lock Mask");
+    rlk->setHint("Freeze the mask against the exposure underneath it. The mask normally reads the graded picture, which is what lets it tell a window from a bright pillow - but it also means changing Lift, Gamma or Gain moves the selection while you are working on it. Tick this and the mask is measured against the grade that was in effect when you pressed 'Set From Frame', so you can pull the held area right down and it stays exactly the same shape - like changing the power of the sun rather than re-choosing what the sun is lighting. Press 'Set From Frame' again to re-capture at the current grade. NOTE it locks against the grade curve only: RAW Exposure and Density sit upstream of the mask and will still move it.");
+    rlk->setDefault(false);
+    rlk->setParent(*gRange);
+    page->addChild(*rlk);
+
+    // The captured grade. Hidden: it is a measurement the Lock takes, not a number to type.
+    for (int k = 0; k < 3; ++k) {
+        static const char* nm[3] = { "rangeRefLift", "rangeRefGamma", "rangeRefGain" };
+        static const double dv[3] = { 0.0, 1.0, 1.0 };
+        DoubleParamDescriptor* rp = p_Desc.defineDoubleParam(nm[k]);
+        rp->setDefault(dv[k]);
+        rp->setRange(-1000.0, 1000.0);
+        rp->setIsSecret(true);
+        rp->setParent(*gRange);
+        page->addChild(*rp);
+    }
 
     page->addChild(*defineSlider(p_Desc, "rangeSoft", "Softness",
         "How gradually the mask fades in at the latch, in the same 0-100 units. Resolve splits this into separate low and high softness; one number covers it here because the two are almost always set together. Raise it if the boundary shows as an edge in a gradient. NOTE this is softness in BRIGHTNESS, not a spatial blur: it feathers across tones rather than across the picture, so it cleans up a hard edge in a smooth gradient but cannot settle a mask boundary that lands inside noise.",
