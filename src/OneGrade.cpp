@@ -3214,6 +3214,7 @@ public:
         _sx    = p_Effect->fetchDoubleParam("rangeShapeW");
         _sy    = p_Effect->fetchDoubleParam("rangeShapeH");
         _rot   = p_Effect->fetchDoubleParam("rangeShapeR");
+        _note  = p_Effect->fetchStringParam("rangeShapeNote");
     }
 
     virtual bool draw(const OFX::DrawArgs& p_Args);
@@ -3222,23 +3223,38 @@ public:
     virtual bool penUp(const OFX::PenArgs& p_Args);
 
 private:
-    // Half-height units <-> canonical. getProjectSize/Offset is what the host says the frame is.
-    void frame(double& ox, double& oy, double& halfH) const
+    // Half-height units <-> canonical.
+    //
+    // THE SOURCE CLIP'S REGION OF DEFINITION, NOT THE PROJECT SIZE. The render normalises against
+    // the destination image's BOUNDS, so the overlay has to use the same rectangle or the outline
+    // is drawn somewhere the mask is not -- and if a host returns a degenerate project size the
+    // outline collapses to a half-pixel dot at the origin, which looks exactly like "overlays do
+    // not work". Project size is kept only as a fallback for when the clip has no RoD yet.
+    void frame(double t, double& ox, double& oy, double& halfH) const
     {
+        OFX::Clip* src = _effect->fetchClip(kOfxImageEffectSimpleSourceClipName);
+        if (src) {
+            const OfxRectD r = src->getRegionOfDefinition(t);
+            const double w = r.x2 - r.x1, h = r.y2 - r.y1;
+            if (w > 1.0 && h > 1.0) {
+                halfH = 0.5*h; ox = r.x1 + 0.5*w; oy = r.y1 + 0.5*h;
+                return;
+            }
+        }
         const OfxPointD sz = _effect->getProjectSize();
         const OfxPointD of = _effect->getProjectOffset();
         halfH = (sz.y > 1.0) ? 0.5*sz.y : 1.0;
         ox = of.x + 0.5*sz.x;
         oy = of.y + 0.5*sz.y;
     }
-    void toCanonical(double u, double v, double& x, double& y) const
+    void toCanonical(double t, double u, double v, double& x, double& y) const
     {
-        double ox, oy, hh; frame(ox, oy, hh);
+        double ox, oy, hh; frame(t, ox, oy, hh);
         x = ox + u*hh; y = oy + v*hh;
     }
-    void toUnits(double x, double y, double& u, double& v) const
+    void toUnits(double t, double x, double y, double& u, double& v) const
     {
-        double ox, oy, hh; frame(ox, oy, hh);
+        double ox, oy, hh; frame(t, ox, oy, hh);
         u = (x - ox)/hh; v = (y - oy)/hh;
     }
 
@@ -3247,7 +3263,9 @@ private:
     OFX::DoubleParam*  _cx; OFX::DoubleParam* _cy;
     OFX::DoubleParam*  _sx; OFX::DoubleParam* _sy;
     OFX::DoubleParam*  _rot;
+    OFX::StringParam*  _note;
     bool _dragging = false;
+    bool _reported = false;   // the note is written ONCE; setValue per redraw would loop
 };
 
 bool RangeShapeInteract::draw(const OFX::DrawArgs& p_Args)
@@ -3263,7 +3281,7 @@ bool RangeShapeInteract::draw(const OFX::DrawArgs& p_Args)
     // Rotate OUT of the shape's frame -- shape_mask() rotates into it, so this is the inverse.
     auto pt = [&](double nx, double ny, double& X, double& Y) {
         const double du = nx*sx, dv = ny*sy;
-        toCanonical(cx + du*cs - dv*sn, cy + du*sn + dv*cs, X, Y);
+        toCanonical(p_Args.time, cx + du*cs - dv*sn, cy + du*sn + dv*cs, X, Y);
     };
 
     // Twice, dark then light, so the outline reads over any picture underneath it.
@@ -3282,12 +3300,25 @@ bool RangeShapeInteract::draw(const OFX::DrawArgs& p_Args)
         }
         glEnd();
         // The centre handle, sized in VIEWPORT pixels so it stays grabbable at any zoom.
-        double hx, hy; toCanonical(cx, cy, hx, hy);
+        double hx, hy; toCanonical(p_Args.time, cx, cy, hx, hy);
         const double r = 6.0 * p_Args.pixelScale.x;
         glBegin(GL_LINES);
         glVertex2d(hx - r, hy); glVertex2d(hx + r, hy);
         glVertex2d(hx, hy - r); glVertex2d(hx, hy + r);
         glEnd();
+    }
+    // REPORT, ONCE, THAT THIS RAN. Three separate things have to hold for an outline to appear --
+    // the host must advertise overlays, it must actually call us, and the GL context it hands over
+    // must accept fixed-function drawing (glBegin/glColor exist only in a compatibility profile,
+    // and a core-profile context would swallow every call above). Each fails silently and they are
+    // indistinguishable from the outside, so the panel says which one you are in.
+    if (!_reported) {
+        _reported = true;
+        const GLenum e = glGetError();
+        char msg[64];
+        if (e == GL_NO_ERROR) snprintf(msg, sizeof msg, "drawing on the viewer");
+        else                  snprintf(msg, sizeof msg, "host GL rejected it (0x%04x)", (unsigned)e);
+        _note->setValue(msg);
     }
     return true;
 }
@@ -3297,7 +3328,8 @@ bool RangeShapeInteract::penDown(const OFX::PenArgs& p_Args)
     int shp = 0; _shape->getValueAtTime(p_Args.time, shp);
     if (shp <= 0) return false;
     double hx, hy;
-    toCanonical(_cx->getValueAtTime(p_Args.time), _cy->getValueAtTime(p_Args.time), hx, hy);
+    toCanonical(p_Args.time, _cx->getValueAtTime(p_Args.time),
+                _cy->getValueAtTime(p_Args.time), hx, hy);
     const double grab = 12.0 * p_Args.pixelScale.x;
     if (std::fabs(p_Args.penPosition.x - hx) > grab ||
         std::fabs(p_Args.penPosition.y - hy) > grab) return false;
@@ -3308,7 +3340,7 @@ bool RangeShapeInteract::penDown(const OFX::PenArgs& p_Args)
 bool RangeShapeInteract::penMotion(const OFX::PenArgs& p_Args)
 {
     if (!_dragging) return false;
-    double u, v; toUnits(p_Args.penPosition.x, p_Args.penPosition.y, u, v);
+    double u, v; toUnits(p_Args.time, p_Args.penPosition.x, p_Args.penPosition.y, u, v);
     _cx->setValue(u); _cy->setValue(v);
     requestRedraw();
     return true;
@@ -4013,6 +4045,18 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         si->setDefault(false);
         si->setParent(*gRange);
         page->addChild(*si);
+    }
+
+    {
+        StringParamDescriptor* sn = p_Desc.defineStringParam("rangeShapeNote");
+        sn->setLabels("Shape handle", "Shape handle", "Shape handle");
+        sn->setStringType(eStringTypeLabel);
+        sn->setDefault(hostOverlays ? "waiting for the viewer to draw"
+                                    : "not supported by this host - use the sliders");
+        sn->setHint("Whether the on-screen outline is working. 'drawing' means the host called our overlay and OpenGL accepted it, so the outline and its centre handle are live on the viewer. A GL error means the host gave us a graphics context that will not accept the drawing calls. 'waiting' means the host has never asked us to draw, which is the same as no overlay support whatever it advertises. The shape itself is unaffected either way.");
+        sn->setEnabled(false);
+        sn->setParent(*gRange);
+        page->addChild(*sn);
     }
 
     defineBypass(p_Desc, page, "bypassRange",
