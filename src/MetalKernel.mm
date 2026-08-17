@@ -166,13 +166,13 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
                           (dg>0.0f)?og_r709ge(outc.z,dg):og_r709e(outc.z));
         // Range Balance — mask on the PRE-grade display luma, so it cannot chase its own output.
         float rbL=P[13], rbS=P[14], rbH=P[15], rbF=P[16], rbG=P[17];
-        bool rbW = (P[18]>0.5f);
-        bool rbOn = (rbL>0.0f) && (rbW || rbH!=1.0f || rbF!=0.0f || rbG!=1.0f);
+        bool rbW = (P[18]>0.5f); float rbHg=P[19], rbLg=P[20];
+        bool rbOn = (rbL>0.0f) && (rbW || rbH!=1.0f || rbF!=0.0f || rbG!=1.0f || rbHg!=1.0f || rbLg!=1.0f);
         float3 v3 = float3(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma));
         float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*v3.x+0.7152f*v3.y+0.0722f*v3.z),rbL,100.0f,rbS,rbS) : 0.0f;
         if(rbOn){
-            float3 room = float3(og_lggc(v3.x,1.0f,rbF,rbG),og_lggc(v3.y,1.0f,rbF,rbG),og_lggc(v3.z,1.0f,rbF,rbG));
-            float3 high = float3(og_lggc(v3.x,rbH,0.0f,1.0f),og_lggc(v3.y,rbH,0.0f,1.0f),og_lggc(v3.z,rbH,0.0f,1.0f));
+            float3 room = float3(og_lggc(v3.x,rbLg,rbF,rbG),og_lggc(v3.y,rbLg,rbF,rbG),og_lggc(v3.z,rbLg,rbF,rbG));
+            float3 high = float3(og_lggc(v3.x,rbH,0.0f,rbHg),og_lggc(v3.y,rbH,0.0f,rbHg),og_lggc(v3.z,rbH,0.0f,rbHg));
             v3 = room*(1.0f-rbM) + high*rbM;
         }
         outc = float3((dg>0.0f)?og_r709gd(v3.x,dg):og_r709d(v3.x),
@@ -264,7 +264,7 @@ void RunMetalKernel(void* p_CmdQ, int p_Width, int p_Height, const float* p_Para
     [computeEncoder setBuffer:dstDeviceBuf offset:0 atIndex:8];
     [computeEncoder setBytes:&p_Width  length:sizeof(int) atIndex:11];
     [computeEncoder setBytes:&p_Height length:sizeof(int) atIndex:12];
-    [computeEncoder setBytes:p_Params  length:sizeof(float)*19 atIndex:13];
+    [computeEncoder setBytes:p_Params  length:sizeof(float)*21 atIndex:13];
     [computeEncoder setBytes:&p_Camera length:sizeof(int) atIndex:14];
     [computeEncoder setBytes:&p_Encode length:sizeof(int) atIndex:15];
     [computeEncoder setBytes:&lutN     length:sizeof(int) atIndex:16];

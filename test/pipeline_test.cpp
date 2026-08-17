@@ -29,6 +29,7 @@ static void neutral13(float P[og::analysis::kParamN])
     for (int i=0;i<og::analysis::kParamN;i++) P[i]=0.f;
     P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f;
     P[13]=0.f; P[14]=2.6f; P[15]=1.f; P[16]=0.f; P[17]=1.f;   // range balance: off
+    P[18]=0.f; P[19]=1.f; P[20]=1.f;                          // show mask, hi gamma, lo gain
 }
 static void neutral(float P[og::analysis::kParamN]) { neutral13(P); }
 

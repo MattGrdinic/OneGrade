@@ -136,13 +136,13 @@ __global__ void OneGradeKernel(int W,int H,const float* P,int cam,int enc,const 
         float d[3]; for(int k=0;k<3;k++) d[k]=(dg>0.0f)?og_r709ge(outc[k],dg):og_r709e(outc[k]);
         // Range Balance — mask on the PRE-grade display luma, so it cannot chase its own output.
         const float rbL=P[13],rbS=P[14],rbH=P[15],rbF=P[16],rbG=P[17];
-        const bool rbW=(P[18]>0.5f);
-        const bool rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f);
+        const bool rbW=(P[18]>0.5f); const float rbHg=P[19], rbLg=P[20];
+        const bool rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f||rbHg!=1.0f||rbLg!=1.0f);
         float v3[3]; for(int k=0;k<3;k++) v3[k]=og_lggc(d[k],gain,lift,gamma);
         const float rbM=rbOn?og_hlmask(100.0f*(0.2126f*v3[0]+0.7152f*v3[1]+0.0722f*v3[2]),rbL,100.0f,rbS,rbS):0.0f;
         for(int k=0;k<3;k++){
             float v=v3[k];
-            if(rbOn){ float rm=og_lggc(v,1.0f,rbF,rbG), hi3=og_lggc(v,rbH,0.0f,1.0f); v=rm*(1.0f-rbM)+hi3*rbM; }
+            if(rbOn){ float rm=og_lggc(v,rbLg,rbF,rbG), hi3=og_lggc(v,rbH,0.0f,rbHg); v=rm*(1.0f-rbM)+hi3*rbM; }
             outc[k]=(dg>0.0f)?og_r709gd(v,dg):og_r709d(v);
         }
         if(rbW){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }  // matte: no encode/LUT/trim
@@ -162,8 +162,8 @@ void RunCudaKernel(void* p_Stream, int p_Width, int p_Height, const float* p_Par
     dim3 blocks((p_Width + threads.x - 1) / threads.x, (p_Height + threads.y - 1) / threads.y, 1);
 
     float* d_params = nullptr;
-    cudaMalloc(&d_params, sizeof(float) * 19);
-    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 19, cudaMemcpyHostToDevice, stream);
+    cudaMalloc(&d_params, sizeof(float) * 21);
+    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 21, cudaMemcpyHostToDevice, stream);
 
     int lutN = (p_Lut && p_LutSize >= 2) ? p_LutSize : 0;
     float* d_lut = nullptr;

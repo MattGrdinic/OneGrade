@@ -392,10 +392,12 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     // mask on and off while the mask was working correctly.
     const float rbLatch = P[13], rbSoft = P[14], rbHigh = P[15], rbLift = P[16], rbGamma = P[17];
     const bool  rbShow  = (P[18] > 0.5f);   // preview the matte instead of the picture
+    const float rbHiGam = P[19], rbLoGain = P[20];
     // Showing the matte has to work BEFORE the three moves are dialled in -- that is the whole
     // point of it -- so the preview alone is enough to switch the stage on.
     const bool  rbOn = (rbLatch > 0.f) &&
-                       (rbShow || rbHigh != 1.f || rbLift != 0.f || rbGamma != 1.f);
+                       (rbShow || rbHigh != 1.f || rbLift != 0.f || rbGamma != 1.f ||
+                        rbHiGam != 1.f || rbLoGain != 1.f);
     // AFTER THE GRADE CURVE, BEFORE RANGE BALANCE'S OWN MOVES -- which is what a Resolve
     // qualifier sees when you drop it on a node, and the distinction the first version got wrong.
     //
@@ -416,8 +418,18 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     for (int i=0;i<3;i++) {
         float v = v3[i];
         if (rbOn) {
-            const float room = lgg_core(v, rbLift, rbGamma, 1.f);
-            const float high = lgg_core(v, 0.f, 1.f, rbHigh);
+            // A FULL SET EACH SIDE, except one. The held area gets Gain and Gamma: Gain pulls a
+            // bright window or a cloud bank down, and Gamma then puts back the midtone detail
+            // that pulling it down flattened -- which is the move a cloudscape needs and the one
+            // Gain alone cannot make.
+            //
+            // NO LIFT ON THE HELD SIDE, deliberately. Lift is lift*(1 - min(v,1)), so its
+            // authority falls away toward white and it does essentially nothing to a region
+            // selected FOR being bright. That is the same property that made the tone solve run
+            // Lift to its bound on a sky, and a control that cannot move its own target is worse
+            // than a missing one.
+            const float room = lgg_core(v, rbLift, rbGamma, rbLoGain);
+            const float high = lgg_core(v, 0.f, rbHiGam, rbHigh);
             v = (1.f - rbM)*room + rbM*high;
         }
         outc[i] = (dg > 0.f) ? r709_g_dec(v, dg) : r709_dec(v);

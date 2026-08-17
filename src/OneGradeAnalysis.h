@@ -56,7 +56,7 @@
 namespace og {
 namespace analysis {
 
-static const int kParamN = 19;   // matches P[] in OneGradePipeline.h
+static const int kParamN = 21;   // matches P[] in OneGradePipeline.h
 
 // ---------------------------------------------------------------------------------------
 // CIELAB, for the colour half of the descriptor set.
@@ -800,7 +800,7 @@ static inline const float* param_steps()
     //                temp  tint  dens  lift  gamma gain  oTmp  oTnt  pExp  pCon  rExp  rTemp  roll
     //                then range balance: latch  soft  high  rbLift rbGamma
     static const float s[kParamN] = { 0.05f,0.05f,0.05f,0.02f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,250.f,0.05f,
-                                      2.0f, 0.5f, 0.05f, 0.02f, 0.05f, 0.f };
+                                      2.0f, 0.5f, 0.05f, 0.02f, 0.05f, 0.f, 0.05f, 0.05f };
     return s;
 }
 
@@ -851,7 +851,7 @@ static inline const char* param_name(int p)
 {
     static const char* n[kParamN] = { "tmp","tnt","dns","lft","gam","gan",
                                       "oTm","oTn","pEx","pCn","rEx","rTm","rol",
-                                      "rbL","rbS","rbH","rbF","rbG","rbW" };
+                                      "rbL","rbS","rbH","rbF","rbG","rbW","rbHg","rbLg" };
     return (p >= 0 && p < kParamN) ? n[p] : "?";
 }
 
@@ -968,9 +968,9 @@ static inline void apply_move(const float* P0, const float* dpNorm, float* Pout)
     //                              temp  tint  dens   lift   gamma  gain  oTmp oTnt  pExp  pCon  rExp   rTemp  roll
     //                              then range balance: latch  soft  high  rbLift rbGamma
     static const float lo[kParamN] = { -1.f,-1.f,-1.f, -0.5f, 0.20f, 0.20f, -1.f,-1.f, -3.f, 0.20f, -5.f, 2000.f, 0.f,
-                                       0.f,  0.f, 0.05f, -0.5f, 0.20f, 0.f };
+                                       0.f,  0.f, 0.05f, -0.5f, 0.20f, 0.f, 0.20f, 0.20f };
     static const float hi[kParamN] = {  1.f, 1.f, 1.f,  0.5f, 3.00f, 3.00f,  1.f, 1.f,  3.f, 3.00f,  5.f,20000.f, 0.8f,
-                                     100.f, 25.f, 2.00f,  0.5f, 3.00f, 1.f };
+                                     100.f, 25.f, 2.00f,  0.5f, 3.00f, 1.f, 3.00f, 3.00f };
     const float* st = param_steps();
     for (int i = 0; i < kParamN; ++i) {
         float v = P0[i] + dpNorm[i]*st[i];
