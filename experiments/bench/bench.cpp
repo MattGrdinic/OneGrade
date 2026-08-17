@@ -88,7 +88,7 @@ static og::grade::Measurements measure(const Frame& f, int cam, int enc, oga::Sa
 {
     og::grade::Measurements m;
     const int step = std::max(1, (int)(std::sqrt((double)(f.w * f.h) / 200000.0) + 0.5));
-    float N[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float N[oga::kParamN]; oga::neutral_params(N);
 
     // TWO ENCODES, mirroring probeAnalyze(). `hot` is a threshold chosen in display space, so it
     // needs a display-referred encode; d01/d99 get pushed through og_lgg by the solve, so they

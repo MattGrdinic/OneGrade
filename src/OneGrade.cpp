@@ -501,7 +501,14 @@ private:
     // Creative's grade, before a subject was chosen -- what switching subjects re-runs from.
     // Instance state on purpose: it is only meaningful while the segmentation behind it is live,
     // which is this session. A reloaded project shows "press Magic Grade" instead of a stale list.
-    float m_MagicBaseP[13] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    // SIZED FROM kParamN, NEVER TYPED. This was a literal 13 and stayed 13 while the param count
+    // grew to 21, so the copy below it wrote 32 bytes past the end of the array -- straight over
+    // m_PostExp, m_PostCon and m_Rolloff, which applyMagicResult() then calls setValue() through.
+    // Range Balance made it a hard crash every time because it puts large non-zero floats in
+    // P[13..20], turning three null pointers into three wild ones.
+    float m_MagicBaseP[oga::kParamN] =
+        {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
+         0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f};
     bool  m_HaveMagicBase = false;
     bool  m_MagicLutOk    = false;
     OFX::DoubleParam* m_PostExp;
@@ -997,7 +1004,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
         // are only meaningful in the space they were chosen for.
         const int dispEnc = (encode <= 2) ? encode : 1;
         const char* encName = (dispEnc == 0) ? "Scene" : (dispEnc == 1) ? "2.2" : "2.4";
-        float neutral[kParamCount] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+        float neutral[kParamCount]; oga::neutral_params(neutral);
 
         // Coarse grid, ~200k samples: percentiles don't need every pixel, and a button that
         // stalls the UI on an 8K frame is its own kind of failure.
@@ -1268,7 +1275,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
         // arithmetic, no I/O.
         if (SS.size() >= 512) {
             m_LastExtras = oga::classify(SS, camera, dispEnc);
-            float Pn[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+            float Pn[oga::kParamN]; oga::neutral_params(Pn);
             m_LastDesc = oga::describe(SS, camera, dispEnc, Pn);
             // The Jacobian runs on a thinned copy that KEEPS the memberships classify() just
             // assigned — a derivative has to be taken around the same masks the operating
@@ -1299,7 +1306,10 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
             // in a param callback (resolveConfig loads the LUT), and for a diagnostic the
             // honest thing to show is what the panel says. It is PRE-LUT — with a film stock
             // selected the picture on screen is not this — so the row says so.
-            float Pg[oga::kParamN];
+            // Neutral first, so the parameters this does NOT read off the panel are defined.
+            // Declared bare, it left P[13..20] as stack garbage -- and P[18] is Show Mask, so a
+            // stray bit there hands og::process a matte to describe instead of a picture.
+            float Pg[oga::kParamN]; oga::neutral_params(Pg);
             Pg[0]  = (float)m_Temp->getValueAtTime(p_Time);
             Pg[1]  = (float)m_Tint->getValueAtTime(p_Time);
             Pg[2]  = (float)m_Density->getValueAtTime(p_Time);
@@ -1828,7 +1838,7 @@ void OneGrade::armToneTargets()
         m_ToneTCeil->setValue(-1.0);  m_ToneTFMax->setValue(-1.0);
         return;
     }
-    float P[og::analysis::kParamN];
+    float P[og::analysis::kParamN]; oga::neutral_params(P);
     P[0]=(float)m_Temp->getValue();    P[1]=(float)m_Tint->getValue();
     P[2]=(float)m_Density->getValue(); P[3]=(float)m_Lift->getValue();
     P[4]=(float)m_Gamma->getValue();   P[5]=(float)m_Gain->getValue();
@@ -1896,7 +1906,11 @@ void OneGrade::applyBias()
     m_ToneLo->getValue(tLo); m_ToneMid->getValue(tMid);
     m_ToneShi->getValue(tShi); m_ToneHi->getValue(tHi); m_ToneFLo->getValue(tFLo);
     if (tLo >= 0.0 && tMid >= 0.0 && tShi >= 0.0 && tHi >= 0.0 && tFLo >= 0.0) {
-        float Pc[oga::kParamN];
+        // Neutral first -- see Pg above. RANGE BALANCE STAYS NEUTRAL HERE deliberately, not just
+        // defined: it is a masked local adjustment applied after the grade curve, so letting it
+        // into the solve's measurement would make the answer depend on the mask the solve is not
+        // solving for. Same reason setRangeLatch() measures with it switched off.
+        float Pc[oga::kParamN]; oga::neutral_params(Pc);
         Pc[0]=(float)m_Temp->getValue();    Pc[1]=(float)m_Tint->getValue();
         Pc[2]=(float)m_Density->getValue();
         // THE SOLVE STARTS FROM THE ARMED GRADE, NEVER FROM THE LIVE SLIDERS.

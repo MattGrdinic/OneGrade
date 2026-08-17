@@ -457,7 +457,7 @@ static inline void solve_black_px(const analysis::SampleSet& S, int cam, int enc
 
     // Rank by the neutral render's min channel: what crushes is a CHANNEL, not a luminance, and
     // on a saturated shadow the channels sit far apart.
-    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
     Pn[11] = P[11];
     std::vector<std::pair<float,size_t>> key; key.reserve(n);
     for (size_t i = 0; i < n; ++i) {
@@ -533,7 +533,7 @@ static inline double solve_magic_base(const analysis::SampleSet& S, int cam, int
     if (!c.ok) return 0.0;
     analysis::SampleSet D = analysis::decimate(S, 8000);
     const float step = analysis::param_steps()[c.param];
-    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
     float Pp[analysis::kParamN];
     for (int i = 0; i < analysis::kParamN; ++i) Pp[i] = Pn[i];
     Pp[c.param] += step;
@@ -604,7 +604,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
     const size_t N = (size_t)512 * 512;
     if (thumbSrc.size() != N * 3 || regions.size() != N) return out;
 
-    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
 
     // A LIGHT SOURCE IS NOT A REFERENCE SURFACE, even when the model is right about what it is.
     // ADE20K's `windowpane` and `curtain` are both BUILT, so a blown window -- the brightest,
@@ -1248,7 +1248,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         }
     }
 
-    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
     Pn[11] = P0[11];   // keep the white balance; it is not a tone control
 
     // Neutral render once, in the encode the grade curve runs in. Everything below is a solve on
@@ -1402,12 +1402,16 @@ using SegmentFn = std::function<bool(const unsigned char* rgb, int w, int h,
                                      std::vector<unsigned char>& regions512)>;
 
 struct MagicResult {
-    float P[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    // Mirrors analysis::neutral_params(); a default member initialiser cannot call it.
+    // static_assert there fires if the count moves, which is the reminder to update this.
+    float P[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
+                                  0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f};
     // The grade as Creative left it, BEFORE a subject was chosen. Kept so switching subjects
     // starts from the same place every time -- re-running from the graded result would compound
     // one subject's colour move onto the next, and the answer would depend on the order they
     // were tried in.
-    float Pcreative[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pcreative[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
+                                  0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f};
     analysis::MagicChoice choice;
     MagicTone     tone;
     WhiteBalance  wb;
@@ -1520,7 +1524,7 @@ static inline MagicResult solve_magic(analysis::SampleSet& S,
     // 1. WHITE BALANCE, on a NEUTRAL render: the cast is what we are here to measure, so it has
     //    to still be in the picture. Before everything else, so the rest sees a balanced frame.
     if (wbFirst && thumbSrc.size() == (size_t)512 * 512 * 3) {
-        float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+        float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
         std::vector<unsigned char> t0, regions;
         thumb(Pn, /*withLut=*/false, t0);
         if (segment(t0.data(), 512, 512, regions)) {

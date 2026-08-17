@@ -58,6 +58,30 @@ namespace analysis {
 
 static const int kParamN = 21;   // matches P[] in OneGradePipeline.h
 
+// THE NEUTRAL PARAMETER SET, IN ONE PLACE. It used to be a brace-initialiser copied into a dozen
+// functions, and every one of them silently zero-filled whatever the param count had grown by
+// since it was written -- so Range Balance's softness and its three gains all read 0 instead of
+// 1 in every neutral render. Harmless only because the stage switches off at latch 0.
+//
+// The same shape, one member away, was a hard crash: m_MagicBaseP was declared `float[13]` and
+// stayed 13 while kParamN reached 21, so copying a grade into it wrote 32 bytes over the three
+// OFX parameter pointers that follow it. A default that has to be retyped in twelve places is a
+// defect waiting for the next parameter.
+static inline void neutral_params(float* P)
+{
+    P[0]=0.f;   P[1]=0.f;  P[2]=0.f;                 // balance temp / tint / density
+    P[3]=0.f;   P[4]=1.f;  P[5]=1.f;                 // lift / gamma / gain
+    P[6]=0.f;   P[7]=0.f;                            // offset temp / tint
+    P[8]=0.f;   P[9]=1.f;                            // post exposure / contrast
+    P[10]=0.f;  P[11]=6500.f;                        // RAW exposure / temperature
+    P[12]=0.f;                                       // rolloff
+    P[13]=0.f;  P[14]=2.6f;                          // Range Balance: latch off, softness
+    P[15]=1.f;  P[19]=1.f;                           //   held gain / gamma
+    P[16]=0.f;  P[17]=1.f;  P[20]=1.f;               //   rest lift / gamma / gain
+    P[18]=0.f;                                       //   show mask
+    static_assert(kParamN == 21, "neutral_params() needs an entry for every parameter");
+}
+
 // ---------------------------------------------------------------------------------------
 // CIELAB, for the colour half of the descriptor set.
 //
@@ -330,7 +354,7 @@ static inline Extras classify(SampleSet& S, int cam, int enc)
     S.group.assign(n, 2); S.mid.assign(n, 0); S.skin.assign(n, 0);
     if (n == 0) return ex;
 
-    float P[kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float P[kParamN]; neutral_params(P);
     std::vector<float> la(n), lb(n);
     std::vector<uint32_t> pool; pool.reserve(n);
     long long hot = 0, skinN = 0;
@@ -554,7 +578,7 @@ static inline void stub_regions(SampleSet& S, int cam, int enc)
     S.region.assign(n, (uint8_t)R_OTHER);
     if (n == 0) return;
 
-    float P[kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float P[kParamN]; neutral_params(P);
     std::vector<float> vL(n), va(n), vb(n);
     double sumL = 0.0;
     for (size_t i = 0; i < n; ++i) {
