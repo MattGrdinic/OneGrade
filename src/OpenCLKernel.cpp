@@ -107,7 +107,8 @@ const char* KernelSource = "\n" \
 "__kernel void OneGradeKernel(int W,int H,int cam,int enc,                                                    \n" \
 "  float temp,float tint,float density,float lift,float gamma,float gain,float offTemp,float offTint,           \n" \
 "  float postExp,float postCon,float rawExp,float rawTemp,float rolloff,                                     \n" \
-"  float rbL,float rbS,float rbH,float rbF,float rbG, int lutN, float lutMix, __global const float* lut,     \n" \
+"  float rbL,float rbS,float rbH,float rbF,float rbG,float rbWs, int lutN, float lutMix,                     \n" \
+"  __global const float* lut,                                                                                \n" \
 "  __global const float* in, __global float* out) {                                                             \n" \
 "  const int x=get_global_id(0); const int y=get_global_id(1);                                                  \n" \
 "  if(x<W && y<H){                                                                                              \n" \
@@ -121,7 +122,8 @@ const char* KernelSource = "\n" \
 "    float3 outc=(enc<=3)?og_XYZto709(og_DWGtoXYZ(w)):w;                                                         \n" \
 "    float dg=(enc==1)?2.2f:((enc==2)?2.4f:0.0f);                                                                \n" \
 "    float3 d=(float3)((dg>0.0f)?og_r709ge(outc.x,dg):og_r709e(outc.x),(dg>0.0f)?og_r709ge(outc.y,dg):og_r709e(outc.y),(dg>0.0f)?og_r709ge(outc.z,dg):og_r709e(outc.z)); \n" \
-"    int rbOn=(rbL>0.0f)&&(rbH!=1.0f||rbF!=0.0f||rbG!=1.0f);                                                     \n" \
+"    int rbW=(rbWs>0.5f);                                                                                     \n" \
+"    int rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f);                                             \n" \
 "    float rbM=rbOn?og_hlmask(100.0f*(0.2126f*d.x+0.7152f*d.y+0.0722f*d.z),rbL,100.0f,rbS,rbS):0.0f;             \n" \
 "    float3 v3=(float3)(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma)); \n" \
 "    if(rbOn){ float3 rm=(float3)(og_lggc(v3.x,1.0f,rbF,rbG),og_lggc(v3.y,1.0f,rbF,rbG),og_lggc(v3.z,1.0f,rbF,rbG)); \n" \
@@ -129,6 +131,7 @@ const char* KernelSource = "\n" \
 "             v3=rm*(1.0f-rbM)+hi3*rbM; }                                                                        \n" \
 "    outc=(float3)((dg>0.0f)?og_r709gd(v3.x,dg):og_r709d(v3.x),(dg>0.0f)?og_r709gd(v3.y,dg):og_r709d(v3.y),(dg>0.0f)?og_r709gd(v3.z,dg):og_r709d(v3.z)); \n" \
 "    float3 e=(float3)(og_enc(enc,outc.x),og_enc(enc,outc.y),og_enc(enc,outc.z));                                \n" \
+"    if(rbW){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }                             \n" \
 "    if(lutN>=2 && lutMix>0.0f){ float3 s=og_sampleLUT(lut,lutN,e); e=e+(s-e)*lutMix; }                          \n" \
 "    float ex=exp2(postExp); e=(e*ex-0.5f)*postCon+0.5f;                                                         \n" \
 "    if(rolloff>0.0f && (enc<=2 || (lutN>=2 && lutMix>0.0f))){ e.x=og_softclip(e.x,rolloff); e.y=og_softclip(e.y,rolloff); e.z=og_softclip(e.z,rolloff); } \n" \
@@ -239,7 +242,7 @@ void RunOpenCLKernelBuffers(void* p_CmdQ, int p_Width, int p_Height, const float
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Height);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Camera);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Encode);
-    for (int i = 0; i < 18; ++i)
+    for (int i = 0; i < 19; ++i)
         error |= clSetKernelArg(kernel, count++, sizeof(float), &p_Params[i]);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &lutN);
     error |= clSetKernelArg(kernel, count++, sizeof(float), &p_LutMix);

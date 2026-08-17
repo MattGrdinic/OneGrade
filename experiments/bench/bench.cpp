@@ -48,6 +48,7 @@ static inline void full_chain(int cam, int enc, const float* P,
                               float ri, float gi, float bi, float& ro, float& go, float& bo)
 {
     og::process(cam, enc, P, ri, gi, bi, ro, go, bo);
+    if (P[18] > 0.5f && P[13] > 0.f) return;   // matte: no LUT, no trim (mirrors og_full_chain)
     const bool lutOn = (lut && lutSize >= 2 && lutMix > 0.f);
     if (lutOn) og::apply_lut(lut, lutSize, lutMix, ro, go, bo);
     og::apply_trim(P[8], P[9], ro, go, bo);

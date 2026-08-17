@@ -391,8 +391,11 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     // earlier stage already threw away, which on the test frame was blown identically with the
     // mask on and off while the mask was working correctly.
     const float rbLatch = P[13], rbSoft = P[14], rbHigh = P[15], rbLift = P[16], rbGamma = P[17];
+    const bool  rbShow  = (P[18] > 0.5f);   // preview the matte instead of the picture
+    // Showing the matte has to work BEFORE the three moves are dialled in -- that is the whole
+    // point of it -- so the preview alone is enough to switch the stage on.
     const bool  rbOn = (rbLatch > 0.f) &&
-                       (rbHigh != 1.f || rbLift != 0.f || rbGamma != 1.f);
+                       (rbShow || rbHigh != 1.f || rbLift != 0.f || rbGamma != 1.f);
     float rbM = 0.f;
     if (rbOn)
         rbM = highlight_mask(100.f*(0.2126f*d[0] + 0.7152f*d[1] + 0.0722f*d[2]),
@@ -408,7 +411,11 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
         outc[i] = (dg > 0.f) ? r709_g_dec(v, dg) : r709_dec(v);
     }
 
-    // 7. Final output encode
+    // 7. Final output encode. The matte is a MEASUREMENT, not a picture, so it bypasses the
+    //    encode entirely -- 0.5 of mask has to read as 0.5, and pushing it through a transfer
+    //    function would make a matte that looks like coverage it does not have. The caller
+    //    likewise skips the LUT and trim while this is on.
+    if (rbShow) { outR = outG = outB = rbM; return; }
     outR = encode(enc, outc[0]);
     outG = encode(enc, outc[1]);
     outB = encode(enc, outc[2]);

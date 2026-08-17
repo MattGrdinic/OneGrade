@@ -63,7 +63,7 @@ static const bool kAnalysisDebugUI = false;
 
 // MUST equal og::analysis::kParamN and the P[] the kernels index. Three separate places size
 // buffers off this, and a mismatch is silent on GPU: wrong values, no error, a different picture.
-#define kParamCount 18 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff,
+#define kParamCount 19 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff,
                        // rbLatch,rbSoft,rbHigh,rbLift,rbGamma
 
 // Folder scanned for built-in / film-look LUTs (Resolve's default LUT install).
@@ -268,6 +268,9 @@ static inline void og_full_chain(int camera, int encode, const float* P,
                                  float& ro, float& go, float& bo)
 {
     og::process(camera, encode, P, ri, gi, bi, ro, go, bo);
+    // The matte is a measurement, not a picture: process() has already returned it raw and
+    // unencoded, so a LUT or a trim on top would be a picture OF the mask rather than the mask.
+    if (P[18] > 0.5f && P[13] > 0.f) return;
     const bool lutOn = (lut && lutSize >= 2 && lutMix > 0.0f);
     if (lutOn) og::apply_lut(lut, lutSize, lutMix, ro, go, bo);
     og::apply_trim(P[8], P[9], ro, go, bo);                 // post-LUT trim
@@ -561,6 +564,7 @@ private:
     OFX::DoubleParam*  m_RangeHigh;
     OFX::DoubleParam*  m_RangeShadow;
     OFX::DoubleParam*  m_RangeMid;
+    OFX::BooleanParam* m_RangeShow;
     OFX::StringParam*  m_RangeNote;
     OFX::StringParam*  m_SepNote;      // why Face Tone Separation is or is not available
     OFX::DoubleParam*  m_RawExpMirror; // second face of rawExp, shown in the Magic section
@@ -673,6 +677,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_RangeHigh    = fetchDoubleParam("rangeHigh");
     m_RangeShadow  = fetchDoubleParam("rangeShadow");
     m_RangeMid     = fetchDoubleParam("rangeMid");
+    m_RangeShow    = fetchBooleanParam("rangeShow");
     m_RangeNote    = fetchStringParam("rangeNote");
     m_SepNote      = fetchStringParam("sepNote");
     m_RawExpMirror = fetchDoubleParam("rawExpMirror");
@@ -1781,6 +1786,10 @@ void OneGrade::setRangeLatch(double p_Time)
     std::nth_element(y.begin(), y.begin() + k, y.end());
     const double latch = std::min(100.0, std::max(0.0, 100.0 * (double)y[k]));
     m_RangeLatch->setValue(latch);
+    // Show the matte straight away. Dialling a latch you cannot see is guesswork, and the
+    // measured value is a starting point rather than an answer -- the point of the button is
+    // to put the user somewhere close enough to judge, which needs the matte on screen.
+    m_RangeShow->setValue(true);
 
     char note[64];
     snprintf(note, sizeof note, "Latch %.1f measured from this frame", latch);
@@ -2351,6 +2360,7 @@ void OneGrade::setEnabledness()
         double latch = 0.0; m_RangeLatch->getValue(latch);
         const bool rangeLive = look && !bypRange && latch > 0.0;
         m_RangeLatch->setEnabled(look && !bypRange);
+        m_RangeShow->setEnabled(look && !bypRange && latch > 0.0);
         m_RangeSoft->setEnabled(rangeLive);
         m_RangeHigh->setEnabled(rangeLive);
         m_RangeShadow->setEnabled(rangeLive);
@@ -2799,6 +2809,7 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
     params[15] = (float)m_RangeHigh->getValueAtTime(p_Time);
     params[16] = (float)m_RangeShadow->getValueAtTime(p_Time);
     params[17] = (float)m_RangeMid->getValueAtTime(p_Time);
+    { bool sw = false; m_RangeShow->getValueAtTime(p_Time, sw); params[18] = sw ? 1.f : 0.f; }
 
     // Force the params the role doesn't own to neutral, so the two nodes chain cleanly:
     // the look must be applied once (on the output node), the scene exp/WB stage once (input).
@@ -2810,7 +2821,7 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
         // Range Balance is part of the LOOK -- it runs in the display curve beside Lift/Gamma/
         // Gain -- so an Input Transform node must not apply it, or a group split would apply it
         // twice. Latch 0 is the off switch the pipeline already tests.
-        params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f;
+        params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f; params[18]=0.f;
     } else if (role == 2) {     // Output Transform: scene exp/WB already happened upstream
         params[10]=0.f; params[11]=6500.f;                        // rawExp, rawTemp
     }
@@ -2823,7 +2834,7 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
     if (bypBal)  { params[0]=0.f; params[1]=0.f; params[6]=0.f; params[7]=0.f; }  // gain+offset balance
     if (bypDen)  { params[2]=0.f; }                                              // density
     if (bypExp)  { params[3]=0.f; params[4]=1.f; params[5]=1.f; }                // lift/gamma/gain
-    if (bypRange){ params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f; }
+    if (bypRange){ params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f; params[18]=0.f; }
     if (bypTrim) { params[8]=0.f; params[9]=1.f; params[12]=0.f; }               // exp/contrast/rolloff
     // bypLut needs no entry here: it already cleared lutOk above, which drops both the LUT
     // sample and its encode override in one go.
@@ -3520,6 +3531,13 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     rset->setHint("Measure the latch from the current frame. Reads the picture as it arrives at this node, before the grade curve, and puts the latch at the start of the bright population. Park the playhead on a frame that shows the highlight you care about - a window, a sky, a practical - and press. It is measured once and then stays put, so the mask cannot drift while you work; press again on another frame if the shot changes.");
     rset->setParent(*gRange);
     page->addChild(*rset);
+
+    BooleanParamDescriptor* rsh = p_Desc.defineBooleanParam("rangeShow");
+    rsh->setLabels("Show Mask", "Show Mask", "Show Mask");
+    rsh->setHint("Show the mask itself instead of the picture: white is held, black is opened up, grey is the soft edge between them. Turned on automatically by 'Set From Frame' so you can see what was measured, and meant to be turned off again once the latch looks right. The matte bypasses the output encode, the LUT and the trim, so what you see is the mask exactly as the maths has it rather than a picture of it - 50% grey really is half coverage. Range Balance counts as ON while this is ticked, even with the three moves left at neutral, so the mask can be dialled before deciding what to do with it.");
+    rsh->setDefault(false);
+    rsh->setParent(*gRange);
+    page->addChild(*rsh);
 
     page->addChild(*defineSlider(p_Desc, "rangeSoft", "Softness",
         "How gradually the mask fades in at the latch, in the same 0-100 units. Resolve splits this into separate low and high softness; one number covers it here because the two are almost always set together. Raise it if the boundary shows as an edge in a gradient. NOTE this is softness in BRIGHTNESS, not a spatial blur: it feathers across tones rather than across the picture, so it cleans up a hard edge in a smooth gradient but cannot settle a mask boundary that lands inside noise.",

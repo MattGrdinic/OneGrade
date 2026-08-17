@@ -166,7 +166,8 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
                           (dg>0.0f)?og_r709ge(outc.z,dg):og_r709e(outc.z));
         // Range Balance — mask on the PRE-grade display luma, so it cannot chase its own output.
         float rbL=P[13], rbS=P[14], rbH=P[15], rbF=P[16], rbG=P[17];
-        bool rbOn = (rbL>0.0f) && (rbH!=1.0f || rbF!=0.0f || rbG!=1.0f);
+        bool rbW = (P[18]>0.5f);
+        bool rbOn = (rbL>0.0f) && (rbW || rbH!=1.0f || rbF!=0.0f || rbG!=1.0f);
         float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*d.x+0.7152f*d.y+0.0722f*d.z),rbL,100.0f,rbS,rbS) : 0.0f;
         float3 v3 = float3(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma));
         if(rbOn){
@@ -178,6 +179,7 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
                       (dg>0.0f)?og_r709gd(v3.y,dg):og_r709d(v3.y),
                       (dg>0.0f)?og_r709gd(v3.z,dg):og_r709d(v3.z)); // LGG
         float3 e = float3(og_enc(enc,outc.x), og_enc(enc,outc.y), og_enc(enc,outc.z));
+        if(rbW){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }  // matte: no encode, no LUT, no trim
         if(lutN>=2 && lutMix>0.0f){ float3 s=og_sampleLUT(lut,lutN,e); e = e + (s-e)*lutMix; }  // LUT + mix
         float ex=exp2(P[8]); e = (e*ex - 0.5f)*P[9] + 0.5f;                                     // post-LUT trim (exposure, contrast)
         if(P[12]>0.0f && (enc<=2 || (lutN>=2 && lutMix>0.0f))){ e.x=og_softclip(e.x,P[12]); e.y=og_softclip(e.y,P[12]); e.z=og_softclip(e.z,P[12]); } // highlight roll-off (display-referred only)
@@ -262,7 +264,7 @@ void RunMetalKernel(void* p_CmdQ, int p_Width, int p_Height, const float* p_Para
     [computeEncoder setBuffer:dstDeviceBuf offset:0 atIndex:8];
     [computeEncoder setBytes:&p_Width  length:sizeof(int) atIndex:11];
     [computeEncoder setBytes:&p_Height length:sizeof(int) atIndex:12];
-    [computeEncoder setBytes:p_Params  length:sizeof(float)*18 atIndex:13];
+    [computeEncoder setBytes:p_Params  length:sizeof(float)*19 atIndex:13];
     [computeEncoder setBytes:&p_Camera length:sizeof(int) atIndex:14];
     [computeEncoder setBytes:&p_Encode length:sizeof(int) atIndex:15];
     [computeEncoder setBytes:&lutN     length:sizeof(int) atIndex:16];
