@@ -3154,9 +3154,24 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     PageParamDescriptor* page = p_Desc.definePageParam("Controls");
 
+    // WHICH GROUPS START OPEN. setOpen() is kOfxParamPropGroupOpen, an OFX 1.2 property that the
+    // Support library sets with throwOnFailure=false -- so a host that does not implement it
+    // ignores the request rather than failing to load, and every group is stated explicitly
+    // instead of some being left to the host's default.
+    //
+    // OPEN is the happy path, and nothing else: pick a role or preset, press a button, tell it
+    // what camera it is looking at, choose a look. CLOSED is everything that refines a grade by
+    // hand (Balance, Exposure, Range Balance, Trim), plus the reference and delivery groups
+    // (Output, Export LUT, Setup/Help) which are set once and then not looked at.
+    //
+    // The panel is now twelve groups deep, and a full-height wall of collapsed headers is as hard
+    // to read as a wall of open ones -- so this is the one call that decides what a colorist sees
+    // when they drop the node on a clip. Worth revisiting on footage rather than reasoning about.
+
     // ---- 0. Role + Preset ----
     GroupParamDescriptor* gPreset = p_Desc.defineGroupParam("gPreset");
     gPreset->setLabels("0  Role / Preset", "0  Role / Preset", "0  Role / Preset");
+    gPreset->setOpen(true);
 
     // Node Role splits the pipeline across Resolve's group grading levels. See
     // OneGrade::setEnabledness / setupAndProcess — the role is enforced at render.
@@ -3523,6 +3538,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // with the other ones below and this group answers a single question: what shot this.
     GroupParamDescriptor* gInput = p_Desc.defineGroupParam("gInput");
     gInput->setLabels("1  Input Transform", "1  Input Transform", "1  Input Transform");
+    gInput->setOpen(true);
     ChoiceParamDescriptor* cam = p_Desc.defineChoiceParam("camera");
     cam->setLabels("Camera", "Camera", "Camera");
     cam->setHint("Source camera log/gamut, decoded to the DaVinci Wide Gamut linear working space. Every entry except the last is a colorimetric decode: pick your camera and you get a faithful transform - Blackmagic Gen 5 Film for Pocket/URSA/Pyxis clips, DaVinci Wide Gamut / Intermediate for clips already in that space, and so on. The default, 'Rec.2100 PQ - Smooth Decode', is the exception and is NOT a camera match: it runs log footage through the PQ inverse EOTF, a strongly compressive curve that happens to land log material with a near-perfect highlight rolloff and smooth color. It is a look wearing a transfer function, and it is the happy path all presets build on. Use it when you want a good image fast; pick your real camera when you want a faithful one.");
@@ -3559,6 +3575,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 2. Balance ----  (white balance in linear; watch the vectorscope while adjusting)
     GroupParamDescriptor* gBal = p_Desc.defineGroupParam("gBalance");
     gBal->setLabels("2  Balance & Density", "2  Balance & Density", "2  Balance & Density");
+    gBal->setOpen(false);
     defineBypass(p_Desc, page, "bypassBalance",
                  "Mute this stage at render without losing its values. Gain and Offset balance are held neutral; the sliders grey out but keep their numbers, so switching back restores the grade exactly.", gBal);
     {
@@ -3592,6 +3609,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // exposure decision, and it was in Trim only because it happens last.
     GroupParamDescriptor* gExp = p_Desc.defineGroupParam("gExposure");
     gExp->setLabels("3  Exposure and White Balance", "3  Exposure", "3  Exposure");
+    gExp->setOpen(false);
     defineBypass(p_Desc, page, "bypassExposure",
                  "Mute this stage at render without losing its values. Lift/Gamma/Gain are held neutral (0/1/1); the sliders grey out but keep their numbers. Note Auto Grade drives Gain, so bypassing this also mutes the auto exposure.", gExp);
     page->addChild(*defineSlider(p_Desc, "rawExp", "Scene Exposure", "Exposure in stops applied to scene light immediately after the camera decode, before the gamut transform - a linear gain on the scene, which is mechanically the same operation the Camera RAW tab's Exposure performs. Called 'Scene' rather than 'RAW' because this acts on the decoded image, not on the raw file: no sensor data reaches an OpenFX plugin.", 0.0, -5.0, 5.0, 0.01, gExp));
@@ -3612,6 +3630,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // whole reason the plugin exists.
     GroupParamDescriptor* gRange = p_Desc.defineGroupParam("gRange");
     gRange->setLabels("4  Range Balance", "4  Range Balance", "4  Range Balance");
+    gRange->setOpen(false);
 
     page->addChild(*defineSlider(p_Desc, "rangeLatch", "Latch",
         "Where the highlight mask starts, on the same 0-100 scale as Resolve's Luminance qualifier - everything brighter than this is held, everything below it is opened up. 0 switches the whole stage off, which is the default. Press 'Set From Frame' to measure it from the shot rather than guessing: it reads the bright population off the current frame and puts the latch where that population starts. Measured against a hand-dialled qualifier on a bedroom interior it landed within half a point.",
@@ -3670,6 +3689,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     scanLuts();
     GroupParamDescriptor* gLut = p_Desc.defineGroupParam("gLut");
     gLut->setLabels("5  Look / Film LUT", "5  Look / Film LUT", "5  Look / Film LUT");
+    gLut->setOpen(true);
     defineBypass(p_Desc, page, "bypassLut",
                  "Mute the LUT at render without losing the selection. This also hands Output Encode back to you: a selected LUT normally pins the encode to the curve it was authored for, so a bypass that left the encode pinned would still be changing the picture. The 'In effect' line under Output Encode says so while this is on.", gLut);
 
@@ -3718,6 +3738,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 7. Trim (after LUT) ----  final display-space trims on top of the look/LUT
     GroupParamDescriptor* gTrim = p_Desc.defineGroupParam("gTrim");
     gTrim->setLabels("6  Trim (after LUT)", "6  Trim (after LUT)", "6  Trim (after LUT)");
+    gTrim->setOpen(false);
     defineBypass(p_Desc, page, "bypassTrim",
                  "Mute this stage at render without losing its values. Exposure Trim, Contrast and Highlight Rolloff are held neutral; the sliders grey out but keep their numbers.", gTrim);
     {
@@ -3751,6 +3772,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 5. Output ----
     GroupParamDescriptor* gOut = p_Desc.defineGroupParam("gOutput");
     gOut->setLabels("7  Output", "7  Output", "7  Output");
+    gOut->setOpen(false);
     ChoiceParamDescriptor* enc = p_Desc.defineChoiceParam("outEncode");
     enc->setLabels("Output Encode", "Output Encode", "Output Encode");
     enc->setHint("Your delivery curve — the transfer function baked into the render. Rec.709 (Gamma 2.2) is the default: it matches what web/streaming platforms like YouTube assume, where most exports end up. Pick Rec.709 (Gamma 2.4) for broadcast/reference delivery, or Rec.709 (Scene) for a scene-referred hand-off. This is NOT the same setting as the project's Timeline Color Space and should not be changed to match it — on macOS the timeline must be Rec.709 (Scene) so Resolve's viewer agrees with QuickTime/YouTube, whatever you deliver in (see Setup / Help). The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you pick, so a wheel move reads linearly in that curve. An active LUT takes this over and greys it out, because the LUT can only be fed the curve it was authored for (Film Look -> Cineon, Custom Look -> Rec.709 Scene) — the 'In effect' line below always names what is actually being rendered. LUT Mix does not hand it back: Mix blends the LUT in and out within that curve, so Mix 0 still previews the curve the blend happens in. Set LUT Mode to None to get the choice back.");
