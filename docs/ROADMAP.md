@@ -769,6 +769,18 @@ same shape because its qualifier axis stops at 100; ours is float and a practica
 highlight by any definition. `highlight_mask()` now rises once and stays up, so there is no High
 control and none is wanted.
 
+**The latch re-measures itself when the grade under it changes.** The mask reads the picture after
+the grade curve, so Magic Grade, Auto Grade, the Subject dropdown and presets all leave a latch
+describing a picture that no longer exists — the manual answer was "press Set From Frame again",
+which is a step nobody should have to know about. Two deliberate limits: it only fires when a
+latch is **already set** (a stage you are not using must not have values stamped into it), and
+only on the **buttons that replace the whole grade**, never on slider edits or Bias. Re-measuring
+under the hand would make the latch move while you worked, which is what made this a button rather
+than an automatic reading in the first place; Bias additionally re-solves live during a drag,
+where a frame measurement per tick is not real time. The refresh reuses the samples the grade just
+took (no image fetch), leaves the viewer alone rather than switching the matte on, and says
+"Re-latched" so a number that moved on its own names what moved it.
+
 **Still open:** spatial feathering. The softness is in luminance, not in space, so where the
 threshold lands on a steep edge (a window frame) the mask is stable, and where it lands inside
 noise the mask shimmers frame to frame. A per-pixel kernel cannot have a neighbourhood; this is

@@ -432,7 +432,11 @@ public:
     void applySeparation();             // rescale the stored magic move without re-deciding
     void armBias(bool reset = false);   // store the current grade as Bias's zero point
     void armToneTargets();              // ...and the conditions it currently meets
-    void setRangeLatch(double p_Time);  // measure Range Balance's latch off the current frame
+    // Measure Range Balance's latch off the current frame. The button re-samples and switches the
+    // matte on; refreshRangeLatch() does neither, because it fires behind a grade the user asked
+    // for and must not fetch a frame again or take over the viewer.
+    void setRangeLatch(double p_Time, bool p_Reanalyse = true, bool p_ShowMatte = true);
+    void refreshRangeLatch();                // keep an existing latch current after a new grade
     void populateMagicSubject();        // rebuild the Subject list from the cached segmentation
     void applyMagicSubject();           // re-grade around the subject the user picked
     void applyMagicResult(const og::grade::MagicResult& R, const char* src, bool repopulate);
@@ -1547,6 +1551,7 @@ void OneGrade::applyAutoGrade(double p_Time)
     snprintf(msg, sizeof msg, "Creative G %.3f L %+.3f (blk %.3f)  Roll %.3f",
              gain, Pc[3], tun.blackTarget, rolloff);
     m_ProbeApplied->setValue(msg);
+    refreshRangeLatch();               // the grade under the mask just moved
     setEnabledness();                  // the preset switches LUT Mode
 }
 
@@ -1672,6 +1677,7 @@ void OneGrade::applyAutoGradeClean(double p_Time)
 
     armBias(true);                     // fresh grade: Bias returns to neutral
     applyBias();
+    refreshRangeLatch();               // the grade under the mask just moved
     setEnabledness();
 }
 
@@ -1774,23 +1780,24 @@ void OneGrade::applyAutoGradeClean(double p_Time)
 // og::grade::range_latch() reads the SHAPE of the histogram instead, and on those same two
 // frames returns 58.2 (the window, 7.5%) and 46.9 (the sky, 52.5%) -- one rule, two shot
 // shapes, both matting the thing the user pointed at. Still a starting point the slider owns.
-void OneGrade::setRangeLatch(double p_Time)
+void OneGrade::setRangeLatch(double p_Time, bool p_Reanalyse, bool p_ShowMatte)
 {
-    probeAnalyze(p_Time);
+    // Re-sampling means fetchImage plus the whole descriptor pass. The refresh path runs straight
+    // after a grade that has just done it, on the same frame, and the samples are SOURCE pixels --
+    // unchanged by anything the grade did. So it reuses them, which also keeps probeAnalyze from
+    // overwriting state the caller is still using.
+    if (p_Reanalyse || m_LastSamples.size() < 512) probeAnalyze(p_Time);
     const size_t n = m_LastSamples.size();
     if (n < 512) return;
 
-    float Pn[oga::kParamN];
-    for (int k = 0; k < oga::kParamN; ++k) Pn[k] = 0.f;
+    float Pn[oga::kParamN]; oga::neutral_params(Pn);
     Pn[2]=(float)m_Density->getValue();
     Pn[3]=(float)m_Lift->getValue(); Pn[4]=(float)m_Gamma->getValue(); Pn[5]=(float)m_Gain->getValue();
-    Pn[9]=1.f;
     Pn[10]=(float)m_RawExp->getValue(); Pn[11]=(float)m_RawTemp->getValue();
-    // Range Balance itself OFF -- this measurement is its input, and a latch measured through
-    // the mask it is about to set would chase its own output. Zeroing the whole array first
-    // matters more than it looks: P[18] is Show Mask, and a stray non-zero there would hand
-    // og::process the matte instead of the picture.
-    Pn[14]=2.6f; Pn[15]=1.f; Pn[17]=1.f; Pn[19]=1.f; Pn[20]=1.f;
+    // neutral_params() leaves Range Balance OFF, which is what this measurement needs: it is the
+    // stage's INPUT, and a latch read through the mask it is about to set would chase its own
+    // output. It also guarantees P[18] is clear -- Show Mask on here would hand og::process the
+    // matte to measure instead of the picture.
 
     int cam = 0, enc = 0;
     m_Camera->getValue(cam); m_Encode->getValue(enc);
@@ -1815,17 +1822,53 @@ void OneGrade::setRangeLatch(double p_Time)
         return;
     }
     m_RangeLatch->setValue(RL.latch);
-    // Show the matte straight away. Dialling a latch you cannot see is guesswork, and the
-    // measured value is a starting point rather than an answer -- the point of the button is
-    // to put the user somewhere close enough to judge, which needs the matte on screen.
-    m_RangeShow->setValue(true);
+    // Show the matte straight away -- for the BUTTON. Dialling a latch you cannot see is
+    // guesswork, and the measured value is a starting point rather than an answer, so the point
+    // of pressing it is to put you somewhere close enough to judge. The automatic refresh passes
+    // false: it fires behind a grade the user asked for, and taking over the viewer with a matte
+    // nobody asked to see is not a refresh, it is an interruption.
+    if (p_ShowMatte) m_RangeShow->setValue(true);
 
     // Coverage is the number that tells you whether the split found what you meant. 7% on an
     // interior reads as "the window"; 52% on a landscape reads as "the sky"; 0.2% reads as
     // "it latched onto a practical" before you have looked at the matte at all.
+    //
+    // The refresh says so. A number that moved without being touched has to name what moved it,
+    // or it reads as the panel losing the value the user set.
     char note[64];
-    snprintf(note, sizeof note, "Latch %.1f, holds %.1f%% of frame", RL.latch, RL.cover);
+    snprintf(note, sizeof note, "%s %.1f, holds %.1f%% of frame",
+             p_ShowMatte ? "Latch" : "Re-latched", RL.latch, RL.cover);
     m_RangeNote->setValue(note);
+}
+
+// KEEP AN EXISTING LATCH CURRENT AFTER THE GRADE UNDER IT CHANGES.
+//
+// The mask reads the picture AFTER the grade curve, so anything that rewrites Lift/Gamma/Gain
+// moves the luminance the latch was measured against -- and a latch set before Magic Grade
+// describes a picture that no longer exists. The manual answer was "press Set From Frame again",
+// which is a step nobody should have to know about.
+//
+// TWO DELIBERATE LIMITS:
+//
+// It only fires when a latch is ALREADY SET. Range Balance is off at latch 0, and a button the
+// user has never pressed must not start stamping values into a stage they are not using.
+//
+// It fires on the BUTTONS that replace the whole grade, not on slider edits. Magic Grade, Auto
+// Grade, the Subject dropdown and presets hand you a grade you did not dial, so the latch under
+// it is stale through no act of yours. Dragging Gain yourself is different: re-measuring under
+// the hand would make the latch move while you worked, which is exactly the behaviour the
+// button-not-automatic design was chosen to avoid. Bias is excluded for the same reason plus a
+// harder one -- it re-solves live during a drag, and a frame measurement per tick is not real
+// time.
+// No time argument, because it never fetches: it re-reads the samples the grade it follows has
+// just taken. If there are none it does nothing rather than going to the host for a frame -- a
+// silent refresh is not worth an image fetch, and pressing the button is right there.
+void OneGrade::refreshRangeLatch()
+{
+    double latch = 0.0;
+    m_RangeLatch->getValue(latch);
+    if (latch <= 0.0 || m_LastSamples.size() < 512) return;
+    setRangeLatch(0.0, /*reanalyse=*/false, /*showMatte=*/false);
 }
 
 void OneGrade::armToneTargets()
@@ -2269,6 +2312,7 @@ void OneGrade::applyMagicResult(const og::grade::MagicResult& R, const char* src
         armToneTargets();   // clears them: a declined tone solve leaves nothing to lean away from
         // ...and the list, or it would still be offering the PREVIOUS frame's subjects.
         if (repopulate) { populateMagicSubject(); m_MagicSubject->setValue(0); }
+        refreshRangeLatch();   // a declined tone solve still wrote Creative's grade
         setEnabledness();
         return;
     }
@@ -2338,6 +2382,7 @@ void OneGrade::applyMagicResult(const og::grade::MagicResult& R, const char* src
     // selection made from it -- rebuilding it on every pick would reset the dropdown under the
     // user's cursor.
     if (repopulate) { populateMagicSubject(); m_MagicSubject->setValue(c.option); }
+    refreshRangeLatch();               // the grade under the mask just moved
     setEnabledness();
 }
 
@@ -2621,6 +2666,10 @@ void OneGrade::applyPreset(int p)
         m_PostCon->setValue(1.0);
         m_Rolloff->setValue(0.0);
     }
+    // A preset replaces the whole grade too, so the mask underneath it is just as stale. This runs
+    // a second time when applyAutoGrade() calls us on its way through -- harmless, and the final
+    // pass is the one that sticks, which is the right answer either way.
+    refreshRangeLatch();
 }
 
 void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName)
