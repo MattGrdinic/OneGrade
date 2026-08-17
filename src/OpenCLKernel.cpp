@@ -80,6 +80,12 @@ const char* KernelSource = "\n" \
 "inline float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=og_lggc(v,gain,lift,gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); } \n" \
 "inline float og_sm01(float t){ t=fmin(fmax(t,0.0f),1.0f); return t*t*(3.0f-2.0f*t); }                          \n" \
 "inline float og_hlmask(float Y,float lo,float s){ float le=fmax(s,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le)); }        \n" \
+"inline float og_shape(float u,float v,int t,float cx,float cy,float sx,float sy,float rd,float sf,int inv){ \n" \
+"  if(t<=0) return 1.0f;                                                                                    \n" \
+"  float ax=fmax(fabs(sx),1e-4f), ay=fmax(fabs(sy),1e-4f); float du=u-cx, dv=v-cy;                          \n" \
+"  if(rd!=0.0f){ float r=rd*0.01745329252f, cs=cos(r), sn=sin(r); float q=du*cs+dv*sn; dv=-du*sn+dv*cs; du=q; } \n" \
+"  float nx=du/ax, ny=dv/ay; float d=(t==1)?sqrt(nx*nx+ny*ny):fmax(fabs(nx),fabs(ny));                      \n" \
+"  float e=fmax(sf,1e-4f); float m=1.0f-og_sm01((d-(1.0f-0.5f*e))/e); return inv?(1.0f-m):m; }              \n" \
 "inline float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2(x+A)+B)*C):(x*M); } \n" \
 "inline float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2(x/C-B)-A):(x/M); } \n" \
 "inline float og_enc(int enc, float x){                                                                         \n" \
@@ -109,6 +115,7 @@ const char* KernelSource = "\n" \
 "  float postExp,float postCon,float rawExp,float rawTemp,float rolloff,                                     \n" \
 "  float rbL,float rbS,float rbH,float rbF,float rbG,float rbWs,float rbHg,float rbLg,                       \n" \
 "  float rfF,float rfG,float rfN,                                                                            \n" \
+"  float shT,float shX,float shY,float shW,float shH,float shR,float shS,float shI,                          \n" \
 "  int lutN, float lutMix,                                                                                   \n" \
 "  __global const float* lut,                                                                                \n" \
 "  __global const float* in, __global float* out) {                                                             \n" \
@@ -128,7 +135,9 @@ const char* KernelSource = "\n" \
 "    int rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f||rbHg!=1.0f||rbLg!=1.0f);                     \n" \
 "    float3 v3=(float3)(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma)); \n" \
 "    float3 rf=(float3)(og_lggc(d.x,rfN,rfF,rfG),og_lggc(d.y,rfN,rfF,rfG),og_lggc(d.z,rfN,rfF,rfG));           \n" \
-"    float rbM=rbOn?og_hlmask(100.0f*(0.2126f*rf.x+0.7152f*rf.y+0.0722f*rf.z),rbL,rbS):0.0f;                    \n" \
+"    float shU=((float)x-0.5f*(float)W)/(0.5f*(float)H), shV=((float)y-0.5f*(float)H)/(0.5f*(float)H);         \n" \
+"    float shM=og_shape(shU,shV,(int)(shT+0.5f),shX,shY,shW,shH,shR,shS,shI>0.5f);                            \n" \
+"    float rbM=rbOn?og_hlmask(100.0f*(0.2126f*rf.x+0.7152f*rf.y+0.0722f*rf.z),rbL,rbS)*shM:0.0f;              \n" \
 "    if(rbOn){ float3 rm=(float3)(og_lggc(v3.x,rbLg,rbF,rbG),og_lggc(v3.y,rbLg,rbF,rbG),og_lggc(v3.z,rbLg,rbF,rbG)); \n" \
 "             float3 hi3=(float3)(og_lggc(v3.x,rbH,0.0f,rbHg),og_lggc(v3.y,rbH,0.0f,rbHg),og_lggc(v3.z,rbH,0.0f,rbHg)); \n" \
 "             v3=rm*(1.0f-rbM)+hi3*rbM; }                                                                        \n" \
@@ -245,7 +254,7 @@ void RunOpenCLKernelBuffers(void* p_CmdQ, int p_Width, int p_Height, const float
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Height);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Camera);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Encode);
-    for (int i = 0; i < 24; ++i)
+    for (int i = 0; i < 32; ++i)
         error |= clSetKernelArg(kernel, count++, sizeof(float), &p_Params[i]);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &lutN);
     error |= clSetKernelArg(kernel, count++, sizeof(float), &p_LutMix);

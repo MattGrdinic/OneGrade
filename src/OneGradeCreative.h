@@ -1405,13 +1405,15 @@ struct MagicResult {
     // Mirrors analysis::neutral_params(); a default member initialiser cannot call it.
     // static_assert there fires if the count moves, which is the reminder to update this.
     float P[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
-                                  0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f, 0.f,1.f,1.f};
+                                  0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f, 0.f,1.f,1.f,
+                                  0.f,0.f,0.f, 0.5f,0.5f, 0.f,0.25f,0.f};
     // The grade as Creative left it, BEFORE a subject was chosen. Kept so switching subjects
     // starts from the same place every time -- re-running from the graded result would compound
     // one subject's colour move onto the next, and the answer would depend on the order they
     // were tried in.
     float Pcreative[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
-                                  0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f, 0.f,1.f,1.f};
+                                  0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f, 0.f,1.f,1.f,
+                                  0.f,0.f,0.f, 0.5f,0.5f, 0.f,0.25f,0.f};
     analysis::MagicChoice choice;
     MagicTone     tone;
     WhiteBalance  wb;

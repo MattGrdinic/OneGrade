@@ -110,6 +110,17 @@ inline float og_hlmask(float Y,float lo,float s){   // one rising edge; see high
     float le=max(s,1e-4f);
     return og_smooth01((Y-(lo-le))/(2.0f*le));
 }
+inline float og_shape(float u,float v,int t,float cx,float cy,float sx,float sy,float rd,float sf,bool inv){
+    if(t<=0) return 1.0f;
+    float ax=max(fabs(sx),1e-4f), ay=max(fabs(sy),1e-4f);
+    float du=u-cx, dv=v-cy;
+    if(rd!=0.0f){ float r=rd*0.01745329252f, cs=cos(r), sn=sin(r); float q=du*cs+dv*sn; dv=-du*sn+dv*cs; du=q; }
+    float nx=du/ax, ny=dv/ay;
+    float d=(t==1)?sqrt(nx*nx+ny*ny):max(fabs(nx),fabs(ny));
+    float e=max(sf,1e-4f);
+    float m=1.0f-og_smooth01((d-(1.0f-0.5f*e))/e);
+    return inv?(1.0f-m):m;
+}
 inline float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2(x+A)+B)*C):(x*M); }
 inline float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2(x/C-B)-A):(x/M); }
 
@@ -171,7 +182,10 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
         bool rbOn = (rbL>0.0f) && (rbW || rbH!=1.0f || rbF!=0.0f || rbG!=1.0f || rbHg!=1.0f || rbLg!=1.0f);
         float3 v3 = float3(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma));
         float3 rf = float3(og_lggc(d.x,P[23],P[21],P[22]),og_lggc(d.y,P[23],P[21],P[22]),og_lggc(d.z,P[23],P[21],P[22]));
-        float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*rf.x+0.7152f*rf.y+0.0722f*rf.z),rbL,rbS) : 0.0f;
+        // Centre-origin, BOTH axes over half-height, so the shape stays round on a 16:9 frame.
+        float shU=((float)id.x-0.5f*(float)W)/(0.5f*(float)H), shV=((float)id.y-0.5f*(float)H)/(0.5f*(float)H);
+        float shM = og_shape(shU,shV,(int)(P[24]+0.5f),P[25],P[26],P[27],P[28],P[29],P[30],P[31]>0.5f);
+        float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*rf.x+0.7152f*rf.y+0.0722f*rf.z),rbL,rbS)*shM : 0.0f;
         if(rbOn){
             float3 room = float3(og_lggc(v3.x,rbLg,rbF,rbG),og_lggc(v3.y,rbLg,rbF,rbG),og_lggc(v3.z,rbLg,rbF,rbG));
             float3 high = float3(og_lggc(v3.x,rbH,0.0f,rbHg),og_lggc(v3.y,rbH,0.0f,rbHg),og_lggc(v3.z,rbH,0.0f,rbHg));
@@ -266,7 +280,7 @@ void RunMetalKernel(void* p_CmdQ, int p_Width, int p_Height, const float* p_Para
     [computeEncoder setBuffer:dstDeviceBuf offset:0 atIndex:8];
     [computeEncoder setBytes:&p_Width  length:sizeof(int) atIndex:11];
     [computeEncoder setBytes:&p_Height length:sizeof(int) atIndex:12];
-    [computeEncoder setBytes:p_Params  length:sizeof(float)*24 atIndex:13];
+    [computeEncoder setBytes:p_Params  length:sizeof(float)*32 atIndex:13];
     [computeEncoder setBytes:&p_Camera length:sizeof(int) atIndex:14];
     [computeEncoder setBytes:&p_Encode length:sizeof(int) atIndex:15];
     [computeEncoder setBytes:&lutN     length:sizeof(int) atIndex:16];

@@ -321,8 +321,55 @@ static inline float highlight_mask(float Y, float lo, float soft)
     return smooth01((Y - (lo - le)) / (2.0f * le));
 }
 
+// ---------------------------------------------------------------------------------------
+// THE SHAPE MASK — where Range Balance is allowed to act, as opposed to on what.
+//
+// A SHAPE IS NOT A BLUR, and this was filed with the blur once by mistake. A blur needs a pixel's
+// NEIGHBOURS, which a per-pixel kernel does not have and cannot cheaply get. A shape needs only
+// the pixel's OWN coordinate, which every backend already has -- get_global_id in OpenCL,
+// thread_position_in_grid in Metal, blockIdx/threadIdx in CUDA. So this is an ordinary per-pixel
+// function like every other stage here, and far cheaper than the feathering work it was confused
+// with.
+//
+// COORDINATES ARE CENTRE-ORIGIN AND NORMALISED BY HALF-HEIGHT, both axes. Normalising each axis by
+// its own extent is the obvious thing and it is wrong: a circle would come out an ellipse on a
+// 16:9 frame and the softness would feather further horizontally than vertically. Dividing both by
+// half-height keeps the geometry round, at the cost of u running past 1 at the sides -- which is
+// what "size 0.5" meaning the same distance in any direction is worth.
+//
+// It MULTIPLIES the luminance mask rather than replacing it: the held region is "bright AND inside
+// the shape". That is a qualifier plus a power window, which is the thing this is standing in for.
+static inline float shape_mask(float u, float v, int type, float cx, float cy,
+                               float sx, float sy, float rotDeg, float soft, bool invert)
+{
+    if (type <= 0) return 1.0f;                     // no shape: the luminance mask stands alone
+    const float ax = fmaxf(fabsf(sx), 1e-4f), ay = fmaxf(fabsf(sy), 1e-4f);
+    float du = u - cx, dv = v - cy;
+    if (rotDeg != 0.0f) {
+        const float r = rotDeg * 0.01745329252f;    // degrees, because a panel in radians is unusable
+        const float cs = cosf(r), sn = sinf(r);
+        const float t = du*cs + dv*sn;              // rotate INTO the shape's frame
+        dv = -du*sn + dv*cs;
+        du = t;
+    }
+    // d == 1 on the boundary for both shapes, which is what lets one feather serve both.
+    const float nx = du/ax, ny = dv/ay;
+    const float d = (type == 1) ? sqrtf(nx*nx + ny*ny)      // ellipse
+                                : fmaxf(fabsf(nx), fabsf(ny));  // rectangle
+    // Feather SYMMETRICALLY about the boundary, so raising Softness grows the shape outward as
+    // much as inward and the edge stays where you put it. Feathering inward only would shrink the
+    // selection every time you softened it.
+    const float e = fmaxf(soft, 1e-4f);
+    const float m = 1.0f - smooth01((d - (1.0f - 0.5f*e)) / e);
+    return invert ? (1.0f - m) : m;
+}
+
+// `shapeM` is the shape mask at THIS pixel, computed by the caller because only the caller knows
+// where the pixel is. 1.0 means "no shape", which is what every analysis path passes -- a defaulted
+// argument rather than a new required one, so the fifty-odd call sites that have no geometry keep
+// meaning exactly what they meant.
 static inline void process(int cam, int enc, const float* P, float inR, float inG, float inB,
-                           float& outR, float& outG, float& outB)
+                           float& outR, float& outG, float& outB, float shapeM = 1.0f)
 {
     const float temp=P[0], tint=P[1], density=P[2], lift=P[3], gamma=P[4], gain=P[5], offTemp=P[6], offTint=P[7];
     const float rawExp=P[10], rawTemp=P[11];   // RAW-tab analogs: exposure (stops) + white balance (Kelvin)
@@ -439,7 +486,7 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     float rbM = 0.f;
     if (rbOn)
         rbM = highlight_mask(100.f*(0.2126f*ref[0] + 0.7152f*ref[1] + 0.0722f*ref[2]),
-                             rbLatch, rbSoft);
+                             rbLatch, rbSoft) * shapeM;
 
     for (int i=0;i<3;i++) {
         float v = v3[i];

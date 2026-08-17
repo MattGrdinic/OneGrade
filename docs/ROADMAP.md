@@ -871,7 +871,34 @@ separate them. The user's instinct — that this wants a shape, not a level — 
 point that is worth a nudge up on frames with speculars, which is what the Latch slider is for —
 but it is a trade, not a fix.
 
-**Conclusion: the pillow needs spatial support, and a polygon is not the answer for this plugin.**
+**RESOLVED 2026-08-17 by a SHAPE, and the earlier conclusion below was half wrong.** "Spatial" was
+filed as one thing and it is two. **A blur needs a pixel's NEIGHBOURS**, which a per-pixel kernel
+does not have. **A shape needs only the pixel's OWN coordinate**, which every backend already has
+— `get_global_id` in OpenCL, `thread_position_in_grid` in Metal, `blockIdx/threadIdx` in CUDA, and
+the loop indices in the CPU processor. So a shape mask is an ordinary per-pixel function and much
+cheaper than the blur it was lumped in with. Shipped as the Shape controls: ellipse or rectangle,
+centre/size/rotation/softness/invert, multiplying the luminance mask. On the bedroom frame a
+rectangle over the window takes coverage 8.08% → 6.51% and **removes the pillow completely** while
+the latch still separates the panes from the window frame and the mullion.
+
+The geometry is centre-origin and normalised by **half-height on both axes**, so a circle stays
+round on a 16:9 frame and Size means the same distance in any direction; x therefore runs past 1
+at the sides. Softness feathers **symmetrically** about the boundary so that softening an edge does
+not shrink the selection.
+
+`og::process()` takes the shape as a defaulted trailing `shapeM` scalar rather than coordinates,
+because only the caller knows where a pixel is and fifty-odd analysis call sites have no geometry
+at all. **The bench needed a Y flip**: a PNG row counts down from the top and OFX canonical
+coordinates count up from the bottom, so without it every shape would have been mirrored
+vertically and the bench would have disagreed with the plugin about where "above" is.
+
+**The overlay interact is a live spike.** `RangeShapeInteract` draws the outline and a draggable
+centre handle. OFX has the API; whether *Resolve* honours overlay interacts is not answerable from
+the headers — same class of unknown as `setOpen()`. If it draws, dragging a window into place
+already works and freely-drawn polygons become reachable. If not, nothing is lost: the sliders
+drive the identical parameters and the render never consults the class.
+
+**Still true, and the reason a polygon is not the next thing:**
 The user reached that themselves and gave the right reason — a shape tool diverges from "make this
 easier than the native controls", because Resolve's own power windows already do shapes well and
 better. What OneGrade can add that Resolve makes tedious is a mask that is *measured* rather than

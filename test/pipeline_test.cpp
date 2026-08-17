@@ -1257,6 +1257,53 @@ int main() {
         check(ok, "a locked mask keeps its coverage while the grade under it moves");
     }
 
+    // 37. The shape restricts WHERE Range Balance acts, and multiplies rather than replaces.
+    // The case it exists for: two equally bright things, one of which must not be held. No
+    // threshold separates them; their positions do.
+    {
+        bool ok = true;
+        auto M = [](float u, float v, int type, float soft, bool inv) {
+            return og::shape_mask(u, v, type, /*cx=*/0.f, /*cy=*/0.f,
+                                  /*sx=*/0.5f, /*sy=*/0.5f, /*rot=*/0.f, soft, inv);
+        };
+        ok &= (M(0.f, 0.f, 0, 0.f, false) == 1.f);       // no shape: the stage is untouched
+        ok &= (M(9.f, 9.f, 0, 0.f, false) == 1.f);       // ...anywhere at all
+
+        // Inside is held, outside is not, and the boundary sits at the size.
+        ok &= (M(0.f,  0.f,  1, 0.f, false) > 0.99f);
+        ok &= (M(1.2f, 0.f,  1, 0.f, false) < 0.01f);
+        ok &= close(M(0.5f, 0.f, 1, 0.f, false), 0.5f, 0.02f);   // exactly on the edge
+
+        // ROUND ON A 16:9 FRAME: both axes are normalised by half-height, so a point the same
+        // distance out in x and in y gets the same answer. Normalising each axis by its own
+        // extent -- the obvious thing -- would fail this.
+        ok &= close(M(0.35f, 0.f, 1, 0.3f, false), M(0.f, 0.35f, 1, 0.3f, false), 1e-5f);
+
+        // Rectangle holds its corners where the ellipse does not.
+        ok &= (M(0.45f, 0.45f, 2, 0.f, false) > 0.99f);
+        ok &= (M(0.45f, 0.45f, 1, 0.f, false) < 0.01f);
+
+        // Invert swaps the two sides.
+        ok &= (M(0.f, 0.f, 1, 0.f, true) < 0.01f);
+        ok &= (M(1.2f, 0.f, 1, 0.f, true) > 0.99f);
+
+        // SOFTNESS FEATHERS SYMMETRICALLY, so softening does not shrink the selection: the
+        // half-way point stays on the boundary however soft the edge is.
+        ok &= close(M(0.5f, 0.f, 1, 0.8f, false), 0.5f, 0.02f);
+
+        // ...and it MULTIPLIES the luminance mask. Two pixels of identical brightness, one inside
+        // the shape and one outside: only the first is held. That is the silk-pillow case, and no
+        // latch on its own can do it.
+        float P[og::analysis::kParamN]; neutral13(P);
+        P[13] = 45.f; P[18] = 1.f;                       // latch, render the matte
+        P[24] = 1.f; P[27] = 0.5f; P[28] = 0.5f; P[30] = 0.f;   // ellipse at centre, hard edge
+        float r0, g0, b0, r1, g1, b1;
+        og::process(1, 1, P, 0.9f, 0.9f, 0.9f, r0, g0, b0, /*shapeM=*/1.0f);   // inside
+        og::process(1, 1, P, 0.9f, 0.9f, 0.9f, r1, g1, b1, /*shapeM=*/0.0f);   // outside
+        ok &= (r0 > 0.99f && r1 < 0.01f);
+        check(ok, "the shape restricts where Range Balance acts, and multiplies the latch");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

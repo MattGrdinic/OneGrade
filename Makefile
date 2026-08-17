@@ -46,7 +46,7 @@ ifeq ($(UNAME),Linux)
 else
     ARCH      := -arch arm64 -arch x86_64
     CXXFLAGS  += $(ARCH)
-    LDFLAGS   := -bundle -fvisibility=hidden -framework OpenCL -framework Metal -framework AppKit $(ARCH)
+    LDFLAGS   := -bundle -fvisibility=hidden -framework OpenCL -framework Metal -framework AppKit -framework OpenGL $(ARCH)
     # ncnn has to be fat too, or the link fails on whichever slice it is missing.
     NCNN_ARCH := -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
     BUNDLE_ARCH := MacOS

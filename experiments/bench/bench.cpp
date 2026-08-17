@@ -45,9 +45,10 @@ namespace oga = og::analysis;
 // to a header, this should call it instead.
 static inline void full_chain(int cam, int enc, const float* P,
                               const float* lut, int lutSize, float lutMix,
-                              float ri, float gi, float bi, float& ro, float& go, float& bo)
+                              float ri, float gi, float bi, float& ro, float& go, float& bo,
+                              float shapeM = 1.f)
 {
-    og::process(cam, enc, P, ri, gi, bi, ro, go, bo);
+    og::process(cam, enc, P, ri, gi, bi, ro, go, bo, shapeM);
     if (P[18] > 0.5f && P[13] > 0.f) return;   // matte: no LUT, no trim (mirrors og_full_chain)
     const bool lutOn = (lut && lutSize >= 2 && lutMix > 0.f);
     if (lutOn) og::apply_lut(lut, lutSize, lutMix, ro, go, bo);
@@ -207,6 +208,15 @@ int main(int argc, char** argv)
     const bool   hlShow  = argf(argc, argv, "--hl-show");           // write the mask itself
     // Lock the mask against the grade: the reference grade the mask reads is captured BEFORE the
     // exposure move under test, so the selection stops following it. Pass the grade to lock at.
+    // The SHAPE: where Range Balance may act. Centre-origin, half-height units on both axes.
+    const double shType  = argd(argc, argv, "--shape",    0.0);   // 0 off, 1 ellipse, 2 rect
+    const double shX     = argd(argc, argv, "--shape-x",  0.0);
+    const double shY     = argd(argc, argv, "--shape-y",  0.0);
+    const double shW     = argd(argc, argv, "--shape-w",  0.5);
+    const double shH     = argd(argc, argv, "--shape-h",  0.5);
+    const double shR     = argd(argc, argv, "--shape-rot",0.0);
+    const double shS     = argd(argc, argv, "--shape-soft",0.25);
+    const bool   shInv   = argf(argc, argv, "--shape-invert");
     const bool   hlLock  = argf(argc, argv, "--hl-lock");
     const double hlLockL = argd(argc, argv, "--hl-lock-lift",  0.0);
     const double hlLockG = argd(argc, argv, "--hl-lock-gamma", 1.0);
@@ -622,21 +632,34 @@ int main(int argc, char** argv)
             // live grade it silently measured the OLD, unlockable definition and reported a locked
             // mask drifting exactly as much as an unlocked one.
             Pmask[3] = P[21]; Pmask[4] = P[22]; Pmask[5] = P[23];
+            P[24]=(float)shType; P[25]=(float)shX; P[26]=(float)shY;
+            P[27]=(float)shW;    P[28]=(float)shH; P[29]=(float)shR;
+            P[30]=(float)shS;    P[31]= shInv ? 1.f : 0.f;
         }
         long long masked = 0;
 
         long long crushed = 0, crushedY = 0, total = 0;
+        // Same normalisation the four render paths use: centre-origin, half-height on both axes.
+        const float shHalf = 0.5f*(float)f.h;
         for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
+            const float px = (float)(k % (size_t)f.w), py = (float)(k / (size_t)f.w);
+            // Y IS FLIPPED. A PNG row index counts DOWN from the top; OFX canonical coordinates
+            // count UP from the bottom, which is what the plugin's render loop and all three
+            // kernels use. Left unflipped the bench would mirror every shape vertically and
+            // quietly disagree with the plugin about where "above" is.
+            const float shM = og::shape_mask((px - 0.5f*f.w)/shHalf, (0.5f*f.h - py)/shHalf,
+                                             (int)(P[24]+0.5f), P[25], P[26], P[27], P[28],
+                                             P[29], P[30], P[31] > 0.5f);
             float r, g, b;
             full_chain(cam, enc, P, lutData, lutSize, 1.f,
-                       f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+                       f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b, shM);
             if (hlOn) {
                 // Coverage only -- the picture itself came out of full_chain() above, mask and
                 // all. Recomputed here rather than returned, because it is a diagnostic.
                 float mr, mg, mb;
                 og::process(cam, maskEnc, Pmask, f.px[k*3], f.px[k*3+1], f.px[k*3+2], mr, mg, mb);
                 const float Y = 100.f * (0.2126f*mr + 0.7152f*mg + 0.0722f*mb);
-                if (og::highlight_mask(Y, (float)hlLowUse, (float)hlSoft) > 0.5f) ++masked;
+                if (og::highlight_mask(Y, (float)hlLowUse, (float)hlSoft)*shM > 0.5f) ++masked;
             }
             if ((k & 63) == 0) { outCh.push_back(r); outCh.push_back(g); outCh.push_back(b); }
             const float mn = std::min(r, std::min(g, b));

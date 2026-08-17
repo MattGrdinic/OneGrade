@@ -9,6 +9,14 @@
 #include "OneGradeSegment.h"    // ncnn semantic segmentation for Magic Grade's regions
 #include "OneGradeCreative.h"   // the grade solve, shared with the offline bench
 #include "CubeLUT.h"
+#ifdef __APPLE__
+#include <OpenGL/gl.h>
+#elif defined(_WIN64)
+#include <Windows.h>
+#include <GL/gl.h>
+#else
+#include <GL/gl.h>
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -63,7 +71,7 @@ static const bool kAnalysisDebugUI = false;
 
 // MUST equal og::analysis::kParamN and the P[] the kernels index. Three separate places size
 // buffers off this, and a mismatch is silent on GPU: wrong values, no error, a different picture.
-#define kParamCount 24 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff,
+#define kParamCount 32 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff,
                        // rbLatch,rbSoft,rbHigh,rbLift,rbGamma
 
 // Folder scanned for built-in / film-look LUTs (Resolve's default LUT install).
@@ -265,9 +273,10 @@ static std::string resolveLutPath(int p_Mode, int p_Group, int p_Look, int p_Fil
 static inline void og_full_chain(int camera, int encode, const float* P,
                                  const float* lut, int lutSize, float lutMix,
                                  float ri, float gi, float bi,
-                                 float& ro, float& go, float& bo)
+                                 float& ro, float& go, float& bo,
+                                 float shapeM = 1.0f)
 {
-    og::process(camera, encode, P, ri, gi, bi, ro, go, bo);
+    og::process(camera, encode, P, ri, gi, bi, ro, go, bo, shapeM);
     // The matte is a measurement, not a picture: process() has already returned it raw and
     // unencoded, so a LUT or a trim on top would be a picture OF the mask rather than the mask.
     if (P[18] > 0.5f && P[13] > 0.f) return;
@@ -360,18 +369,32 @@ void OneGradeProcessor::processImagesOpenCL()
 
 void OneGradeProcessor::multiThreadProcessImages(OfxRectI p_ProcWindow)
 {
+    // The shape mask is the one thing here that depends on WHERE a pixel is, so the frame's own
+    // extent has to come from the image rather than from a parameter. Taken off the destination
+    // bounds, which is the region actually being written -- and the same rectangle the three GPU
+    // paths pass as W/H, so all four agree on what "centre" means.
+    const OfxRectI b = _dstImg->getBounds();
+    const float shW = (float)(b.x2 - b.x1), shH = (float)(b.y2 - b.y1);
+    const float shHalfH = (shH > 1.f) ? 0.5f*shH : 1.f;
+    const int   shType  = (int)(_params[24] + 0.5f);
+
     for (int y = p_ProcWindow.y1; y < p_ProcWindow.y2; ++y)
     {
         if (_effect.abort()) break;
         float* dstPix = static_cast<float*>(_dstImg->getPixelAddress(p_ProcWindow.x1, y));
+        const float shV = ((float)(y - b.y1) - 0.5f*shH) / shHalfH;
         for (int x = p_ProcWindow.x1; x < p_ProcWindow.x2; ++x)
         {
             float* srcPix = static_cast<float*>(_srcImg ? _srcImg->getPixelAddress(x, y) : nullptr);
             if (srcPix)
             {
+                const float shU = ((float)(x - b.x1) - 0.5f*shW) / shHalfH;
+                const float shM = shType <= 0 ? 1.0f
+                    : og::shape_mask(shU, shV, shType, _params[25], _params[26], _params[27],
+                                     _params[28], _params[29], _params[30], _params[31] > 0.5f);
                 og_full_chain(_camera, _encode, _params, _lut, _lutSize, _lutMix,
                               srcPix[0], srcPix[1], srcPix[2],
-                              dstPix[0], dstPix[1], dstPix[2]);
+                              dstPix[0], dstPix[1], dstPix[2], shM);
                 dstPix[3] = srcPix[3];
             }
             else
@@ -576,6 +599,14 @@ private:
     OFX::DoubleParam*  m_RangeShadow;
     OFX::DoubleParam*  m_RangeMid;
     OFX::BooleanParam* m_RangeShow;
+    OFX::ChoiceParam*  m_RangeShape;     // 0 none, 1 ellipse, 2 rectangle
+    OFX::DoubleParam*  m_RangeShapeX;
+    OFX::DoubleParam*  m_RangeShapeY;
+    OFX::DoubleParam*  m_RangeShapeW;
+    OFX::DoubleParam*  m_RangeShapeH;
+    OFX::DoubleParam*  m_RangeShapeR;
+    OFX::DoubleParam*  m_RangeShapeS;
+    OFX::BooleanParam* m_RangeShapeInv;
     OFX::BooleanParam* m_RangeLock;      // freeze the mask against the grade under it
     OFX::DoubleParam*  m_RangeRefLift;   // ...the grade it was frozen at (hidden, saved)
     OFX::DoubleParam*  m_RangeRefGamma;
@@ -695,6 +726,14 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_RangeShadow  = fetchDoubleParam("rangeShadow");
     m_RangeMid     = fetchDoubleParam("rangeMid");
     m_RangeShow    = fetchBooleanParam("rangeShow");
+    m_RangeShape    = fetchChoiceParam("rangeShape");
+    m_RangeShapeX   = fetchDoubleParam("rangeShapeX");
+    m_RangeShapeY   = fetchDoubleParam("rangeShapeY");
+    m_RangeShapeW   = fetchDoubleParam("rangeShapeW");
+    m_RangeShapeH   = fetchDoubleParam("rangeShapeH");
+    m_RangeShapeR   = fetchDoubleParam("rangeShapeR");
+    m_RangeShapeS   = fetchDoubleParam("rangeShapeS");
+    m_RangeShapeInv = fetchBooleanParam("rangeShapeInv");
     m_RangeLock    = fetchBooleanParam("rangeLock");
     m_RangeRefLift  = fetchDoubleParam("rangeRefLift");
     m_RangeRefGamma = fetchDoubleParam("rangeRefGamma");
@@ -2472,6 +2511,15 @@ void OneGrade::setEnabledness()
         m_RangeHiMid->setEnabled(rangeLive);
         m_RangeLoGain->setEnabled(rangeLive);
         m_RangeLock->setEnabled(rangeLive);
+        // The shape's own sliders follow the shape being something other than None, so eight
+        // controls do not sit live on a stage that is ignoring them.
+        int shp = 0; m_RangeShape->getValue(shp);
+        const bool shapeLive = rangeLive && shp > 0;
+        m_RangeShape->setEnabled(rangeLive);
+        m_RangeShapeX->setEnabled(shapeLive);   m_RangeShapeY->setEnabled(shapeLive);
+        m_RangeShapeW->setEnabled(shapeLive);   m_RangeShapeH->setEnabled(shapeLive);
+        m_RangeShapeR->setEnabled(shapeLive);   m_RangeShapeS->setEnabled(shapeLive);
+        m_RangeShapeInv->setEnabled(shapeLive);
         // The note carries the LOCK state because the lock is invisible otherwise: a locked and an
         // unlocked mask look identical until you move exposure, and by then you are already
         // wondering why the selection did or did not follow. Same reason encodeNote and biasNote
@@ -2752,7 +2800,8 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     // The latch and the lock both change what the note says, and the latch also decides whether
     // the rest of the group is live at all. Neither re-runs any measurement -- this is the panel
     // catching up with a value, which is why it is not guarded on eChangeUserEdit.
-    else if (p_ParamName == "rangeLock" || p_ParamName == "rangeLatch") {
+    else if (p_ParamName == "rangeLock" || p_ParamName == "rangeLatch" ||
+             p_ParamName == "rangeShape") {
         setEnabledness();
     }
     else if (p_ParamName == "probeApply" && p_Args.reason == OFX::eChangeUserEdit) {
@@ -2936,6 +2985,19 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
     params[19] = (float)m_RangeHiMid->getValueAtTime(p_Time);
     params[20] = (float)m_RangeLoGain->getValueAtTime(p_Time);
 
+    {
+        int sh = 0; m_RangeShape->getValueAtTime(p_Time, sh);
+        bool inv = false; m_RangeShapeInv->getValueAtTime(p_Time, inv);
+        params[24] = (float)sh;
+        params[25] = (float)m_RangeShapeX->getValueAtTime(p_Time);
+        params[26] = (float)m_RangeShapeY->getValueAtTime(p_Time);
+        params[27] = (float)m_RangeShapeW->getValueAtTime(p_Time);
+        params[28] = (float)m_RangeShapeH->getValueAtTime(p_Time);
+        params[29] = (float)m_RangeShapeR->getValueAtTime(p_Time);
+        params[30] = (float)m_RangeShapeS->getValueAtTime(p_Time);
+        params[31] = inv ? 1.f : 0.f;
+    }
+
     // THE MASK'S REFERENCE GRADE, resolved here rather than branched on in the kernel. Unlocked it
     // is the live grade, so the mask reads the graded picture exactly as it did before the lock
     // existed; locked it is the grade captured when the latch was measured. Either way the four
@@ -2961,6 +3023,7 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
         params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f; params[18]=0.f;
         params[19]=1.f; params[20]=1.f;
         params[21]=0.f; params[22]=1.f; params[23]=1.f;   // ...and the mask's reference grade
+        params[24]=0.f;                                   // ...and its shape
     } else if (role == 2) {     // Output Transform: scene exp/WB already happened upstream
         params[10]=0.f; params[11]=6500.f;                        // rawExp, rawTemp
     }
@@ -2974,7 +3037,8 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
     if (bypDen)  { params[2]=0.f; }                                              // density
     if (bypExp)  { params[3]=0.f; params[4]=1.f; params[5]=1.f; }                // lift/gamma/gain
     if (bypRange){ params[13]=0.f; params[15]=1.f; params[16]=0.f; params[17]=1.f; params[18]=0.f;
-                   params[19]=1.f; params[20]=1.f; params[21]=0.f; params[22]=1.f; params[23]=1.f; }
+                   params[19]=1.f; params[20]=1.f; params[21]=0.f; params[22]=1.f; params[23]=1.f;
+                   params[24]=0.f; }
     if (bypTrim) { params[8]=0.f; params[9]=1.f; params[12]=0.f; }               // exp/contrast/rolloff
     // bypLut needs no entry here: it already cleared lutOk above, which drops both the LUT
     // sample and its encode override in one go.
@@ -3119,6 +3183,147 @@ OneGradeFactory::OneGradeFactory()
 {
 }
 
+
+////////////////////////////////////////////////////////////////////////////////
+// THE ON-SCREEN SHAPE — an OFX overlay interact.
+//
+// SPIKE AND FEATURE AT ONCE. OFX has the API for this (OverlayInteract, draw/penDown/penMotion,
+// registered with setOverlayInteractDescriptor) but whether DAVINCI RESOLVE honours overlay
+// interacts is not something the OFX headers can answer -- its OFX support is partial, and plenty
+// of plugins ship numeric position sliders precisely because on-screen widgets do not always
+// appear. Same class of unknown as setOpen() on a group.
+//
+// So this is deliberately small: draw the shape's outline and a centre handle, and let the centre
+// be dragged. If Resolve draws it, the answer is yes and dragging a window into place already
+// works. If not, nothing is lost -- the sliders drive the identical parameters, the render never
+// consults this class, and it can be deleted in one block.
+//
+// COORDINATES. Interacts work in CANONICAL coordinates (project pixels, y up). The shape params
+// are centre-origin and normalised by half-height, matching shape_mask(). The conversion is the
+// only fiddly part and it lives in one pair of lambdas below, so a mismatch between what is drawn
+// and what is rendered can only come from one place.
+class RangeShapeInteract : public OFX::OverlayInteract
+{
+public:
+    RangeShapeInteract(OfxInteractHandle p_Handle, OFX::ImageEffect* p_Effect)
+        : OFX::OverlayInteract(p_Handle), _effect(p_Effect)
+    {
+        _shape = p_Effect->fetchChoiceParam("rangeShape");
+        _cx    = p_Effect->fetchDoubleParam("rangeShapeX");
+        _cy    = p_Effect->fetchDoubleParam("rangeShapeY");
+        _sx    = p_Effect->fetchDoubleParam("rangeShapeW");
+        _sy    = p_Effect->fetchDoubleParam("rangeShapeH");
+        _rot   = p_Effect->fetchDoubleParam("rangeShapeR");
+    }
+
+    virtual bool draw(const OFX::DrawArgs& p_Args);
+    virtual bool penDown(const OFX::PenArgs& p_Args);
+    virtual bool penMotion(const OFX::PenArgs& p_Args);
+    virtual bool penUp(const OFX::PenArgs& p_Args);
+
+private:
+    // Half-height units <-> canonical. getProjectSize/Offset is what the host says the frame is.
+    void frame(double& ox, double& oy, double& halfH) const
+    {
+        const OfxPointD sz = _effect->getProjectSize();
+        const OfxPointD of = _effect->getProjectOffset();
+        halfH = (sz.y > 1.0) ? 0.5*sz.y : 1.0;
+        ox = of.x + 0.5*sz.x;
+        oy = of.y + 0.5*sz.y;
+    }
+    void toCanonical(double u, double v, double& x, double& y) const
+    {
+        double ox, oy, hh; frame(ox, oy, hh);
+        x = ox + u*hh; y = oy + v*hh;
+    }
+    void toUnits(double x, double y, double& u, double& v) const
+    {
+        double ox, oy, hh; frame(ox, oy, hh);
+        u = (x - ox)/hh; v = (y - oy)/hh;
+    }
+
+    OFX::ImageEffect*  _effect;
+    OFX::ChoiceParam*  _shape;
+    OFX::DoubleParam*  _cx; OFX::DoubleParam* _cy;
+    OFX::DoubleParam*  _sx; OFX::DoubleParam* _sy;
+    OFX::DoubleParam*  _rot;
+    bool _dragging = false;
+};
+
+bool RangeShapeInteract::draw(const OFX::DrawArgs& p_Args)
+{
+    int shp = 0; _shape->getValueAtTime(p_Args.time, shp);
+    if (shp <= 0) return false;
+
+    const double cx = _cx->getValueAtTime(p_Args.time), cy = _cy->getValueAtTime(p_Args.time);
+    const double sx = _sx->getValueAtTime(p_Args.time), sy = _sy->getValueAtTime(p_Args.time);
+    const double rd = _rot->getValueAtTime(p_Args.time) * 0.01745329252;
+    const double cs = std::cos(rd), sn = std::sin(rd);
+
+    // Rotate OUT of the shape's frame -- shape_mask() rotates into it, so this is the inverse.
+    auto pt = [&](double nx, double ny, double& X, double& Y) {
+        const double du = nx*sx, dv = ny*sy;
+        toCanonical(cx + du*cs - dv*sn, cy + du*sn + dv*cs, X, Y);
+    };
+
+    // Twice, dark then light, so the outline reads over any picture underneath it.
+    for (int pass = 0; pass < 2; ++pass) {
+        glLineWidth(pass ? 1.5f : 3.0f);
+        if (pass) glColor3f(1.f, 0.9f, 0.2f); else glColor3f(0.f, 0.f, 0.f);
+        glBegin(GL_LINE_LOOP);
+        if (shp == 1) {
+            for (int i = 0; i < 64; ++i) {
+                const double a = 2.0*3.14159265358979*i/64.0;
+                double X, Y; pt(std::cos(a), std::sin(a), X, Y); glVertex2d(X, Y);
+            }
+        } else {
+            const double c[4][2] = { {-1,-1}, {1,-1}, {1,1}, {-1,1} };
+            for (int i = 0; i < 4; ++i) { double X, Y; pt(c[i][0], c[i][1], X, Y); glVertex2d(X, Y); }
+        }
+        glEnd();
+        // The centre handle, sized in VIEWPORT pixels so it stays grabbable at any zoom.
+        double hx, hy; toCanonical(cx, cy, hx, hy);
+        const double r = 6.0 * p_Args.pixelScale.x;
+        glBegin(GL_LINES);
+        glVertex2d(hx - r, hy); glVertex2d(hx + r, hy);
+        glVertex2d(hx, hy - r); glVertex2d(hx, hy + r);
+        glEnd();
+    }
+    return true;
+}
+
+bool RangeShapeInteract::penDown(const OFX::PenArgs& p_Args)
+{
+    int shp = 0; _shape->getValueAtTime(p_Args.time, shp);
+    if (shp <= 0) return false;
+    double hx, hy;
+    toCanonical(_cx->getValueAtTime(p_Args.time), _cy->getValueAtTime(p_Args.time), hx, hy);
+    const double grab = 12.0 * p_Args.pixelScale.x;
+    if (std::fabs(p_Args.penPosition.x - hx) > grab ||
+        std::fabs(p_Args.penPosition.y - hy) > grab) return false;
+    _dragging = true;
+    return true;
+}
+
+bool RangeShapeInteract::penMotion(const OFX::PenArgs& p_Args)
+{
+    if (!_dragging) return false;
+    double u, v; toUnits(p_Args.penPosition.x, p_Args.penPosition.y, u, v);
+    _cx->setValue(u); _cy->setValue(v);
+    requestRedraw();
+    return true;
+}
+
+bool RangeShapeInteract::penUp(const OFX::PenArgs& /*p_Args*/)
+{
+    if (!_dragging) return false;
+    _dragging = false;
+    return true;
+}
+
+class RangeShapeOverlayDescriptor
+    : public OFX::DefaultEffectOverlayDescriptor<RangeShapeOverlayDescriptor, RangeShapeInteract> {};
+
 void OneGradeFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
 {
     p_Desc.setLabels(kPluginName, kPluginName, kPluginName);
@@ -3191,6 +3396,10 @@ static DoubleParamDescriptor* defineSlider(OFX::ImageEffectDescriptor& p_Desc, c
 
 void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX::ContextEnum /*p_Context*/)
 {
+    // Register the on-screen shape. Hosts that do not implement overlay interacts ignore this;
+    // the sliders drive the same parameters either way, and the render never consults the class.
+    p_Desc.setOverlayInteractDescriptor(new RangeShapeOverlayDescriptor);
+
     ClipDescriptor* srcClip = p_Desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     srcClip->addSupportedComponent(ePixelComponentRGBA);
     srcClip->setTemporalClipAccess(false);
@@ -3752,6 +3961,54 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     page->addChild(*defineSlider(p_Desc, "rangeLoGain", "Rest: Brightness",
         "Overall brightness of everything outside the mask, multiplied rather than gamma'd - it pivots on black, so it opens the whole of the rest while leaving its floor where it is. Reach for this when the whole unmasked area is simply too dark; reach for Midtones when it is the middle that needs opening and the shadows are already where you want them.",
         1.0, 0.05, 3.0, 0.001, gRange));
+
+    // ---- the shape: WHERE Range Balance acts, as opposed to on what ----
+    //
+    // A luminance qualifier cannot tell a silk specular from a mountain -- measured on the bedroom
+    // frame, they are the same brightness AND the same colour (b* +1.52 against +1.49), so neither
+    // a higher latch nor a chroma gate separates them. What does is that they are in different
+    // PLACES. The shape multiplies the luminance mask, so the held region is "bright AND inside
+    // the shape", which is a qualifier plus a power window.
+    {
+        ChoiceParamDescriptor* sh = p_Desc.defineChoiceParam("rangeShape");
+        sh->setLabels("Shape", "Shape", "Shape");
+        sh->appendOption("None (whole frame)");
+        sh->appendOption("Ellipse");
+        sh->appendOption("Rectangle");
+        sh->setDefault(0);
+        sh->setHint("Restrict Range Balance to part of the frame. The shape multiplies the brightness mask rather than replacing it, so what gets held is whatever is BOTH above the latch and inside the shape - a window pane picked out by the latch, with a bright pillow across the room excluded because it is somewhere else. None means the whole frame, which is how this behaves with the shape switched off.");
+        sh->setParent(*gRange);
+        page->addChild(*sh);
+    }
+    // Centre-origin and normalised by HALF-HEIGHT on both axes, so a circle is round on a 16:9
+    // frame and Size means the same distance whichever way you go. X therefore runs past 1 at the
+    // sides, which is the price of that.
+    page->addChild(*defineSlider(p_Desc, "rangeShapeX", "Shape: Centre X",
+        "Horizontal centre of the shape. 0 is the middle of frame, -1 and +1 are one half-frame-HEIGHT out - so on a 16:9 image the left and right edges sit near -1.78 and +1.78. Measured in height units on both axes so that a circle stays circular.",
+        0.0, -2.0, 2.0, 0.001, gRange));
+    page->addChild(*defineSlider(p_Desc, "rangeShapeY", "Shape: Centre Y",
+        "Vertical centre of the shape. 0 is the middle of frame, -1 the bottom edge, +1 the top.",
+        0.0, -2.0, 2.0, 0.001, gRange));
+    page->addChild(*defineSlider(p_Desc, "rangeShapeW", "Shape: Size X",
+        "Half-width of the shape, in the same height units as the centre. 1.0 reaches from the middle of frame to a half-height out.",
+        0.5, 0.01, 4.0, 0.001, gRange));
+    page->addChild(*defineSlider(p_Desc, "rangeShapeH", "Shape: Size Y",
+        "Half-height of the shape. Set it equal to Size X for a circle or a square.",
+        0.5, 0.01, 4.0, 0.001, gRange));
+    page->addChild(*defineSlider(p_Desc, "rangeShapeR", "Shape: Rotation",
+        "Rotation in degrees, for a window or a skylight that is not square to frame.",
+        0.0, -180.0, 180.0, 0.1, gRange));
+    page->addChild(*defineSlider(p_Desc, "rangeShapeS", "Shape: Softness",
+        "How far the shape's edge feathers, as a fraction of its size. Feathered symmetrically about the boundary, so softening does not shrink the selection. 0 is a hard edge. This IS a spatial feather - unlike the Softness above it, which feathers across brightness.",
+        0.25, 0.0, 1.0, 0.001, gRange));
+    {
+        BooleanParamDescriptor* si = p_Desc.defineBooleanParam("rangeShapeInv");
+        si->setLabels("Shape: Invert", "Shape: Invert", "Shape: Invert");
+        si->setHint("Act everywhere EXCEPT inside the shape. Use it to exclude one bright thing you do not want held - a practical, a specular - rather than to pick out the one you do.");
+        si->setDefault(false);
+        si->setParent(*gRange);
+        page->addChild(*si);
+    }
 
     defineBypass(p_Desc, page, "bypassRange",
                  "Mute this stage at render without losing its values. Range Balance is held off; the sliders grey out but keep their numbers.", gRange);

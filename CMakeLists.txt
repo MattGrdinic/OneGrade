@@ -83,7 +83,10 @@ target_include_directories(OneGrade PRIVATE
 # an empty function while the plugin still advertises OpenCL support.
 # OpenCLKernel.cpp and OpenCL::OpenCL are always built, so this is unconditional.
 target_compile_definitions(OneGrade PRIVATE OFX_SUPPORTS_OPENGLRENDER OFX_SUPPORTS_OPENCLRENDER)
-target_link_libraries(OneGrade PRIVATE OpenCL::OpenCL ncnn)
+# OpenGL is for the Range Balance shape's overlay interact (the on-screen handle), not for
+# rendering -- OFX_SUPPORTS_OPENGLRENDER is a different, unrelated thing.
+find_package(OpenGL REQUIRED)
+target_link_libraries(OneGrade PRIVATE OpenCL::OpenCL ncnn OpenGL::GL)
 
 set_target_properties(OneGrade PROPERTIES PREFIX "" SUFFIX ".ofx" OUTPUT_NAME "OneGrade")
 

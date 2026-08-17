@@ -56,7 +56,7 @@
 namespace og {
 namespace analysis {
 
-static const int kParamN = 24;   // matches P[] in OneGradePipeline.h
+static const int kParamN = 32;   // matches P[] in OneGradePipeline.h
 
 // THE NEUTRAL PARAMETER SET, IN ONE PLACE. It used to be a brace-initialiser copied into a dozen
 // functions, and every one of them silently zero-filled whatever the param count had grown by
@@ -82,7 +82,13 @@ static inline void neutral_params(float* P)
     // The mask's REFERENCE grade. Neutral means "no lock": the caller writes the live Lift/Gamma/
     // Gain here and the mask reads the picture as graded, exactly as it did before the lock existed.
     P[21]=0.f;  P[22]=1.f;  P[23]=1.f;
-    static_assert(kParamN == 24, "neutral_params() needs an entry for every parameter");
+    // Range Balance's SHAPE. Type 0 is "no shape", which is what makes the whole thing inert --
+    // shape_mask() returns 1.0 and the luminance mask stands alone, exactly as before it existed.
+    P[24]=0.f;                                       // shape: 0 off, 1 ellipse, 2 rectangle
+    P[25]=0.f;  P[26]=0.f;                           //   centre x / y (centre-origin, half-height units)
+    P[27]=0.5f; P[28]=0.5f;                          //   size x / y
+    P[29]=0.f;  P[30]=0.25f; P[31]=0.f;              //   rotation (deg) / softness / invert
+    static_assert(kParamN == 32, "neutral_params() needs an entry for every parameter");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -828,7 +834,8 @@ static inline const float* param_steps()
     //                then range balance: latch  soft  high  rbLift rbGamma
     static const float s[kParamN] = { 0.05f,0.05f,0.05f,0.02f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,250.f,0.05f,
                                       2.0f, 0.5f, 0.05f, 0.02f, 0.05f, 0.f, 0.05f, 0.05f,
-                                      0.f, 0.f, 0.f };
+                                      0.f, 0.f, 0.f,
+                                      0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f };
     return s;
 }
 
@@ -874,6 +881,7 @@ static inline void steer_mask(const float* P0, bool* allow)
     // contribute a zero row anyway -- excluding them here just saves two describe() passes each.
     allow[18] = false;
     allow[21] = allow[22] = allow[23] = false;
+    for (int i = 24; i < 32; ++i) allow[i] = false;   // ...and the shape: geometry, not grade
 }
 
 struct Jac {
@@ -886,7 +894,8 @@ static inline const char* param_name(int p)
     static const char* n[kParamN] = { "tmp","tnt","dns","lft","gam","gan",
                                       "oTm","oTn","pEx","pCn","rEx","rTm","rol",
                                       "rbL","rbS","rbH","rbF","rbG","rbW","rbHg","rbLg",
-                                      "rfF","rfG","rfN" };
+                                      "rfF","rfG","rfN",
+                                      "shT","shX","shY","shW","shH","shR","shS","shI" };
     return (p >= 0 && p < kParamN) ? n[p] : "?";
 }
 
@@ -1004,10 +1013,12 @@ static inline void apply_move(const float* P0, const float* dpNorm, float* Pout)
     //                              then range balance: latch  soft  high  rbLift rbGamma
     static const float lo[kParamN] = { -1.f,-1.f,-1.f, -0.5f, 0.20f, 0.20f, -1.f,-1.f, -3.f, 0.20f, -5.f, 2000.f, 0.f,
                                        0.f,  0.f, 0.05f, -0.5f, 0.20f, 0.f, 0.20f, 0.20f,
-                                      -0.5f, 0.20f, 0.20f };
+                                      -0.5f, 0.20f, 0.20f,
+                                       0.f, -2.f, -2.f, 0.01f, 0.01f, -180.f, 0.f, 0.f };
     static const float hi[kParamN] = {  1.f, 1.f, 1.f,  0.5f, 3.00f, 3.00f,  1.f, 1.f,  3.f, 3.00f,  5.f,20000.f, 0.8f,
                                      100.f, 25.f, 2.00f,  0.5f, 3.00f, 1.f, 3.00f, 3.00f,
-                                       0.5f, 3.00f, 3.00f };
+                                       0.5f, 3.00f, 3.00f,
+                                       2.f,  2.f,  2.f,  4.00f, 4.00f, 180.f, 1.f, 1.f };
     const float* st = param_steps();
     for (int i = 0; i < kParamN; ++i) {
         float v = P0[i] + dpNorm[i]*st[i];
