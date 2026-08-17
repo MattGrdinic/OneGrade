@@ -1755,13 +1755,15 @@ void OneGrade::applyAutoGradeClean(double p_Time)
 // param with a button beside it -- and that is better than automatic anyway, because a latch that
 // re-measured every frame would move under the grade while you worked.
 //
-// READ BEFORE THE GRADE CURVE, mirroring what the mask itself reads: og::process with Lift/Gamma/
-// Gain and the trim held neutral. Measuring the graded picture would put the latch somewhere the
-// mask never looks.
+// READ THROUGH THE GRADE CURVE, mirroring what the mask itself reads. Measuring the flat
+// pre-grade image is what made the latch unmatchable against a Resolve qualifier.
 //
-// p98 is where the bright population starts on the frames tested. On the user's bedroom interior
-// it gives 72.1 against the 71.6 they dialled by hand in Resolve -- half a point on a 0..100
-// scale. One frame, so it is a starting point the slider then owns, not a fitted constant.
+// SPLIT THE FRAME, DO NOT TAKE A PERCENTILE. The first version used p98, which assumes the
+// highlight is a fixed share of the frame -- and it is not. On the user's bedroom p98 put the
+// edge above the window entirely; on a landscape whose top half is cloud it selected 1.97%.
+// og::grade::range_latch() reads the SHAPE of the histogram instead, and on those same two
+// frames returns 58.2 (the window, 7.5%) and 46.9 (the sky, 52.5%) -- one rule, two shot
+// shapes, both matting the thing the user pointed at. Still a starting point the slider owns.
 void OneGrade::setRangeLatch(double p_Time)
 {
     probeAnalyze(p_Time);
@@ -1769,13 +1771,16 @@ void OneGrade::setRangeLatch(double p_Time)
     if (n < 512) return;
 
     float Pn[oga::kParamN];
-    Pn[0]=0.f; Pn[1]=0.f; Pn[2]=(float)m_Density->getValue();
-    // Read through the GRADE, not around it -- the same picture the mask itself reads. Measuring
-    // the flat pre-grade image is what made the latch unmatchable against a Resolve qualifier.
+    for (int k = 0; k < oga::kParamN; ++k) Pn[k] = 0.f;
+    Pn[2]=(float)m_Density->getValue();
     Pn[3]=(float)m_Lift->getValue(); Pn[4]=(float)m_Gamma->getValue(); Pn[5]=(float)m_Gain->getValue();
-    Pn[6]=0.f; Pn[7]=0.f; Pn[8]=0.f; Pn[9]=1.f;
-    Pn[10]=(float)m_RawExp->getValue(); Pn[11]=(float)m_RawTemp->getValue(); Pn[12]=0.f;
-    Pn[13]=0.f; Pn[14]=2.6f; Pn[15]=1.f; Pn[16]=0.f; Pn[17]=1.f;
+    Pn[9]=1.f;
+    Pn[10]=(float)m_RawExp->getValue(); Pn[11]=(float)m_RawTemp->getValue();
+    // Range Balance itself OFF -- this measurement is its input, and a latch measured through
+    // the mask it is about to set would chase its own output. Zeroing the whole array first
+    // matters more than it looks: P[18] is Show Mask, and a stray non-zero there would hand
+    // og::process the matte instead of the picture.
+    Pn[14]=2.6f; Pn[15]=1.f; Pn[17]=1.f; Pn[19]=1.f; Pn[20]=1.f;
 
     int cam = 0, enc = 0;
     m_Camera->getValue(cam); m_Encode->getValue(enc);
@@ -1788,17 +1793,21 @@ void OneGrade::setRangeLatch(double p_Time)
                     m_LastSamples.rgb[i*3+2], r, g, b);
         y.push_back(0.2126f*r + 0.7152f*g + 0.0722f*b);
     }
-    const size_t k = (size_t)(0.98 * (y.size() - 1));
-    std::nth_element(y.begin(), y.begin() + k, y.end());
-    const double latch = std::min(100.0, std::max(0.0, 100.0 * (double)y[k]));
-    m_RangeLatch->setValue(latch);
+    const og::grade::RangeLatch RL = og::grade::range_latch(y);
+    // No gap in the histogram means no two populations to hold apart. Leave the latch alone and
+    // say so, rather than inventing an edge that would matte all of the frame or none of it.
+    if (!RL.ok) { m_RangeNote->setValue("No bright region to latch onto here"); return; }
+    m_RangeLatch->setValue(RL.latch);
     // Show the matte straight away. Dialling a latch you cannot see is guesswork, and the
     // measured value is a starting point rather than an answer -- the point of the button is
     // to put the user somewhere close enough to judge, which needs the matte on screen.
     m_RangeShow->setValue(true);
 
+    // Coverage is the number that tells you whether the split found what you meant. 7% on an
+    // interior reads as "the window"; 52% on a landscape reads as "the sky"; 0.2% reads as
+    // "it latched onto a practical" before you have looked at the matte at all.
     char note[64];
-    snprintf(note, sizeof note, "Latch %.1f measured from this frame", latch);
+    snprintf(note, sizeof note, "Latch %.1f, holds %.1f%% of frame", RL.latch, RL.cover);
     m_RangeNote->setValue(note);
 }
 

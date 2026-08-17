@@ -305,13 +305,20 @@ static inline float smooth01(float t)
     return t * t * (3.0f - 2.0f * t);
 }
 
-static inline float highlight_mask(float Y, float lo, float hi, float lsoft, float hsoft)
+// ONE EDGE, NOT TWO. This had an upper edge as well -- a window from `lo` to 100, the shape a
+// Resolve qualifier shows. It is wrong here, and measurably so: the top taper put the BRIGHTEST
+// pixels back OUTSIDE the highlight mask, which on the user's bedroom dropped 27% of the window
+// (8.08% of frame held with the ceiling open, 5.92% with it at 100) -- and the part it dropped
+// was the blown middle of the window, the exact thing "hold the highlights" is about.
+//
+// Resolve gets away with the same shape because its qualifier axis stops at 100. Ours is float
+// and superwhite is ordinary: a practical at 121 is highlight by any definition. The mask rises
+// once and stays up.
+static inline float highlight_mask(float Y, float lo, float soft)
 {
     // Guard the degenerate width so a zero-soft edge is a hard step rather than a divide by zero.
-    const float le = fmaxf(lsoft, 1e-4f), he = fmaxf(hsoft, 1e-4f);
-    const float rise = smooth01((Y - (lo - le)) / (2.0f * le));
-    const float fall = 1.0f - smooth01((Y - (hi - he)) / (2.0f * he));
-    return rise * fall;
+    const float le = fmaxf(soft, 1e-4f);
+    return smooth01((Y - (lo - le)) / (2.0f * le));
 }
 
 static inline void process(int cam, int enc, const float* P, float inR, float inG, float inB,
@@ -413,7 +420,7 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     float rbM = 0.f;
     if (rbOn)
         rbM = highlight_mask(100.f*(0.2126f*v3[0] + 0.7152f*v3[1] + 0.0722f*v3[2]),
-                             rbLatch, 100.f, rbSoft, rbSoft);
+                             rbLatch, rbSoft);
 
     for (int i=0;i<3;i++) {
         float v = v3[i];
@@ -439,7 +446,7 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     //    encode entirely -- 0.5 of mask has to read as 0.5, and pushing it through a transfer
     //    function would make a matte that looks like coverage it does not have. The caller
     //    likewise skips the LUT and trim while this is on.
-    if (rbShow) { outR = outG = outB = rbM; return; }
+    if (rbShow && rbOn) { outR = outG = outB = rbM; return; }
     outR = encode(enc, outc[0]);
     outG = encode(enc, outc[1]);
     outB = encode(enc, outc[2]);

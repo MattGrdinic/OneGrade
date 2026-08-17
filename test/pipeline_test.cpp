@@ -1182,6 +1182,40 @@ int main() {
         check(ok, "the separation triple reads real regions, and survives decimation");
     }
 
+    // 35. The Range Balance latch splits the frame where the gap is, not at a fixed percentile.
+    // Two synthetic frames with the SAME two populations in very different proportions: a window
+    // that is 5% of frame, and a sky that is 60% of it. A percentile cannot serve both -- p98 sits
+    // inside the window on one and far above the sky on the other -- and that is what this pins.
+    {
+        auto build = [](double brightShare) {
+            std::vector<float> y;
+            for (int i = 0; i < 10000; ++i) {
+                const bool hi = (double)i / 10000.0 < brightShare;
+                // Each population spread over ~10 units so the histogram has real width.
+                const float jitter = 0.10f * (float)(i % 100) / 100.f;
+                y.push_back(hi ? 0.80f + jitter : 0.10f + jitter);
+            }
+            return y;
+        };
+        bool ok = true;
+        const og::grade::RangeLatch w = og::grade::range_latch(build(0.05));
+        const og::grade::RangeLatch s = og::grade::range_latch(build(0.60));
+        ok &= w.ok && s.ok;
+        // Both land in the gap between the populations (10..20 dark, 80..90 bright), regardless
+        // of how much of the frame the bright side occupies.
+        ok &= (w.latch >= 20.0 && w.latch <= 80.0);
+        ok &= (s.latch >= 20.0 && s.latch <= 80.0);
+        // ...and the coverage it reports is the bright population itself, not a fixed slice.
+        ok &= (w.cover > 3.0  && w.cover < 8.0);
+        ok &= (s.cover > 55.0 && s.cover < 65.0);
+        // A frame with ONE population has no gap, and saying so is the honest answer -- a latch
+        // invented on a flat frame would matte either all of it or none of it, and the caller
+        // needs to tell that apart from a measurement.
+        ok &= !og::grade::range_latch(std::vector<float>(1000, 0.4f)).ok;
+        ok &= !og::grade::range_latch(std::vector<float>(8, 0.4f)).ok;   // too few to split
+        check(ok, "the range latch splits by population, not by percentile");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

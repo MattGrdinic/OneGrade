@@ -84,7 +84,7 @@ __device__ float og_r709gd(float V, float g){ return og_pow(V,g); }
 __device__ float og_lggc(float v,float gain,float lift,float gamma){ v=v*gain; v=v+lift*(1.0f-fminf(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma); return v; }
 __device__ float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=og_lggc(v,gain,lift,gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); }
 __device__ float og_sm01(float t){ t=fminf(fmaxf(t,0.0f),1.0f); return t*t*(3.0f-2.0f*t); }
-__device__ float og_hlmask(float Y,float lo,float hi,float ls,float hs){ float le=fmaxf(ls,1e-4f),he=fmaxf(hs,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le))*(1.0f-og_sm01((Y-(hi-he))/(2.0f*he))); }
+__device__ float og_hlmask(float Y,float lo,float s){ float le=fmaxf(s,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le)); }  // one rising edge
 __device__ float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2f(x+A)+B)*C):(x*M); }
 __device__ float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2f(x/C-B)-A):(x/M); }
 
@@ -139,13 +139,13 @@ __global__ void OneGradeKernel(int W,int H,const float* P,int cam,int enc,const 
         const bool rbW=(P[18]>0.5f); const float rbHg=P[19], rbLg=P[20];
         const bool rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f||rbHg!=1.0f||rbLg!=1.0f);
         float v3[3]; for(int k=0;k<3;k++) v3[k]=og_lggc(d[k],gain,lift,gamma);
-        const float rbM=rbOn?og_hlmask(100.0f*(0.2126f*v3[0]+0.7152f*v3[1]+0.0722f*v3[2]),rbL,100.0f,rbS,rbS):0.0f;
+        const float rbM=rbOn?og_hlmask(100.0f*(0.2126f*v3[0]+0.7152f*v3[1]+0.0722f*v3[2]),rbL,rbS):0.0f;
         for(int k=0;k<3;k++){
             float v=v3[k];
             if(rbOn){ float rm=og_lggc(v,rbLg,rbF,rbG), hi3=og_lggc(v,rbH,0.0f,rbHg); v=rm*(1.0f-rbM)+hi3*rbM; }
             outc[k]=(dg>0.0f)?og_r709gd(v,dg):og_r709d(v);
         }
-        if(rbW){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }  // matte: no encode/LUT/trim
+        if(rbW&&rbOn){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }  // matte: no encode/LUT/trim; needs a latch
         float e[3]={og_enc(enc,outc[0]),og_enc(enc,outc[1]),og_enc(enc,outc[2])};
         if(lutN>=2 && lutMix>0.0f){ float s[3]; og_sampleLUT(lut,lutN,e,s); for(int k=0;k<3;k++) e[k]=e[k]+(s[k]-e[k])*lutMix; }
         float ex=exp2f(P[8]); for(int k=0;k<3;k++) e[k]=(e[k]*ex-0.5f)*P[9]+0.5f;  // post-LUT trim

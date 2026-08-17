@@ -198,13 +198,12 @@ int main(int argc, char** argv)
     // own settings can be typed straight in and the two compared on one frame.
     const bool   hlOn    = argf(argc, argv, "--hl");
     const double hlLow   = argd(argc, argv, "--hl-low",   -1.0);   // -1 = derive it from the frame
-    const double hlHigh  = argd(argc, argv, "--hl-high",  100.0);
-    const double hlLSoft = argd(argc, argv, "--hl-lsoft",   2.6);
-    const double hlHSoft = argd(argc, argv, "--hl-hsoft",   2.6);
+    const double hlSoft  = argd(argc, argv, "--hl-soft",    2.6);
     const double hlLift  = argd(argc, argv, "--hl-lift",    0.0);
     const double hlGamma = argd(argc, argv, "--hl-gamma",   1.0);
     const double hlGain  = argd(argc, argv, "--hl-gain",    1.0);
     const double hlHiGain= argd(argc, argv, "--hl-hi-gain", 1.0);   // pull the HELD area down
+    const double hlHiGamma=argd(argc, argv, "--hl-hi-gamma",1.0);   // ...and put its detail back
     const bool   hlShow  = argf(argc, argv, "--hl-show");           // write the mask itself
     // The Tone Separation slider: walk it, and vary how far one unit moves the subject's midtone.
     const bool  toneSepSweep = argf(argc, argv, "--tone-sep-sweep");
@@ -558,40 +557,55 @@ int main(int argc, char** argv)
         // `crushedY` asks the question that was meant: is the LUMINANCE at the floor, which is
         // when detail is actually gone. Same shape as hot versus pin -- a threshold on the wrong
         // quantity describes the filter rather than the footage.
-        // THE MASK READS THE NODE'S INPUT, NOT ITS OUTPUT -- the same thing a Resolve qualifier
-        // dropped on a node sees. Reading the graded result would make the mask move as the room
-        // is lifted, so the control would chase its own output: the defect that made Magic Grade
-        // converge over three presses and the reason Bias re-solves from a frozen anchor.
+        // THE MASK READS THE PICTURE AFTER THE GRADE CURVE, before Range Balance's own moves --
+        // which is what a Resolve qualifier dropped on the node sees, and the distinction the
+        // first version got wrong. Pre-grade the picture is flat, so a bright pillow and a window
+        // sit within a few points of each other and NO threshold separates them; the user could
+        // not match Resolve's window selection at any latch for exactly that reason.
         //
-        // Realised by rendering with the grade curve NEUTRAL and everything else as set, which is
-        // exactly "the picture before Lift/Gamma/Gain".
+        // Only Range Balance's OWN moves could make the mask chase itself, so only those are
+        // switched off here. Lift/Gamma/Gain run once and are not driven by the mask.
+        //
+        // Read in a DISPLAY-REFERRED encode, mirroring the plugin: a film LUT forces Cineon, and
+        // a threshold in Cineon means something else entirely.
         float Pmask[oga::kParamN];
         for (int k = 0; k < oga::kParamN; ++k) Pmask[k] = P[k];
-        Pmask[3] = 0.f; Pmask[4] = 1.f; Pmask[5] = 1.f;   // lift / gamma / gain
-        Pmask[8] = 0.f; Pmask[9] = 1.f;                   // post exposure / contrast
+        Pmask[13] = 0.f;                                  // Range Balance off: this IS its input
+        Pmask[18] = 0.f;                                  // never the matte
+        const int maskEnc = (enc <= 2) ? enc : 1;
 
         double hlLowUse = hlLow;
-        if (hlOn && hlLow < 0.0) {
-            // DERIVE THE THRESHOLD RATHER THAN TYPE IT, which is what makes this a slider. The
-            // window is the bright population; put the edge where that population starts. p98 of
-            // the pre-grade display luminance is a first cut, not a fitted number.
+        if (hlOn) {
+            // DERIVE THE THRESHOLD RATHER THAN TYPE IT, which is what makes this a slider.
+            // og::grade::range_latch() is the plugin's own Set From Frame -- called, not
+            // paraphrased, so the bench cannot report a latch the button would not produce.
             std::vector<float> ymask;
             for (size_t k = 0; k < (size_t)f.w * f.h; k += 64) {
                 float r, g, b;
-                og::process(cam, enc, Pmask, f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+                og::process(cam, maskEnc, Pmask, f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
                 ymask.push_back(0.2126f*r + 0.7152f*g + 0.0722f*b);
             }
+            const og::grade::RangeLatch RL = og::grade::range_latch(ymask);
             if (ymask.size() > 8) {
                 auto q = [&](double t) {
                     size_t i = (size_t)(t * (ymask.size() - 1));
                     std::nth_element(ymask.begin(), ymask.begin() + i, ymask.end());
                     return (double)ymask[i];
                 };
-                hlLowUse = 100.0 * q(0.98);
-                printf("    highlight mask: input luma p50 %.1f p90 %.1f p98 %.1f p99.9 %.1f"
-                       " -> Low %.1f\n",
-                       100.0*q(0.50), 100.0*q(0.90), 100.0*q(0.98), 100.0*q(0.999), hlLowUse);
+                printf("    highlight mask: mask luma p50 %.1f p90 %.1f p98 %.1f p99.9 %.1f"
+                       " | split %.1f (%.2f%% of frame)\n",
+                       100.0*q(0.50), 100.0*q(0.90), 100.0*q(0.98), 100.0*q(0.999),
+                       RL.latch, RL.cover);
             }
+            if (hlLow < 0.0 && RL.ok) hlLowUse = RL.latch;
+            // AND THEN LET THE PIPELINE DO IT. Range Balance lives inside og::process(), before
+            // the encode and the LUT, so the bench sets the parameters and renders -- it does not
+            // re-implement the partition next to full_chain(). The version that did drifted the
+            // moment the plugin's mask moved after the grade curve, which is the paraphrase-class
+            // bug this whole shared-header arrangement exists to prevent.
+            P[13] = (float)hlLowUse;  P[14] = (float)hlSoft;   P[15] = (float)hlHiGain;
+            P[16] = (float)hlLift;    P[17] = (float)hlGamma;   P[18] = hlShow ? 1.f : 0.f;
+            P[19] = (float)hlHiGamma; P[20] = (float)hlGain;
         }
         long long masked = 0;
 
@@ -601,33 +615,12 @@ int main(int argc, char** argv)
             full_chain(cam, enc, P, lutData, lutSize, 1.f,
                        f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
             if (hlOn) {
+                // Coverage only -- the picture itself came out of full_chain() above, mask and
+                // all. Recomputed here rather than returned, because it is a diagnostic.
                 float mr, mg, mb;
-                og::process(cam, enc, Pmask, f.px[k*3], f.px[k*3+1], f.px[k*3+2], mr, mg, mb);
+                og::process(cam, maskEnc, Pmask, f.px[k*3], f.px[k*3+1], f.px[k*3+2], mr, mg, mb);
                 const float Y = 100.f * (0.2126f*mr + 0.7152f*mg + 0.0722f*mb);
-                const float m = og::highlight_mask(Y, (float)hlLowUse, (float)hlHigh,
-                                                   (float)hlLSoft, (float)hlHSoft);
-                if (m > 0.5f) ++masked;
-                const float w = 1.f - m;          // the ROOM: everything the highlights are not
-                if (hlShow) { r = g = b = m; }
-                else {
-                    // TWO GRADES, PARTITIONED BY THE MASK -- which is the actual feature, not the
-                    // half of it that only protects. Holding highlights where they were cannot
-                    // recover a window the base grade already threw away: on this frame the base
-                    // blew it identically with the mask on and off, and the mask was working.
-                    //
-                    // So the held area gets its own gain, pulled DOWN, while the room is lifted.
-                    // "Dial the bright areas back and pump the darker up" is one move on a frame
-                    // whose range was captured, and it is two ends of one control.
-                    //
-                    // m + w == 1 by construction, so this is a partition and not a double-apply.
-                    float lr = og::lgg_core(r, (float)hlLift, (float)hlGamma, (float)hlGain);
-                    float lg = og::lgg_core(g, (float)hlLift, (float)hlGamma, (float)hlGain);
-                    float lb = og::lgg_core(b, (float)hlLift, (float)hlGamma, (float)hlGain);
-                    float hr = og::lgg_core(r, 0.f, 1.f, (float)hlHiGain);
-                    float hg = og::lgg_core(g, 0.f, 1.f, (float)hlHiGain);
-                    float hb = og::lgg_core(b, 0.f, 1.f, (float)hlHiGain);
-                    r = w*lr + m*hr; g = w*lg + m*hg; b = w*lb + m*hb;
-                }
+                if (og::highlight_mask(Y, (float)hlLowUse, (float)hlSoft) > 0.5f) ++masked;
             }
             if ((k & 63) == 0) { outCh.push_back(r); outCh.push_back(g); outCh.push_back(b); }
             const float mn = std::min(r, std::min(g, b));
@@ -707,10 +700,10 @@ int main(int argc, char** argv)
                    d.v[oga::D_RDL], d.v[oga::D_RDA], d.v[oga::D_RDB]);
         }
         if (hlOn)
-            printf("    highlight mask: Low %.1f High %.1f soft %.1f/%.1f -> %.2f%% of frame"
-                   " held, room lift %+.3f gamma %.3f gain %.3f\n",
-                   hlLowUse, hlHigh, hlLSoft, hlHSoft,
-                   100.0 * (double)masked / (double)total, hlLift, hlGamma, hlGain);
+            printf("    highlight mask: latch %.1f soft %.1f -> %.2f%% of frame held"
+                   " | held gain %.3f gamma %.3f | rest lift %+.3f gamma %.3f gain %.3f\n",
+                   hlLowUse, hlSoft, 100.0 * (double)masked / (double)total,
+                   hlHiGain, hlHiGamma, hlLift, hlGamma, hlGain);
         std::string op = outDir + "/" + std::string(nm);
         stbi_write_png(op.c_str(), f.w, f.h, 3, out.data(), f.w * 3);
     }

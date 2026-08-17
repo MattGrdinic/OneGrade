@@ -1554,5 +1554,68 @@ static inline MagicResult solve_magic(analysis::SampleSet& S,
     return out;
 }
 
+// ---------------------------------------------------------------------------------------
+// RANGE BALANCE — where the bright population begins.
+//
+// The first version took p98 of the graded luminance. That assumes the highlight is a FIXED
+// SHARE OF THE FRAME, and it is not: on a bedroom with one window p98 read 72.1 against the
+// user's hand-dialled 63.5, and on a landscape whose top half is cloud it selected 1.97% of
+// the frame — the same rule, two shot shapes, one of them absurd. A percentile answers "how
+// much", and the question is "where is the gap".
+//
+// So: split the frame into two populations and put the edge between them (Otsu — maximise
+// between-class variance, which is the same thing as minimising the spread within each side).
+// It reads the shape of the histogram rather than a position in it, so a window that is 2% of
+// frame and a sky that is 50% both land at their own boundary.
+//
+// The luma handed in must be the SAME luminance the mask reads at render — post grade curve,
+// pre Range Balance. A threshold is only meaningful in the space it was chosen in, and this
+// project has paid for that lesson on the black point already.
+struct RangeLatch {
+    double latch = 0.0;    // 0..100, where the mask crosses 0.5
+    double cover = 0.0;    // % of the frame at or above it
+    bool   ok    = false;
+};
+
+static inline RangeLatch range_latch(const std::vector<float>& y)
+{
+    RangeLatch out;
+    if (y.size() < 64) return out;
+
+    // 256 bins over [0,100]. Superwhite folds into the top bin: it is unambiguously highlight,
+    // and letting it stretch the axis would push every threshold down with it.
+    const int kB = 256;
+    long long hist[kB] = {0};
+    for (float v : y) {
+        int b = (int)(v * (float)(kB - 1) + 0.5f);
+        hist[b < 0 ? 0 : (b > kB - 1 ? kB - 1 : b)]++;
+    }
+
+    const double total = (double)y.size();
+    double sum = 0.0;
+    for (int i = 0; i < kB; ++i) sum += (double)i * (double)hist[i];
+
+    double wB = 0.0, sumB = 0.0, best = -1.0;
+    int bestT = 0;
+    for (int t = 0; t < kB - 1; ++t) {
+        wB += (double)hist[t];
+        if (wB <= 0.0) continue;
+        const double wF = total - wB;
+        if (wF <= 0.0) break;
+        sumB += (double)t * (double)hist[t];
+        const double mB = sumB / wB, mF = (sum - sumB) / wF;
+        const double between = wB * wF * (mB - mF) * (mB - mF);
+        if (between > best) { best = between; bestT = t; }
+    }
+    if (best < 0.0) return out;
+
+    out.latch = 100.0 * ((double)bestT + 0.5) / (double)(kB - 1);
+    long long above = 0;
+    for (float v : y) if (100.0 * (double)v >= out.latch) ++above;
+    out.cover = 100.0 * (double)above / total;
+    out.ok = true;
+    return out;
+}
+
 } // namespace grade
 } // namespace og

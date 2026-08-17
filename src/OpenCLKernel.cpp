@@ -79,7 +79,7 @@ const char* KernelSource = "\n" \
 "inline float og_lggc(float v,float gain,float lift,float gamma){ v=v*gain; v=v+lift*(1.0f-fmin(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma); return v; } \n" \
 "inline float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=og_lggc(v,gain,lift,gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); } \n" \
 "inline float og_sm01(float t){ t=fmin(fmax(t,0.0f),1.0f); return t*t*(3.0f-2.0f*t); }                          \n" \
-"inline float og_hlmask(float Y,float lo,float hi,float ls,float hs){ float le=fmax(ls,1e-4f),he=fmax(hs,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le))*(1.0f-og_sm01((Y-(hi-he))/(2.0f*he))); } \n" \
+"inline float og_hlmask(float Y,float lo,float s){ float le=fmax(s,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le)); }        \n" \
 "inline float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2(x+A)+B)*C):(x*M); } \n" \
 "inline float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2(x/C-B)-A):(x/M); } \n" \
 "inline float og_enc(int enc, float x){                                                                         \n" \
@@ -126,13 +126,13 @@ const char* KernelSource = "\n" \
 "    int rbW=(rbWs>0.5f);                                                                                     \n" \
 "    int rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f||rbHg!=1.0f||rbLg!=1.0f);                     \n" \
 "    float3 v3=(float3)(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma)); \n" \
-"    float rbM=rbOn?og_hlmask(100.0f*(0.2126f*v3.x+0.7152f*v3.y+0.0722f*v3.z),rbL,100.0f,rbS,rbS):0.0f;          \n" \
+"    float rbM=rbOn?og_hlmask(100.0f*(0.2126f*v3.x+0.7152f*v3.y+0.0722f*v3.z),rbL,rbS):0.0f;          \n" \
 "    if(rbOn){ float3 rm=(float3)(og_lggc(v3.x,rbLg,rbF,rbG),og_lggc(v3.y,rbLg,rbF,rbG),og_lggc(v3.z,rbLg,rbF,rbG)); \n" \
 "             float3 hi3=(float3)(og_lggc(v3.x,rbH,0.0f,rbHg),og_lggc(v3.y,rbH,0.0f,rbHg),og_lggc(v3.z,rbH,0.0f,rbHg)); \n" \
 "             v3=rm*(1.0f-rbM)+hi3*rbM; }                                                                        \n" \
 "    outc=(float3)((dg>0.0f)?og_r709gd(v3.x,dg):og_r709d(v3.x),(dg>0.0f)?og_r709gd(v3.y,dg):og_r709d(v3.y),(dg>0.0f)?og_r709gd(v3.z,dg):og_r709d(v3.z)); \n" \
 "    float3 e=(float3)(og_enc(enc,outc.x),og_enc(enc,outc.y),og_enc(enc,outc.z));                                \n" \
-"    if(rbW){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }                             \n" \
+"    if(rbW&&rbOn){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }                       \n" \
 "    if(lutN>=2 && lutMix>0.0f){ float3 s=og_sampleLUT(lut,lutN,e); e=e+(s-e)*lutMix; }                          \n" \
 "    float ex=exp2(postExp); e=(e*ex-0.5f)*postCon+0.5f;                                                         \n" \
 "    if(rolloff>0.0f && (enc<=2 || (lutN>=2 && lutMix>0.0f))){ e.x=og_softclip(e.x,rolloff); e.y=og_softclip(e.y,rolloff); e.z=og_softclip(e.z,rolloff); } \n" \

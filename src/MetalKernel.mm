@@ -106,9 +106,9 @@ inline float og_lgg(float L, float gain, float lift, float gamma, float dg){
     return (dg>0.0f) ? og_r709gd(v,dg) : og_r709d(v);
 }
 inline float og_smooth01(float t){ t=clamp(t,0.0f,1.0f); return t*t*(3.0f-2.0f*t); }
-inline float og_hlmask(float Y,float lo,float hi,float ls,float hs){
-    float le=max(ls,1e-4f), he=max(hs,1e-4f);
-    return og_smooth01((Y-(lo-le))/(2.0f*le)) * (1.0f-og_smooth01((Y-(hi-he))/(2.0f*he)));
+inline float og_hlmask(float Y,float lo,float s){   // one rising edge; see highlight_mask()
+    float le=max(s,1e-4f);
+    return og_smooth01((Y-(lo-le))/(2.0f*le));
 }
 inline float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2(x+A)+B)*C):(x*M); }
 inline float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2(x/C-B)-A):(x/M); }
@@ -169,7 +169,7 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
         bool rbW = (P[18]>0.5f); float rbHg=P[19], rbLg=P[20];
         bool rbOn = (rbL>0.0f) && (rbW || rbH!=1.0f || rbF!=0.0f || rbG!=1.0f || rbHg!=1.0f || rbLg!=1.0f);
         float3 v3 = float3(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma));
-        float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*v3.x+0.7152f*v3.y+0.0722f*v3.z),rbL,100.0f,rbS,rbS) : 0.0f;
+        float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*v3.x+0.7152f*v3.y+0.0722f*v3.z),rbL,rbS) : 0.0f;
         if(rbOn){
             float3 room = float3(og_lggc(v3.x,rbLg,rbF,rbG),og_lggc(v3.y,rbLg,rbF,rbG),og_lggc(v3.z,rbLg,rbF,rbG));
             float3 high = float3(og_lggc(v3.x,rbH,0.0f,rbHg),og_lggc(v3.y,rbH,0.0f,rbHg),og_lggc(v3.z,rbH,0.0f,rbHg));
@@ -179,7 +179,7 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
                       (dg>0.0f)?og_r709gd(v3.y,dg):og_r709d(v3.y),
                       (dg>0.0f)?og_r709gd(v3.z,dg):og_r709d(v3.z)); // LGG
         float3 e = float3(og_enc(enc,outc.x), og_enc(enc,outc.y), og_enc(enc,outc.z));
-        if(rbW){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }  // matte: no encode, no LUT, no trim
+        if(rbW&&rbOn){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }  // matte: no encode, LUT or trim; needs a latch or it is just black
         if(lutN>=2 && lutMix>0.0f){ float3 s=og_sampleLUT(lut,lutN,e); e = e + (s-e)*lutMix; }  // LUT + mix
         float ex=exp2(P[8]); e = (e*ex - 0.5f)*P[9] + 0.5f;                                     // post-LUT trim (exposure, contrast)
         if(P[12]>0.0f && (enc<=2 || (lutN>=2 && lutMix>0.0f))){ e.x=og_softclip(e.x,P[12]); e.y=og_softclip(e.y,P[12]); e.z=og_softclip(e.z,P[12]); } // highlight roll-off (display-referred only)
