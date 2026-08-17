@@ -460,6 +460,7 @@ public:
     // for and must not fetch a frame again or take over the viewer.
     void setRangeLatch(double p_Time, bool p_Reanalyse = true, bool p_ShowMatte = true);
     void refreshRangeLatch();                // keep an existing latch current after a new grade
+    void fitRangeShape(double p_Time);       // measure the held region and put the shape round it
     void populateMagicSubject();        // rebuild the Subject list from the cached segmentation
     void applyMagicSubject();           // re-grade around the subject the user picked
     void applyMagicResult(const og::grade::MagicResult& R, const char* src, bool repopulate);
@@ -607,6 +608,8 @@ private:
     OFX::DoubleParam*  m_RangeShapeR;
     OFX::DoubleParam*  m_RangeShapeS;
     OFX::BooleanParam* m_RangeShapeInv;
+    OFX::StringParam*  m_RangeShapeNote;
+    OFX::PushButtonParam* m_RangeShapeFit;
     OFX::BooleanParam* m_RangeLock;      // freeze the mask against the grade under it
     OFX::DoubleParam*  m_RangeRefLift;   // ...the grade it was frozen at (hidden, saved)
     OFX::DoubleParam*  m_RangeRefGamma;
@@ -734,6 +737,8 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_RangeShapeR   = fetchDoubleParam("rangeShapeR");
     m_RangeShapeS   = fetchDoubleParam("rangeShapeS");
     m_RangeShapeInv = fetchBooleanParam("rangeShapeInv");
+    m_RangeShapeNote = fetchStringParam("rangeShapeNote");
+    m_RangeShapeFit  = fetchPushButtonParam("rangeShapeFit");
     m_RangeLock    = fetchBooleanParam("rangeLock");
     m_RangeRefLift  = fetchDoubleParam("rangeRefLift");
     m_RangeRefGamma = fetchDoubleParam("rangeRefGamma");
@@ -1933,6 +1938,88 @@ void OneGrade::refreshRangeLatch()
     setRangeLatch(0.0, /*reanalyse=*/false, /*showMatte=*/false);
 }
 
+// FIT THE SHAPE TO WHAT THE LATCH ALREADY FOUND.
+//
+// The on-screen handle turned out to be unavailable: Resolve advertises OFX overlay support, our
+// interact registers, and draw() is then never called on the Color page. Dragging four sliders to
+// aim a rectangle is worse than Resolve's own power window, so competing on that was never the
+// point -- what this plugin has that a power window does not is a MEASUREMENT.
+//
+// So: take the samples the latch is already holding and put the shape around them. On the bedroom
+// frame that is the window, and the answer arrives without anyone aiming anything.
+//
+// PERCENTILES, NOT MIN/MAX. A bounding box is the textbook move and it is exactly wrong here: one
+// stray specular on the far side of the room stretches the box across the whole frame, which is
+// the failure this feature exists to prevent. p2/p98 of the held positions ignores the strays and
+// lands on the population -- the same reasoning as percentiles over means everywhere else here.
+void OneGrade::fitRangeShape(double p_Time)
+{
+    double latch = 0.0;
+    m_RangeLatch->getValue(latch);
+    if (latch <= 0.0) { m_RangeShapeNote->setValue("Set the latch first"); return; }
+    if (m_LastSamples.size() < 512) probeAnalyze(p_Time);
+    const size_t n = m_LastSamples.size();
+    if (n < 512 || m_LastSamples.u.size() != n) {
+        m_RangeShapeNote->setValue("Could not read this frame");
+        return;
+    }
+
+    // Measured through the SAME picture the mask reads -- the grade curve applied, Range Balance
+    // itself off. A shape fitted to a different render than the mask uses would sit beside it.
+    float Pn[oga::kParamN]; oga::neutral_params(Pn);
+    Pn[2]=(float)m_Density->getValue();
+    Pn[3]=(float)m_Lift->getValue(); Pn[4]=(float)m_Gamma->getValue(); Pn[5]=(float)m_Gain->getValue();
+    Pn[10]=(float)m_RawExp->getValue(); Pn[11]=(float)m_RawTemp->getValue();
+    int cam = 0, enc = 0;
+    m_Camera->getValue(cam); m_Encode->getValue(enc);
+    const int dispEnc = (enc <= 2) ? enc : 1;
+
+    std::vector<float> hu, hv;
+    for (size_t i = 0; i < n; ++i) {
+        float r, g, b;
+        og::process(cam, dispEnc, Pn, m_LastSamples.rgb[i*3], m_LastSamples.rgb[i*3+1],
+                    m_LastSamples.rgb[i*3+2], r, g, b);
+        if (100.f*(0.2126f*r + 0.7152f*g + 0.0722f*b) >= (float)latch) {
+            hu.push_back(m_LastSamples.u[i]);
+            hv.push_back(m_LastSamples.v[i]);
+        }
+    }
+    if (hu.size() < 64) { m_RangeShapeNote->setValue("Too little held to fit a shape"); return; }
+
+    auto pct = [](std::vector<float>& v, double q) {
+        const size_t k = (size_t)(q * (v.size() - 1));
+        std::nth_element(v.begin(), v.begin() + k, v.end());
+        return (double)v[k];
+    };
+    const double u0 = pct(hu, 0.02), u1 = pct(hu, 0.98);
+    const double v0 = pct(hv, 0.02), v1 = pct(hv, 0.98);
+
+    // 0..1 with a bottom-left origin, into the shape's centre-origin half-height units. The x
+    // scale carries the aspect ratio because both axes are normalised by HALF-HEIGHT -- the same
+    // convention shape_mask() uses, and the reason a circle stays round.
+    double asp = 16.0/9.0;
+    if (m_SrcClip) {
+        const OfxRectD rod = m_SrcClip->getRegionOfDefinition(p_Time);
+        const double w = rod.x2 - rod.x1, h = rod.y2 - rod.y1;
+        if (w > 1.0 && h > 1.0) asp = w/h;
+    }
+    const double cx = ((u0 + u1)*0.5 - 0.5) * 2.0 * asp;
+    const double cy = ((v0 + v1)*0.5 - 0.5) * 2.0;
+    // Pad by a tenth. The fit is to where the held pixels ARE, and a shape that grazes them clips
+    // the edge of the very thing it was fitted to as soon as the softness feathers inward.
+    const double sx = std::max(0.02, (u1 - u0) * asp * 1.10);
+    const double sy = std::max(0.02, (v1 - v0) * 1.10);
+
+    int shp = 0; m_RangeShape->getValue(shp);
+    if (shp <= 0) m_RangeShape->setValue(2);      // a rectangle: windows and skies are rectangular
+    m_RangeShapeX->setValue(cx); m_RangeShapeY->setValue(cy);
+    m_RangeShapeW->setValue(sx); m_RangeShapeH->setValue(sy);
+
+    char note[64];
+    snprintf(note, sizeof note, "Fitted to %.1f%% of frame", 100.0*(double)hu.size()/(double)n);
+    m_RangeShapeNote->setValue(note);
+}
+
 void OneGrade::armToneTargets()
 {
     double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0, tFLo = -1.0;
@@ -2516,6 +2603,7 @@ void OneGrade::setEnabledness()
         int shp = 0; m_RangeShape->getValue(shp);
         const bool shapeLive = rangeLive && shp > 0;
         m_RangeShape->setEnabled(rangeLive);
+        m_RangeShapeFit->setEnabled(rangeLive);   // it SETS the shape, so it leads rather than follows
         m_RangeShapeX->setEnabled(shapeLive);   m_RangeShapeY->setEnabled(shapeLive);
         m_RangeShapeW->setEnabled(shapeLive);   m_RangeShapeH->setEnabled(shapeLive);
         m_RangeShapeR->setEnabled(shapeLive);   m_RangeShapeS->setEnabled(shapeLive);
@@ -2800,6 +2888,10 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     // The latch and the lock both change what the note says, and the latch also decides whether
     // the rest of the group is live at all. Neither re-runs any measurement -- this is the panel
     // catching up with a value, which is why it is not guarded on eChangeUserEdit.
+    else if (p_ParamName == "rangeShapeFit" && p_Args.reason == OFX::eChangeUserEdit) {
+        fitRangeShape(p_Args.time);
+        setEnabledness();
+    }
     else if (p_ParamName == "rangeLock" || p_ParamName == "rangeLatch" ||
              p_ParamName == "rangeShape") {
         setEnabledness();
@@ -3312,13 +3404,22 @@ bool RangeShapeInteract::draw(const OFX::DrawArgs& p_Args)
     // must accept fixed-function drawing (glBegin/glColor exist only in a compatibility profile,
     // and a core-profile context would swallow every call above). Each fails silently and they are
     // indistinguishable from the outside, so the panel says which one you are in.
+    //
+    // Only ever ONCE, and only while the note still holds its untouched default -- the same line
+    // reports what Fit To Frame measured, and that is the message worth keeping. Measured in
+    // Resolve 2026-08-17: it ADVERTISES overlay support, our interact registers, and this function
+    // is never called on the Color page. So the line stays on its default there and the outline
+    // is simply unavailable; nothing about the shape depends on it.
     if (!_reported) {
         _reported = true;
-        const GLenum e = glGetError();
-        char msg[64];
-        if (e == GL_NO_ERROR) snprintf(msg, sizeof msg, "drawing on the viewer");
-        else                  snprintf(msg, sizeof msg, "host GL rejected it (0x%04x)", (unsigned)e);
-        _note->setValue(msg);
+        std::string cur; _note->getValue(cur);
+        if (cur.rfind("Set the latch", 0) == 0) {
+            const GLenum e = glGetError();
+            char msg[64];
+            if (e == GL_NO_ERROR) snprintf(msg, sizeof msg, "on-screen handle is live");
+            else                  snprintf(msg, sizeof msg, "host GL rejected the outline (0x%04x)", (unsigned)e);
+            _note->setValue(msg);
+        }
     }
     return true;
 }
@@ -4017,6 +4118,14 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         sh->setParent(*gRange);
         page->addChild(*sh);
     }
+    {
+        PushButtonParamDescriptor* sf = p_Desc.definePushButtonParam("rangeShapeFit");
+        sf->setLabels("Fit To Frame", "Fit To Frame", "Fit To Frame");
+        sf->setHint("Put the shape around whatever the latch is already holding, measured off the current frame - on an interior that is the window. Aiming a rectangle with four sliders is worse than Resolve's own power window, so this does not try to compete on drawing; measuring is the thing a power window cannot do. Fitted to the 2nd and 98th percentiles of the held positions rather than to their bounding box, so one stray specular across the room cannot stretch the shape over the whole picture. Set the latch first, then press this, then adjust if you want it tighter.");
+        sf->setParent(*gRange);
+        page->addChild(*sf);
+    }
+
     // Centre-origin and normalised by HALF-HEIGHT on both axes, so a circle is round on a 16:9
     // frame and Size means the same distance whichever way you go. X therefore runs past 1 at the
     // sides, which is the price of that.
@@ -4049,11 +4158,10 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     {
         StringParamDescriptor* sn = p_Desc.defineStringParam("rangeShapeNote");
-        sn->setLabels("Shape handle", "Shape handle", "Shape handle");
+        sn->setLabels("Shape", "Shape", "Shape");
         sn->setStringType(eStringTypeLabel);
-        sn->setDefault(hostOverlays ? "waiting for the viewer to draw"
-                                    : "not supported by this host - use the sliders");
-        sn->setHint("Whether the on-screen outline is working. 'drawing' means the host called our overlay and OpenGL accepted it, so the outline and its centre handle are live on the viewer. A GL error means the host gave us a graphics context that will not accept the drawing calls. 'waiting' means the host has never asked us to draw, which is the same as no overlay support whatever it advertises. The shape itself is unaffected either way.");
+        sn->setDefault("Set the latch, then press Fit To Frame");
+        sn->setHint("What the shape is doing, and how much of the frame it ended up around. Also where the on-screen outline reports itself if this host ever draws one - Resolve advertises OFX overlay support but never asks a Color page effect to draw, so the outline is unavailable there and Fit To Frame is the way to place a shape.");
         sn->setEnabled(false);
         sn->setParent(*gRange);
         page->addChild(*sn);

@@ -892,11 +892,32 @@ at all. **The bench needed a Y flip**: a PNG row counts down from the top and OF
 coordinates count up from the bottom, so without it every shape would have been mirrored
 vertically and the bench would have disagreed with the plugin about where "above" is.
 
-**The overlay interact is a live spike.** `RangeShapeInteract` draws the outline and a draggable
-centre handle. OFX has the API; whether *Resolve* honours overlay interacts is not answerable from
-the headers — same class of unknown as `setOpen()`. If it draws, dragging a window into place
-already works and freely-drawn polygons become reachable. If not, nothing is lost: the sliders
-drive the identical parameters and the render never consults the class.
+**THE OVERLAY SPIKE IS ANSWERED, AND THE ANSWER IS NO — measured in Resolve 2026-08-17.** Resolve
+**advertises** OFX overlay support (`kOfxImageEffectPropSupportsOverlays` is set, which is how the
+Support library decides whether to register ours at all — `ofxsImageEffect.cpp:545`), our interact
+registers cleanly, and `draw()` is then **never called** on the Color page. Not a GL failure and
+not a coordinate bug: the function does not run. So no OFX plugin gets on-screen handles there,
+and **freely-drawn polygons are off the table in Resolve** — not because point-in-polygon is hard
+(it is a per-pixel test like any other) but because there is no way to draw one.
+
+Three things had to hold for an outline to appear — the host advertising overlays, actually
+calling `draw()`, and handing over a GL context that accepts fixed-function calls — and all three
+fail silently and identically from the outside. Telling them apart needed a line on the panel for
+each. Worth remembering as a debugging shape, not just as a result.
+
+`RangeShapeInteract` is kept: it costs nothing, the render never consults it, and it works if a
+host ever draws it. One coordinate defect was fixed on the way — it framed itself from
+`getProjectSize()` where the render uses the destination image's **bounds**, so a degenerate
+project size would have collapsed the outline to a dot at the origin and looked exactly like "no
+overlay support".
+
+**What replaced it is better suited to this plugin anyway: `Fit To Frame`.** Aiming a rectangle
+with four sliders is worse than Resolve's own power window, so competing on drawing was never the
+point — what this has that a power window does not is a **measurement**. The button takes the
+samples the latch is already holding and puts the shape around them; on an interior that is the
+window, with nothing aimed by hand. **Percentiles, not a bounding box:** p2/p98 of the held
+positions, because one stray specular across the room stretches a bounding box over the whole
+frame, which is the exact failure the shape exists to prevent.
 
 **Still true, and the reason a polygon is not the next thing:**
 The user reached that themselves and gave the right reason — a shape tool diverges from "make this
