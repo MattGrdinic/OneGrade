@@ -732,3 +732,44 @@ grade should do as it is LEANED.
 
 Third design in a row on this feature to fail on structure rather than on tuning, and all three
 found by the bench rather than by reasoning.
+
+## Range Balance: the latch, and the two things that were measured wrong (2026-08-16)
+
+Both shipped. Kept here because each was a plausible-looking number that described the wrong
+thing, which is the failure mode this project keeps meeting.
+
+**The latch was a percentile, and a percentile assumes the highlight is a fixed share of frame.**
+p98 on a bedroom interior put the edge above the window entirely; on a landscape whose top half is
+cloud it selected 1.97%. `og::grade::range_latch()` splits the histogram in two (Otsu) instead —
+reading its shape rather than a position in it. Same rule, both frames: **58.2 → the window at
+7.5%**, **46.9 → the sky at 52.5%**.
+
+**Otsu always answers, and that is its one trap.** It returns the best of all possible splits even
+when there is only one population: a corpus frame spanning 27.9 to 35.3 got a latch holding 87% of
+itself. The decline test needed is **the absolute gap between the class means**, not Otsu's own
+separability — which was tried first and is scale-invariant by construction:
+
+| frame | Otsu η | class gap | what it is |
+|---|---|---|---|
+| bedroom + window | 0.77 | **56.9** | the window, 7.5% |
+| beach sky | 0.82 | **42.8** | the sky, 52.5% |
+| flat interior (27.9–35.3) | 0.65 | **10.1** | nothing — held 87% |
+| flat exterior (53–71) | 0.80 | **29.0** | a real sky, 82% |
+
+η cannot see that one frame's two "populations" are seven code values apart. The gap can. Over the
+17-frame corpus the declines top out at **16.9** and the accepts start at **21.5**, so
+`kRangeGapMin = 20.0` sits inside a real gap in the data rather than on a guess. Third instance of
+this shape after `hot` vs `pin` and `crushed%` vs `crushedY`: **a number compared against a
+constant has to be the number that matters.**
+
+**The mask had an upper edge, which put the brightest pixels back outside it.** Measured: 8.08% of
+the bedroom held with the ceiling open against 5.92% at 100, and the 27% it dropped was the blown
+middle of the window — the exact thing "hold the highlights" is about. Resolve gets away with the
+same shape because its qualifier axis stops at 100; ours is float and a practical at 121 is
+highlight by any definition. `highlight_mask()` now rises once and stays up, so there is no High
+control and none is wanted.
+
+**Still open:** spatial feathering. The softness is in luminance, not in space, so where the
+threshold lands on a steep edge (a window frame) the mask is stable, and where it lands inside
+noise the mask shimmers frame to frame. A per-pixel kernel cannot have a neighbourhood; this is
+the blur architecture, and it is the next thing this feature needs.

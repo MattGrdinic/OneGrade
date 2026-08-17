@@ -1794,9 +1794,16 @@ void OneGrade::setRangeLatch(double p_Time)
         y.push_back(0.2126f*r + 0.7152f*g + 0.0722f*b);
     }
     const og::grade::RangeLatch RL = og::grade::range_latch(y);
-    // No gap in the histogram means no two populations to hold apart. Leave the latch alone and
-    // say so, rather than inventing an edge that would matte all of the frame or none of it.
-    if (!RL.ok) { m_RangeNote->setValue("No bright region to latch onto here"); return; }
+    // No gap in the histogram means no two populations to hold apart. Leave the latch where the
+    // user had it and say so, rather than stamping an edge that would matte most of the picture:
+    // Otsu answers on any frame, so declining is the caller's job, not the split's.
+    if (!RL.ok) {
+        char why[64];
+        snprintf(why, sizeof why, "No bright region here (gap %.0f, needs %.0f)",
+                 RL.gap, og::grade::kRangeGapMin);
+        m_RangeNote->setValue(why);
+        return;
+    }
     m_RangeLatch->setValue(RL.latch);
     // Show the matte straight away. Dialling a latch you cannot see is guesswork, and the
     // measured value is a starting point rather than an answer -- the point of the button is

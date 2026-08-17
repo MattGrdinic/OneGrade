@@ -593,9 +593,9 @@ int main(int argc, char** argv)
                     return (double)ymask[i];
                 };
                 printf("    highlight mask: mask luma p50 %.1f p90 %.1f p98 %.1f p99.9 %.1f"
-                       " | split %.1f (%.2f%% of frame)\n",
+                       " | split %.1f (%.2f%% of frame) gap %.1f%s\n",
                        100.0*q(0.50), 100.0*q(0.90), 100.0*q(0.98), 100.0*q(0.999),
-                       RL.latch, RL.cover);
+                       RL.latch, RL.cover, RL.gap, RL.ok ? "" : "  DECLINED");
             }
             if (hlLow < 0.0 && RL.ok) hlLowUse = RL.latch;
             // AND THEN LET THE PIPELINE DO IT. Range Balance lives inside og::process(), before

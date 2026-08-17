@@ -1571,11 +1571,30 @@ static inline MagicResult solve_magic(analysis::SampleSet& S,
 // The luma handed in must be the SAME luminance the mask reads at render — post grade curve,
 // pre Range Balance. A threshold is only meaningful in the space it was chosen in, and this
 // project has paid for that lesson on the black point already.
+// OTSU ALWAYS ANSWERS, AND THAT IS ITS ONE TRAP. It finds the best of all possible splits, which
+// on a frame with no bright population is still some split -- one corpus frame spans 27.9 to 35.3
+// in display units and got a latch holding 87% of itself.
+//
+// SO THE TEST IS THE GAP, IN ABSOLUTE UNITS, NOT OTSU'S OWN SEPARABILITY. That was tried first
+// and it is scale-invariant by construction: the flat frame above scored 0.65 and another one
+// spanning 53 to 71 scored 0.80, both comfortably inside the range the bedroom window (0.77) and
+// the sky (0.82) occupy. A ratio cannot see that one frame's two "populations" are seven code
+// values apart. `gap` is the distance between the class means on the 0..100 display axis, which
+// is the thing that decides whether holding one side off the other means anything.
+//
+// Third time this shape has come up here: hot versus pin, crushed% versus crushedY, and now this.
+// A NUMBER COMPARED AGAINST A CONSTANT HAS TO BE THE NUMBER THAT MATTERS.
 struct RangeLatch {
     double latch = 0.0;    // 0..100, where the mask crosses 0.5
     double cover = 0.0;    // % of the frame at or above it
+    double gap   = 0.0;    // display units between the two class means
     bool   ok    = false;
 };
+
+// Below this there is nothing to hold apart. On the corpus the frames with a real window or sky
+// sit far above it and the flat ones fall well under -- see docs/ROADMAP.md for the table. One
+// corpus, so it is a bar rather than a constant of nature.
+static const double kRangeGapMin = 20.0;
 
 static inline RangeLatch range_latch(const std::vector<float>& y)
 {
@@ -1595,7 +1614,7 @@ static inline RangeLatch range_latch(const std::vector<float>& y)
     double sum = 0.0;
     for (int i = 0; i < kB; ++i) sum += (double)i * (double)hist[i];
 
-    double wB = 0.0, sumB = 0.0, best = -1.0;
+    double wB = 0.0, sumB = 0.0, best = -1.0, bestGap = 0.0;
     int bestT = 0;
     for (int t = 0; t < kB - 1; ++t) {
         wB += (double)hist[t];
@@ -1605,7 +1624,7 @@ static inline RangeLatch range_latch(const std::vector<float>& y)
         sumB += (double)t * (double)hist[t];
         const double mB = sumB / wB, mF = (sum - sumB) / wF;
         const double between = wB * wF * (mB - mF) * (mB - mF);
-        if (between > best) { best = between; bestT = t; }
+        if (between > best) { best = between; bestT = t; bestGap = mF - mB; }
     }
     if (best < 0.0) return out;
 
@@ -1613,7 +1632,9 @@ static inline RangeLatch range_latch(const std::vector<float>& y)
     long long above = 0;
     for (float v : y) if (100.0 * (double)v >= out.latch) ++above;
     out.cover = 100.0 * (double)above / total;
-    out.ok = true;
+
+    out.gap = bestGap * 100.0 / (double)(kB - 1);   // bins -> the 0..100 display axis
+    out.ok  = (out.gap >= kRangeGapMin);
     return out;
 }
 

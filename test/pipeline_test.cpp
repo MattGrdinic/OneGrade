@@ -1213,6 +1213,15 @@ int main() {
         // needs to tell that apart from a measurement.
         ok &= !og::grade::range_latch(std::vector<float>(1000, 0.4f)).ok;
         ok &= !og::grade::range_latch(std::vector<float>(8, 0.4f)).ok;   // too few to split
+
+        // AND THE GAP MUST BE ABSOLUTE, not Otsu's own separability -- which is scale-invariant
+        // and so scores a frame spanning seven code values the same as a window against a room.
+        // Two clean populations two units apart: bimodal, and nothing worth holding apart.
+        std::vector<float> tight;
+        for (int i = 0; i < 10000; ++i) tight.push_back(i < 3000 ? 0.30f : 0.32f);
+        const og::grade::RangeLatch t = og::grade::range_latch(tight);
+        ok &= !t.ok && t.gap < og::grade::kRangeGapMin;
+        ok &= (w.gap > og::grade::kRangeGapMin && s.gap > og::grade::kRangeGapMin);
         check(ok, "the range latch splits by population, not by percentile");
     }
 
