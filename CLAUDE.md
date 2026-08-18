@@ -352,6 +352,15 @@ build time — that's why the rename needs a GPU smoke test, not just a green `m
 **The branch flow (user's, follow it exactly):**
 1. Every version gets a branch off `main` named **`feature/<version_number>`** — e.g.
    `feature/1.2.0`. This is the integration branch for the whole release.
+   **CREATE IT AND `git push -u` IT BEFORE ANY SUB-FEATURE BRANCHES OFF IT.** A local-only
+   release branch looks completely normal — sub-features branch off it, commits land, `git
+   branch` lists it — and it is invisible to GitHub, so the `compare/` URL handed over for the
+   PR 404s and there is nothing for the sub-feature to merge into. It happened on **1.5.0**
+   (caught 2026-08-18, after two sub-features had already been pushed): the branch had existed
+   locally for the whole release. Harmless there only because it still sat exactly on `main`
+   with nothing committed to it, so publishing it was a plain `push` — but had anything been
+   committed directly to the local copy, the fix would have meant rewriting pushed history.
+   Verify with `git ls-remote --heads origin`, not `git branch`.
 2. Each sub-feature gets its **own branch off that** — never off `main`.
 3. When a sub-feature is done, **ASK whether to roll it into the release branch.** Do not
    assume. Sometimes yes, sometimes not — it depends on testing, on-footage validation,
