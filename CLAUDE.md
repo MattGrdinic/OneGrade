@@ -884,12 +884,20 @@ measured: scaling to fit costs −3.75 EV and drags the median 0.443 → 0.136; 
 everything but leaves the sky FLAT (top decile spanning 0.033) — it is an asymptote for practicals,
 not a scene-to-display map.
 
-**IT IS FITTED PER FRAME, AND RUNS ON APPLY.** `fit_tone_map()` sets `white` to the recoverable peak
-and solves `knee` from a compression ratio (input range above the knee ≤ 4× the output range it is
-squeezed into) — so a gentle frame gets knee 0.90 and is barely touched, a wild one gets 0.24.
-A frame that already fits gets **no shoulder at all**. `autoFitOnApply()` runs it from
-**`changedClip`** (the constructor is too early — no clip, no pixels), guarded by the saved hidden
-`autoFitDone` flag so a project reload cannot re-measure over the user's values.
+**DEFAULT IS A STATIC FITTED CURVE (ON, knee 0.40 / white 3.0); `Fit From Frame` measures the shot.**
+`fit_tone_map()` sets `white` to the recoverable peak and solves `knee` from a compression ratio
+(input range above the knee ≤ 4× the output range it is squeezed into) — a gentle frame gets knee
+0.90 and is barely touched, a wild one 0.24, and a frame that already fits gets **no shoulder at
+all**.
+
+**IT MAY NOT RUN AUTOMATICALLY ON APPLY, and this was re-learned the hard way (2026-08-18).**
+`fetchImage()` from a lifecycle hook trips an assertion inside Resolve and calls `abort()` —
+`try/catch` gives zero protection because it is a process abort, not an exception. **Only
+`changedParam` and `render` may touch pixels.** An auto-fit was wired to `changedClip` and only
+escaped because Resolve never sent that action; worse, its `autoFitDone` guard defaults to `false`
+in every previously-saved project, so had it fired it would have run on every existing node at
+once. `docs/ROADMAP.md` §2 had recorded exactly this in 2026-08-03. **Read that section before
+wiring anything to a lifecycle hook.**
 
 **SENSOR-CLIPPED PIXELS ARE EXCLUDED FROM THE PEAK** — flat, unrecoverable, and letting them set
 `white` would compress everything real to make room for data that is not there. Third outing for

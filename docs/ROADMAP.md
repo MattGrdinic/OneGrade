@@ -133,6 +133,25 @@ on typical log footage. Footage-blind, so it helps the average clip and misses o
 it cannot crash anything and needs no measurement. The two buttons (Base Grade / Creative
 Grade) already cover the adaptive case with one click.
 
+**NEAR-MISS, 2026-08-18 — the same mistake in a different hook.** The tone map's Fit From Frame
+was wired to run automatically on apply via `changedClip`, guarded by a saved `autoFitDone` flag,
+to make containment the default. That is this section's shape exactly: pixels read from a
+lifecycle hook, guarded by a new param that does not exist in older projects. It shipped only
+because Resolve never sent the clip-changed action, so it silently never ran — the user reported
+"behaviour is same as before", which is what a dodged crash looks like from outside.
+
+Two things this section already said and the retry ignored:
+- **`changedClip` is a lifecycle hook the host calls during load**, which is precisely the
+  category ruled out. Only `changedParam` and `render` are safe.
+- **`autoFitDone` defaults to `false` in every project saved before that build**, so had the hook
+  fired it would have run on every OneGrade node at once, on open — the same blast radius as
+  `autoInitDone`, for the same reason.
+
+**Shipped instead: `toneMap` defaults ON with the fitted knee 0.40 / white 3.0.** Static, so it
+cannot crash; it contained every frame in the training corpus with 15 of 18 medians bit-identical;
+and Fit From Frame still beats it per shot with one click. Which is exactly what this section
+concluded in 2026-08-03, reached again the long way.
+
 ---
 
 ## 3. Gamut compression, to make Export LUT near-exact
