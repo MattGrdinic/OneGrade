@@ -269,6 +269,50 @@ static inline float softclip(float v, float amt)
     return k + r*(1.0f - expf(-(v - k)/r));
 }
 
+// ---------------------------------------------------------------------------------------
+// THE TONE MAP — the shoulder that stops log footage from leaving the display range.
+//
+// WHY THIS EXISTS. The pipeline had no tone map: a log clip carries ~13 stops, a display encode
+// holds about six, and nothing bridged them. Measured over the training corpus at NEUTRAL
+// parameters, 9 of 18 frames pushed data past 1.0 -- up to 47.8% of channels -- while the SOURCE
+// was pinned essentially nowhere (max 0.84, 0.000% pinned on the frame that started this). The
+// footage had the range and the plugin threw it away, on half of everything, from the day it
+// shipped. It went unnoticed because nothing measured it: Rolloff is driven by `pin`, which is
+// SOURCE clipping, and correctly reads 0% when the clipping is ours.
+//
+// WHY NOT softclip(). It was tried and it is the wrong tool -- an exponential asymptote built to
+// stop practicals turning neon, not to map a scene into a display. On the frame above it contains
+// everything (max 3.26 -> 1.00) and leaves the sky FLAT: the top decile spans 0.033 of display
+// range at Rolloff 0.8. Contained is not the same as legible.
+//
+// WHY NOT SCALING TO FIT. Solving RAW Exposure so the peak lands on 1.0 costs -3.75 EV on that
+// frame and drags the median 0.443 -> 0.136. It trades a blown sky for a dead picture.
+//
+// THE SHAPE. Identity below `knee`, then a Reinhard shoulder that reaches exactly 1.0 at `white`:
+//
+//     x  = (v - knee)/(1 - knee)        the excess, in units of the remaining display range
+//     wx = (white - knee)/(1 - knee)
+//     out = knee + (1 - knee) * x*(1 + x/wx^2)/(1 + x)
+//
+// C1 at the knee (slope is exactly 1 there, so nothing below it moves and no seam appears), and
+// x = wx maps to 1 exactly, which is what makes `white` mean "the scene value that becomes display
+// white" rather than an asymptote nobody can reach. Anything above `white` would run past 1 in
+// this form -- Reinhard-with-white-point diverges eventually -- so it is clamped, which on real
+// footage is a rounding concern rather than a visible one.
+//
+// DISPLAY-REFERRED ONLY, exactly like softclip: a Cineon/DI/Linear feed to a downstream node must
+// keep its scene-referred values, and a shoulder there would be a lie about what the pixels are.
+static inline float tone_map(float v, float knee, float white)
+{
+    if (v <= knee) return v;                       // the whole point: mids do not move
+    const float span = 1.0f - knee;
+    if (span <= 1e-4f || white <= knee) return v;  // degenerate: leave it alone rather than divide
+    const float wx = (white - knee)/span;
+    const float x  = (v - knee)/span;
+    const float out = knee + span * (x*(1.0f + x/(wx*wx))/(1.0f + x));
+    return (out > 1.0f) ? 1.0f : out;              // above `white` the rational form diverges
+}
+
 // Post-LUT trim in display space: exposure (multiply) then contrast about 0.5.
 static inline void apply_trim(float postExp, float postCon, float& r, float& g, float& b)
 {
@@ -426,6 +470,7 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     float d[3];
     for (int i=0;i<3;i++) d[i] = (dg > 0.f) ? r709_g_enc(outc[i], dg) : r709_enc(outc[i]);
 
+
     // 6b. RANGE BALANCE — hold the bright areas, open the rest.
     //
     // For footage whose range WAS captured: a window and an unlit room both inside the sensor's
@@ -505,6 +550,24 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
             const float high = lgg_core(v, 0.f, rbHiGam, rbHigh);
             v = (1.f - rbM)*room + rbM*high;
         }
+        // THE TONE MAP, LAST IN THE DISPLAY CHAIN -- after the grade curve and after Range
+        // Balance, before the encode.
+        //
+        // BEFORE THE GRADE WAS TRIED FIRST and it is the wrong side, for a reason worth keeping:
+        // a shoulder starting below 1.0 moves diffuse white off display white, and the grade curve
+        // is DEFINED against those pivots -- Lift is lift*(1 - min(v,1)) and pins white, Gain
+        // pins black. Tone mapping first redefines where white is, so Lift stops pinning it (test
+        // 7, "lift pins white") and every documented pivot quietly means something else. Grading
+        // first and mapping the result keeps the whole control set meaning exactly what it says.
+        //
+        // The cost is that the solves' render model must include this, because they predict the
+        // render as lgg_core() on a measured percentile -- see tone_render(), which now applies it
+        // in the same position. That is a real cost and a bounded one; the alternative was
+        // redefining every control.
+        //
+        // enc <= 2 only, exactly like softclip: Cineon, DI and Linear are scene-referred feeds to
+        // a downstream node, and a shoulder in them would be a lie about what the pixels are.
+        if (enc <= 2) v = tone_map(v, P[32], P[33]);
         outc[i] = (dg > 0.f) ? r709_g_dec(v, dg) : r709_dec(v);
     }
 

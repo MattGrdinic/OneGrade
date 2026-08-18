@@ -80,6 +80,10 @@ const char* KernelSource = "\n" \
 "inline float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=og_lggc(v,gain,lift,gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); } \n" \
 "inline float og_sm01(float t){ t=fmin(fmax(t,0.0f),1.0f); return t*t*(3.0f-2.0f*t); }                          \n" \
 "inline float og_hlmask(float Y,float lo,float s){ float le=fmax(s,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le)); }        \n" \
+"inline float og_tonemap(float v,float k,float W){                                                       \n" \
+"  if(v<=k) return v; float sp=1.0f-k; if(sp<=1e-4f||W<=k) return v;                                     \n" \
+"  float wx=(W-k)/sp, x=(v-k)/sp; float o=k+sp*(x*(1.0f+x/(wx*wx))/(1.0f+x));                            \n" \
+"  return (o>1.0f)?1.0f:o; }                                                                             \n" \
 "inline float og_shape(float u,float v,int t,float cx,float cy,float sx,float sy,float rd,float sf,int inv){ \n" \
 "  if(t<=0) return 1.0f;                                                                                    \n" \
 "  float ax=fmax(fabs(sx),1e-4f), ay=fmax(fabs(sy),1e-4f); float du=u-cx, dv=v-cy;                          \n" \
@@ -116,6 +120,7 @@ const char* KernelSource = "\n" \
 "  float rbL,float rbS,float rbH,float rbF,float rbG,float rbWs,float rbHg,float rbLg,                       \n" \
 "  float rfF,float rfG,float rfN,                                                                            \n" \
 "  float shT,float shX,float shY,float shW,float shH,float shR,float shS,float shI,                          \n" \
+"  float tmK,float tmW,                                                                                      \n" \
 "  int lutN, float lutMix,                                                                                   \n" \
 "  __global const float* lut,                                                                                \n" \
 "  __global const float* in, __global float* out) {                                                             \n" \
@@ -141,6 +146,7 @@ const char* KernelSource = "\n" \
 "    if(rbOn){ float3 rm=(float3)(og_lggc(v3.x,rbLg,rbF,rbG),og_lggc(v3.y,rbLg,rbF,rbG),og_lggc(v3.z,rbLg,rbF,rbG)); \n" \
 "             float3 hi3=(float3)(og_lggc(v3.x,rbH,0.0f,rbHg),og_lggc(v3.y,rbH,0.0f,rbHg),og_lggc(v3.z,rbH,0.0f,rbHg)); \n" \
 "             v3=rm*(1.0f-rbM)+hi3*rbM; }                                                                        \n" \
+"    if(enc<=2){ v3=(float3)(og_tonemap(v3.x,tmK,tmW),og_tonemap(v3.y,tmK,tmW),og_tonemap(v3.z,tmK,tmW)); }    \n" \
 "    outc=(float3)((dg>0.0f)?og_r709gd(v3.x,dg):og_r709d(v3.x),(dg>0.0f)?og_r709gd(v3.y,dg):og_r709d(v3.y),(dg>0.0f)?og_r709gd(v3.z,dg):og_r709d(v3.z)); \n" \
 "    float3 e=(float3)(og_enc(enc,outc.x),og_enc(enc,outc.y),og_enc(enc,outc.z));                                \n" \
 "    if(rbW&&rbOn){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }                       \n" \
@@ -254,7 +260,7 @@ void RunOpenCLKernelBuffers(void* p_CmdQ, int p_Width, int p_Height, const float
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Height);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Camera);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Encode);
-    for (int i = 0; i < 32; ++i)
+    for (int i = 0; i < 34; ++i)
         error |= clSetKernelArg(kernel, count++, sizeof(float), &p_Params[i]);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &lutN);
     error |= clSetKernelArg(kernel, count++, sizeof(float), &p_LutMix);

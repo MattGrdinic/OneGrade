@@ -1304,6 +1304,54 @@ int main() {
         check(ok, "the shape restricts where Range Balance acts, and multiplies the latch");
     }
 
+    // 38. The tone map: contains the range without moving anything below its knee.
+    // The defect it exists for: measured over the training corpus at neutral parameters, 9 of 18
+    // frames pushed data past 1.0 -- up to 47.8% of channels -- while the SOURCE was pinned
+    // essentially nowhere. The footage had the range; the pipeline had no shoulder.
+    {
+        bool ok = true;
+        const float k = 0.40f, W = 3.0f;
+
+        // OFF is white <= knee, and it must be EXACTLY identity -- that is what lets the four
+        // render paths carry two floats and no branch.
+        for (float v : {0.f, 0.2f, 0.5f, 1.0f, 3.26f})
+            ok &= (og::tone_map(v, k, 0.f) == v);
+
+        // Below the knee nothing moves at all. Not "close to" -- the same value.
+        for (float v : {0.f, 0.1f, 0.25f, 0.399f})
+            ok &= (og::tone_map(v, k, W) == v);
+
+        // C1 AT THE KNEE: slope is exactly 1 there, so no seam appears where it engages. A curve
+        // that merely joins up leaves a visible crease in a gradient.
+        const float e = 1e-3f;
+        const float slope = (og::tone_map(k + e, k, W) - k) / e;
+        ok &= close(slope, 1.0f, 5e-3f);
+
+        // The white point maps to display white EXACTLY -- that is what makes it mean "the value
+        // that becomes white" instead of an asymptote nobody reaches. softclip() only approaches.
+        ok &= close(og::tone_map(W, k, W), 1.0f, 1e-4f);
+
+        // Monotone, and nothing escapes the range however far past white it starts. The rational
+        // form diverges above `white`, so the clamp is load-bearing rather than defensive.
+        float prev = -1.f;
+        for (int i = 0; i <= 400; ++i) {
+            const float v = (float)i * 0.05f;
+            const float o = og::tone_map(v, k, W);
+            ok &= (o <= 1.0f) && (o >= prev);
+            prev = o;
+        }
+
+        // AND IT KEEPS MORE HIGHLIGHT RANGE THAN THE SOFT CLIP IT REPLACES, which is the whole
+        // reason it is not just softclip(): on the frame that started this, softclip left the top
+        // decile spanning 0.033 of display range. Same comparison in miniature -- two scene values
+        // an octave apart stay further apart under the tone map than under the soft clip.
+        const float tmGap = og::tone_map(3.2f, k, W) - og::tone_map(1.6f, k, W);
+        const float scGap = og::softclip(3.2f, 0.8f)   - og::softclip(1.6f, 0.8f);
+        ok &= (tmGap > 3.0f * scGap);
+
+        check(ok, "the tone map contains the range and keeps the highlights apart");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

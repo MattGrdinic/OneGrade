@@ -926,3 +926,55 @@ better. What OneGrade can add that Resolve makes tedious is a mask that is *meas
 drawn. The nearest thing with real leverage is the blur/feather architecture already queued, which
 turns a per-pixel qualifier into a region one — a specular the size of a pillow crease survives a
 blur very differently from a window pane.
+
+## The tone map (2026-08-18) — shipped as a control, NOT yet the default
+
+**The defect, and it is old and universal.** The pipeline had no tone map. A log clip carries ~13
+stops, a display encode holds about six, and nothing bridged them. Measured at NEUTRAL parameters
+over the training corpus: **9 of 18 frames push data past 1.0**, up to **47.8%** of channels, while
+the SOURCE is pinned essentially nowhere. On the frame that started this (Insta360 Ace Pro 2)
+source max is **0.842 with 0.000% pinned** and the neutral apply peaks at **3.26**. The footage had
+the range and the plugin threw it away, on half of everything, since v0.1.0.
+
+**Why nothing caught it:** Rolloff is driven by `pin` — *source* clipping — which correctly reads
+0% when the clipping is ours. The `hot` vs `pin` distinction, turned against us.
+
+**Two rejected fixes, both measured on that frame:**
+
+| | max | median | top-decile span |
+|---|---|---|---|
+| neutral | 3.26 | 0.443 | 1.477 (clipped away) |
+| scale to fit (RAW Exp −3.75 EV) | 1.00 | **0.136** | — |
+| `softclip` 0.8 | 1.00 | 0.443 | **0.033** |
+| tone map (knee 0.40 / white 3.0) | 1.00 | 0.440 | **0.130** |
+
+Scaling to fit trades a blown sky for a dead picture. `softclip` contains everything and leaves the
+sky **flat** — it is an exponential asymptote built to stop practicals turning neon, not a scene-to-
+display map. Contained is not the same as legible.
+
+**The shape:** identity below `knee`, then a Reinhard shoulder reaching exactly 1.0 at `white`. C1
+at the knee (slope exactly 1, so no seam), and `white` means "the value that becomes white" rather
+than an asymptote nobody reaches. Fitted **knee 0.40 / white 3.0**: every corpus frame lands ≤1.00,
+10 of 18 medians are bit-identical, and the frames that do move are the ones whose median was
+already above the knee.
+
+**PLACEMENT WAS THE HARD PART, and both sides cost something.**
+- **Before the grade curve** — the solves stay exact, because they predict the render as
+  `lgg_core()` on a measured percentile and the percentile would already carry the shoulder. But a
+  shoulder starting below 1.0 **moves diffuse white off display white**, and the grade curve is
+  *defined* against those pivots: Lift is `lift*(1 − min(v,1))` and pins white, Gain pins black.
+  Test 7 ("lift pins white") fails, and every documented pivot quietly means something else.
+- **After the grade curve** (shipped) — every control keeps meaning exactly what it says, and the
+  cost lands on the solves' render model instead. `tone_render()` now applies it in the same
+  position and all five call sites pass `P[32]/P[33]`.
+
+**WHY IT IS OFF BY DEFAULT, which is staging and not preference.** Switching it on breaks six tests
+**structurally, not by a tolerance**: the Clean solve asserts `lgg_core(percentile) == render` to
+1.5e-3, and a curve after `lgg_core` makes that identity false. Every Auto/Magic constant was
+fitted against a render with no shoulder. **Turning this on is a refit against the user's
+hand-graded ground truth, not a flag flip** — and that ground truth is theirs to re-shoot judgement
+on. Ship the control, judge it on footage, then flip the default and re-fit.
+
+**Next, in order:** validate the curve on footage (the Insta360 shot is the case) → decide the
+default → re-derive the Clean black point and the three Magic tone targets with the shoulder in the
+model → flip `toneMap` on and remove the staging note.

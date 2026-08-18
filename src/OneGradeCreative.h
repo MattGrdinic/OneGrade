@@ -230,11 +230,16 @@ static const double kFrameCeilingMax = 0.990;   // ...so never TARGET above this
 // viewer is actually judging. The tone solve places its targets with this, and callers ask it
 // "where is the subject NOW?" with the same function, so the question and the answer cannot
 // drift apart. It was a lambda inside the solve until a caller needed to ask.
+// tmK/tmW MUST track the node's actual P[32]/P[33]; the defaults here only match the shipping
+// default (off). A call site that forgets them models a pipeline the plugin is not running, which
+// is the paraphrase failure in its quietest form -- so the five call sites below pass them.
 static inline double tone_render(double v, double lf, double gm, double gn,
                                  double pe, double con, double roll,
-                                 const float* lut, int lutSize)
+                                 const float* lut, int lutSize,
+                                 double tmK = 0.40, double tmW = 0.0)
 {
     float x = og::lgg_core((float)v, (float)lf, (float)gm, (float)gn);
+    x = og::tone_map(x, (float)tmK, (float)tmW);   // same position as og::process()
     float r = x, g = x, b = x;
     if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
     og::apply_trim((float)pe, (float)con, r, g, b);
@@ -262,11 +267,11 @@ static inline ToneTargets tone_targets_of(double sLo, double sMid, double fHi, d
     // at sep 0 the fourth condition asks for exactly what is on screen, so adding it changes
     // nothing. Left unset when the caller has no surround reading, which keeps the condition off.
     if (sSur >= 0.0)
-        t.surr = tone_render(sSur, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
-    t.floor    = tone_render(sLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
-    t.mid      = tone_render(sMid, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
-    t.ceil     = tone_render(fHi,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
-    t.floorMax = tone_render(fLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+        t.surr = tone_render(sSur, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
+    t.floor    = tone_render(sLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
+    t.mid      = tone_render(sMid, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
+    t.ceil     = tone_render(fHi,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
+    t.floorMax = tone_render(fLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
     return t;
 }
 
@@ -850,7 +855,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     const bool useSurr = (surrMid >= 0.0);
     double cn = P0[9];
     auto renderC = [&](double v, double lf, double gm, double gn, double c) {
-        return tone_render(v, lf, gm, gn, pe, c, roll, lut, lutSize);
+        return tone_render(v, lf, gm, gn, pe, c, roll, lut, lutSize, P0[32], P0[33]);
     };
     auto render = [&](double v, double lf, double gm, double gn) {
         return renderC(v, lf, gm, gn, cn);
@@ -1406,14 +1411,14 @@ struct MagicResult {
     // static_assert there fires if the count moves, which is the reminder to update this.
     float P[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
                                   0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f, 0.f,1.f,1.f,
-                                  0.f,0.f,0.f, 0.5f,0.5f, 0.f,0.25f,0.f};
+                                  0.f,0.f,0.f, 0.5f,0.5f, 0.f,0.25f,0.f, 0.40f,0.0f};
     // The grade as Creative left it, BEFORE a subject was chosen. Kept so switching subjects
     // starts from the same place every time -- re-running from the graded result would compound
     // one subject's colour move onto the next, and the answer would depend on the order they
     // were tried in.
     float Pcreative[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
                                   0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f, 0.f,1.f,1.f,
-                                  0.f,0.f,0.f, 0.5f,0.5f, 0.f,0.25f,0.f};
+                                  0.f,0.f,0.f, 0.5f,0.5f, 0.f,0.25f,0.f, 0.40f,0.0f};
     analysis::MagicChoice choice;
     MagicTone     tone;
     WhiteBalance  wb;

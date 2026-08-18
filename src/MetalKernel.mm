@@ -110,6 +110,12 @@ inline float og_hlmask(float Y,float lo,float s){   // one rising edge; see high
     float le=max(s,1e-4f);
     return og_smooth01((Y-(lo-le))/(2.0f*le));
 }
+inline float og_tonemap(float v,float k,float W){
+    if(v<=k) return v; float sp=1.0f-k; if(sp<=1e-4f||W<=k) return v;
+    float wx=(W-k)/sp, x=(v-k)/sp;
+    float o=k+sp*(x*(1.0f+x/(wx*wx))/(1.0f+x));
+    return (o>1.0f)?1.0f:o;
+}
 inline float og_shape(float u,float v,int t,float cx,float cy,float sx,float sy,float rd,float sf,bool inv){
     if(t<=0) return 1.0f;
     float ax=max(fabs(sx),1e-4f), ay=max(fabs(sy),1e-4f);
@@ -191,6 +197,7 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
             float3 high = float3(og_lggc(v3.x,rbH,0.0f,rbHg),og_lggc(v3.y,rbH,0.0f,rbHg),og_lggc(v3.z,rbH,0.0f,rbHg));
             v3 = room*(1.0f-rbM) + high*rbM;
         }
+        if(enc<=2){ v3=float3(og_tonemap(v3.x,P[32],P[33]),og_tonemap(v3.y,P[32],P[33]),og_tonemap(v3.z,P[32],P[33])); }  // shoulder
         outc = float3((dg>0.0f)?og_r709gd(v3.x,dg):og_r709d(v3.x),
                       (dg>0.0f)?og_r709gd(v3.y,dg):og_r709d(v3.y),
                       (dg>0.0f)?og_r709gd(v3.z,dg):og_r709d(v3.z)); // LGG
@@ -280,7 +287,7 @@ void RunMetalKernel(void* p_CmdQ, int p_Width, int p_Height, const float* p_Para
     [computeEncoder setBuffer:dstDeviceBuf offset:0 atIndex:8];
     [computeEncoder setBytes:&p_Width  length:sizeof(int) atIndex:11];
     [computeEncoder setBytes:&p_Height length:sizeof(int) atIndex:12];
-    [computeEncoder setBytes:p_Params  length:sizeof(float)*32 atIndex:13];
+    [computeEncoder setBytes:p_Params  length:sizeof(float)*34 atIndex:13];
     [computeEncoder setBytes:&p_Camera length:sizeof(int) atIndex:14];
     [computeEncoder setBytes:&p_Encode length:sizeof(int) atIndex:15];
     [computeEncoder setBytes:&lutN     length:sizeof(int) atIndex:16];

@@ -56,7 +56,7 @@
 namespace og {
 namespace analysis {
 
-static const int kParamN = 32;   // matches P[] in OneGradePipeline.h
+static const int kParamN = 34;   // matches P[] in OneGradePipeline.h
 
 // THE NEUTRAL PARAMETER SET, IN ONE PLACE. It used to be a brace-initialiser copied into a dozen
 // functions, and every one of them silently zero-filled whatever the param count had grown by
@@ -88,7 +88,15 @@ static inline void neutral_params(float* P)
     P[25]=0.f;  P[26]=0.f;                           //   centre x / y (centre-origin, half-height units)
     P[27]=0.5f; P[28]=0.5f;                          //   size x / y
     P[29]=0.f;  P[30]=0.25f; P[31]=0.f;              //   rotation (deg) / softness / invert
-    static_assert(kParamN == 32, "neutral_params() needs an entry for every parameter");
+    // THE TONE MAP -- OFF by default, which is `white <= knee` (see tone_map()). The fitted
+    // curve is knee 0.40 / white 3.0 and it works; what is not yet done is the FITTED LAYER ABOVE
+    // it. Every Auto/Magic constant was derived against a render with no shoulder, and switching
+    // one on breaks six tests structurally rather than by a tolerance -- the Clean solve predicts
+    // the render as lgg_core() on a measured percentile, and a curve after lgg_core makes that
+    // identity false. Turning it on is therefore a refit, not a flag, and the refit needs the
+    // user's hand-graded ground truth. Shipped as a control so it can be judged on footage first.
+    P[32]=0.40f; P[33]=0.0f;                         // shoulder knee / white point (0 = off)
+    static_assert(kParamN == 34, "neutral_params() needs an entry for every parameter");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -835,7 +843,8 @@ static inline const float* param_steps()
     static const float s[kParamN] = { 0.05f,0.05f,0.05f,0.02f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,250.f,0.05f,
                                       2.0f, 0.5f, 0.05f, 0.02f, 0.05f, 0.f, 0.05f, 0.05f,
                                       0.f, 0.f, 0.f,
-                                      0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f };
+                                      0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f,
+                                      0.f, 0.f };
     return s;
 }
 
@@ -882,6 +891,8 @@ static inline void steer_mask(const float* P0, bool* allow)
     allow[18] = false;
     allow[21] = allow[22] = allow[23] = false;
     for (int i = 24; i < 32; ++i) allow[i] = false;   // ...and the shape: geometry, not grade
+    allow[32] = allow[33] = false;                   // ...and the tone map: the display transform,
+                                                     // not something a look solve may reach for
 }
 
 struct Jac {
@@ -895,7 +906,8 @@ static inline const char* param_name(int p)
                                       "oTm","oTn","pEx","pCn","rEx","rTm","rol",
                                       "rbL","rbS","rbH","rbF","rbG","rbW","rbHg","rbLg",
                                       "rfF","rfG","rfN",
-                                      "shT","shX","shY","shW","shH","shR","shS","shI" };
+                                      "shT","shX","shY","shW","shH","shR","shS","shI",
+                                      "tmK","tmW" };
     return (p >= 0 && p < kParamN) ? n[p] : "?";
 }
 
@@ -1014,11 +1026,13 @@ static inline void apply_move(const float* P0, const float* dpNorm, float* Pout)
     static const float lo[kParamN] = { -1.f,-1.f,-1.f, -0.5f, 0.20f, 0.20f, -1.f,-1.f, -3.f, 0.20f, -5.f, 2000.f, 0.f,
                                        0.f,  0.f, 0.05f, -0.5f, 0.20f, 0.f, 0.20f, 0.20f,
                                       -0.5f, 0.20f, 0.20f,
-                                       0.f, -2.f, -2.f, 0.01f, 0.01f, -180.f, 0.f, 0.f };
+                                       0.f, -2.f, -2.f, 0.01f, 0.01f, -180.f, 0.f, 0.f,
+                                       0.f, 0.f };
     static const float hi[kParamN] = {  1.f, 1.f, 1.f,  0.5f, 3.00f, 3.00f,  1.f, 1.f,  3.f, 3.00f,  5.f,20000.f, 0.8f,
                                      100.f, 25.f, 2.00f,  0.5f, 3.00f, 1.f, 3.00f, 3.00f,
                                        0.5f, 3.00f, 3.00f,
-                                       2.f,  2.f,  2.f,  4.00f, 4.00f, 180.f, 1.f, 1.f };
+                                       2.f,  2.f,  2.f,  4.00f, 4.00f, 180.f, 1.f, 1.f,
+                                       0.95f, 20.f };
     const float* st = param_steps();
     for (int i = 0; i < kParamN; ++i) {
         float v = P0[i] + dpNorm[i]*st[i];

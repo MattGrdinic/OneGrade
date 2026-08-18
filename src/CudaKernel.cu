@@ -85,6 +85,12 @@ __device__ float og_lggc(float v,float gain,float lift,float gamma){ v=v*gain; v
 __device__ float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=og_lggc(v,gain,lift,gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); }
 __device__ float og_sm01(float t){ t=fminf(fmaxf(t,0.0f),1.0f); return t*t*(3.0f-2.0f*t); }
 __device__ float og_hlmask(float Y,float lo,float s){ float le=fmaxf(s,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le)); }  // one rising edge
+__device__ float og_tonemap(float v,float k,float W){
+    if(v<=k) return v; float sp=1.0f-k; if(sp<=1e-4f||W<=k) return v;
+    float wx=(W-k)/sp, x=(v-k)/sp;
+    float o=k+sp*(x*(1.0f+x/(wx*wx))/(1.0f+x));
+    return (o>1.0f)?1.0f:o;
+}
 __device__ float og_shape(float u,float v,int t,float cx,float cy,float sx,float sy,float rd,float sf,bool inv){
     if(t<=0) return 1.0f;
     float ax=fmaxf(fabsf(sx),1e-4f), ay=fmaxf(fabsf(sy),1e-4f);
@@ -158,6 +164,7 @@ __global__ void OneGradeKernel(int W,int H,const float* P,int cam,int enc,const 
         for(int k=0;k<3;k++){
             float v=v3[k];
             if(rbOn){ float rm=og_lggc(v,rbLg,rbF,rbG), hi3=og_lggc(v,rbH,0.0f,rbHg); v=rm*(1.0f-rbM)+hi3*rbM; }
+            if(enc<=2) v=og_tonemap(v,P[32],P[33]);   // shoulder, last in the display chain
             outc[k]=(dg>0.0f)?og_r709gd(v,dg):og_r709d(v);
         }
         if(rbW&&rbOn){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }  // matte: no encode/LUT/trim; needs a latch
@@ -177,8 +184,8 @@ void RunCudaKernel(void* p_Stream, int p_Width, int p_Height, const float* p_Par
     dim3 blocks((p_Width + threads.x - 1) / threads.x, (p_Height + threads.y - 1) / threads.y, 1);
 
     float* d_params = nullptr;
-    cudaMalloc(&d_params, sizeof(float) * 32);
-    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 32, cudaMemcpyHostToDevice, stream);
+    cudaMalloc(&d_params, sizeof(float) * 34);
+    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 34, cudaMemcpyHostToDevice, stream);
 
     int lutN = (p_Lut && p_LutSize >= 2) ? p_LutSize : 0;
     float* d_lut = nullptr;

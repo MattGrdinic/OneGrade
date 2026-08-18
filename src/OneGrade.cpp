@@ -71,7 +71,7 @@ static const bool kAnalysisDebugUI = false;
 
 // MUST equal og::analysis::kParamN and the P[] the kernels index. Three separate places size
 // buffers off this, and a mismatch is silent on GPU: wrong values, no error, a different picture.
-#define kParamCount 32 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff,
+#define kParamCount 34 // temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp,rolloff,
                        // rbLatch,rbSoft,rbHigh,rbLift,rbGamma
 
 // Folder scanned for built-in / film-look LUTs (Resolve's default LUT install).
@@ -543,6 +543,9 @@ private:
     OFX::DoubleParam* m_PostCon;
     OFX::DoubleParam* m_Rolloff;
 
+    OFX::BooleanParam* m_ToneMap;      // the display-range shoulder (experimental)
+    OFX::DoubleParam*  m_ToneMapKnee;
+    OFX::DoubleParam*  m_ToneMapWhite;
     OFX::ChoiceParam* m_LutMode;    // 0 none, 1 custom look, 2 film-look built-in
     OFX::ChoiceParam* m_FilmLut;
     OFX::ChoiceParam* m_LookGroup;
@@ -739,6 +742,9 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_RangeShapeInv = fetchBooleanParam("rangeShapeInv");
     m_RangeShapeNote = fetchStringParam("rangeShapeNote");
     m_RangeShapeFit  = fetchPushButtonParam("rangeShapeFit");
+    m_ToneMap      = fetchBooleanParam("toneMap");
+    m_ToneMapKnee  = fetchDoubleParam("toneMapKnee");
+    m_ToneMapWhite = fetchDoubleParam("toneMapWhite");
     m_RangeLock    = fetchBooleanParam("rangeLock");
     m_RangeRefLift  = fetchDoubleParam("rangeRefLift");
     m_RangeRefGamma = fetchDoubleParam("rangeRefGamma");
@@ -3090,6 +3096,14 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
         params[31] = inv ? 1.f : 0.f;
     }
 
+    // The shoulder. OFF is expressed as white <= knee, which tone_map() reads as identity -- so the
+    // four render paths carry two floats and no branch, the same arrangement as Lock Mask.
+    {
+        bool on = false; m_ToneMap->getValueAtTime(p_Time, on);
+        params[32] = (float)m_ToneMapKnee->getValueAtTime(p_Time);
+        params[33] = on ? (float)m_ToneMapWhite->getValueAtTime(p_Time) : 0.f;
+    }
+
     // THE MASK'S REFERENCE GRADE, resolved here rather than branched on in the kernel. Unlocked it
     // is the live grade, so the mask reads the graded picture exactly as it did before the lock
     // existed; locked it is the grade captured when the latch was measured. Either way the four
@@ -4267,6 +4281,34 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     GroupParamDescriptor* gOut = p_Desc.defineGroupParam("gOutput");
     gOut->setLabels("7  Output", "7  Output", "7  Output");
     gOut->setOpen(false);
+
+    // THE TONE MAP. Lives with Output because it is part of the display transform: the question it
+    // answers is "does this clip fit in the delivery range", not "what should it look like".
+    //
+    // Measured over the training corpus at NEUTRAL parameters, 9 of 18 frames pushed data past 1.0
+    // -- up to 47.8% of channels -- while the SOURCE was pinned essentially nowhere. The footage
+    // had the range and the plugin threw it away.
+    //
+    // DEFAULT OFF, and that is a staging decision rather than a preference. Every Auto/Magic
+    // constant was fitted against a render with no shoulder, and switching one on breaks six tests
+    // structurally: the Clean solve predicts the render as lgg_core() on a measured percentile,
+    // and a curve after lgg_core makes that identity false. Turning it on is a refit against the
+    // hand-graded ground truth, not a flag flip.
+    {
+        BooleanParamDescriptor* tm = p_Desc.defineBooleanParam("toneMap");
+        tm->setLabels("Highlight Tone Map", "Highlight Tone Map", "Highlight Tone Map");
+        tm->setHint("Fit the picture into the 0-1023 delivery range instead of clipping whatever will not fit. Log footage carries far more range than a display encode holds, and without a shoulder everything above display white is simply lost - measured across the training footage, half the frames threw away highlight data the camera had actually captured. This adds a shoulder that reaches white smoothly rather than hitting it. EXPERIMENTAL and off by default: the Auto Grade and Magic Grade constants were all fitted without it, so their results need re-checking on footage before this becomes the default.");
+        tm->setDefault(false);
+        tm->setParent(*gOut);
+        page->addChild(*tm);
+    }
+    page->addChild(*defineSlider(p_Desc, "toneMapKnee", "Tone Map: Start",
+        "Where the shoulder begins, in display units. Everything below this is left exactly alone - the curve is flat-on at this point, so there is no seam - and everything above is compressed to make room for the highlights. Lower gives the highlights more range at the cost of compressing the upper mid-tones; higher leaves more of the picture untouched but flattens the top. 0.40 was fitted on the training corpus as the point where the median stops moving.",
+        0.40, 0.05, 0.95, 0.001, gOut));
+    page->addChild(*defineSlider(p_Desc, "toneMapWhite", "Tone Map: White Point",
+        "The value that becomes display white. Everything between the shoulder start and this is mapped into the top of the range, so raising it packs more highlight range into the same space and lowering it clips sooner. 3.0 contained every frame in the training corpus with the median untouched; a frame peaking above this is held at white rather than allowed past it.",
+        3.0, 1.0, 20.0, 0.01, gOut));
+
     ChoiceParamDescriptor* enc = p_Desc.defineChoiceParam("outEncode");
     enc->setLabels("Output Encode", "Output Encode", "Output Encode");
     enc->setHint("Your delivery curve — the transfer function baked into the render. Rec.709 (Gamma 2.2) is the default: it matches what web/streaming platforms like YouTube assume, where most exports end up. Pick Rec.709 (Gamma 2.4) for broadcast/reference delivery, or Rec.709 (Scene) for a scene-referred hand-off. This is NOT the same setting as the project's Timeline Color Space and should not be changed to match it — on macOS the timeline must be Rec.709 (Scene) so Resolve's viewer agrees with QuickTime/YouTube, whatever you deliver in (see Setup / Help). The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you pick, so a wheel move reads linearly in that curve. An active LUT takes this over and greys it out, because the LUT can only be fed the curve it was authored for (Film Look -> Cineon, Custom Look -> Rec.709 Scene) — the 'In effect' line below always names what is actually being rendered. LUT Mix does not hand it back: Mix blends the LUT in and out within that curve, so Mix 0 still previews the curve the blend happens in. Set LUT Mode to None to get the choice back.");
