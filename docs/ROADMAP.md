@@ -1048,3 +1048,35 @@ every call site passes `P[32]/P[33]`, and `solve_creative_px` was found hand-inl
 it. The subject floor (0.125) and midtone (0.278) targets sit below any fitted knee and are
 untouched; **the frame-ceiling target (0.968) is the one that now means something different** and
 wants re-deriving against hand-graded shots.
+
+### MEASURED 2026-08-18: the solve models a shoulder-less render, and it costs a real frame
+
+`MagicResult::P` seeds `P[33] = 0` — shoulder OFF — so every Magic solve evaluates its targets
+through a render the user will not see, while the shipped node has the shoulder ON at knee 0.40 /
+white 3.0. The two disagree most exactly where the shoulder exists: at the top.
+
+`large-face00102120` is the case. The frame is a close-up with a bright doorway at the left edge.
+The solve places the subject **perfectly** — achieved midtone 0.278 against a 0.278 target — and
+is then refused by `kFrameBlown` for a frame highlight of **1.000**, a value that only exists
+because the render it was measured in has no shoulder to bring it back. Face detection is fine;
+the frame is declined for a highlight the user's actual picture does not have.
+
+**Seeding the solve with the shipping shoulder fixes that frame and is NOT the change to make.**
+Measured over the 19-frame corpus, `P[33] = 0 -> 3.0`:
+
+| | frames |
+|---|---|
+| move at all | **12 of 19** |
+| clearly better | 3 — `large-face` decline -> clean solve at `hi 0.890` branch 0; `extreme-settings` crush 4.45% -> 0.12%; `dark-scene` 1.72% -> 1.04% |
+| clearly worse | 4 — `00104865` lift +0.045 -> **−0.218**, black 0.066 -> 0.000, crush 0.00% -> 3.35%, shadow separation 0.048 -> **0.000**; `00096619` crush 35.3% -> 44.4%; `00092022` 13.8% -> 22.0%; `00091084` 17.2% -> 24.5% |
+
+Gain rises on nearly every frame (0.451 -> 0.586, 0.360 -> 0.509, 0.656 -> 0.820) because the
+shoulder buys headroom the fit was never told about, and Lift follows it down into the floor. That
+is the re-derivation this section already called for, arriving as a bill: **the constants are
+entangled with the absence of a shoulder**, so switching it on is a refit against hand-graded
+ground truth and not a flag flip. Confirmed rather than assumed, which is the point of writing it
+down.
+
+**When it is refitted, the seed must be the LIVE `P[32]/P[33]`, not a hard-coded 3.0.** `Fit From
+Frame` changes the shoulder per shot, so a constant in `MagicResult` would be the same paraphrase
+class that has produced every long-lived bug on this feature.

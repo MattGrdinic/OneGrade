@@ -992,8 +992,13 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     //
     // Checked on the RESULT, not on whether a control sits at a bound. A bound can be reached
     // legitimately, and a solve can fail without reaching one.
-    if (std::fabs(render(sMid, lf, gm, gn) - subjMid) > 0.02) { out.why = "subject unplaceable"; return out; }
-    if (render(fHi, lf, gm, gn) >= kFrameBlown) { out.why = "highlight blown"; return out; }
+    // Stamped BEFORE the two declines, not after. Both of these are judgements about a number,
+    // and returning without the number leaves the reader to guess whether the solve missed by a
+    // hair or by a mile.
+    out.mid     = (float)render(sMid, lf, gm, gn);
+    out.frameHi = (float)render(fHi,  lf, gm, gn);
+    if (std::fabs(out.mid - subjMid) > 0.02)  { out.why = "subject unplaceable"; return out; }
+    if (out.frameHi >= kFrameBlown)           { out.why = "highlight blown";     return out; }
 
     out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
     out.sLo = (float)sLo; out.sMid = (float)sMid; out.sHi = (float)sHi;

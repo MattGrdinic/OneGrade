@@ -339,7 +339,7 @@ int main(int argc, char** argv)
         oga::Desc d = oga::describe(S, cam, enc <= 2 ? enc : 1, P);
 
         std::string decision = seg.ready() ? "no move" : "no model";
-        char wbNote[80] = "", toneNote[128] = "";
+        char wbNote[80] = "", toneNote[256] = "";
         if (R.choice.ok) {
             char buf[96];
             snprintf(buf, sizeof buf, "%d/%d %s %.0f%% -> %s %+.3f", R.choice.option + 1,
@@ -364,9 +364,11 @@ int main(int argc, char** argv)
             else if (R.tone.why[0])
                 snprintf(toneNote, sizeof toneNote,
                          " tone declined: %s (neutral subj mid %.3f, %.2fEV,"
-                         " neutral subj %.3f/%.3f/%.3f spread %.3f)",
+                         " neutral subj %.3f/%.3f/%.3f spread %.3f,"
+                         " got mid %.3f hi %.3f)",
                          R.tone.why, R.tone.sMidNeutral, R.tone.rawExp,
-                         R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.sHi - R.tone.sLo);
+                         R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.sHi - R.tone.sLo,
+                         R.tone.mid, R.tone.frameHi);
         }
 
         const char* nm = strrchr(argv[i], '/'); nm = nm ? nm + 1 : argv[i];
