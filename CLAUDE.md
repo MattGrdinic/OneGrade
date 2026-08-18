@@ -797,6 +797,61 @@ that shows its work, not a black box, so a bad analysis costs one undo rather th
 target 0.42" is a measurement) · skin is most of what "pleasing" means and a luma histogram
 can't find it — a hue-window mask is the biggest quality lever, design for it early.
 
+## Range Balance — the luminance qualifier stage (v1.5.0, 2026-08-16/17)
+
+**Panel group "4 Range Balance". Two grades partitioned by a mask, in one node.** For footage
+whose range WAS captured — a window and an unlit room both inside the sensor's latitude — where
+one curve has to blow one end to serve the other. In Resolve that is a qualifier, an invert and a
+second node.
+
+`P[13..20]` = latch · softness · **Held**: gain, gamma · **Rest**: lift, gamma, gain · show-mask.
+`P[21..23]` = the mask's REFERENCE grade. `P[24..31]` = the shape. **kParamN is 32** — every
+addition is the golden-rule 4-file edit *plus* `kParamCount`, `neutral_params()`, `steer_mask()`
+and the three hand-initialised tables in `OneGradeAnalysis.h`.
+
+**Order matters and cost us twice.** The mask is read **AFTER the grade curve, before Range
+Balance's own moves**. Pre-grade the picture is flat — a bright pillow and a window sit a few
+points apart and NO threshold separates them, which is why the first version could not match a
+Resolve qualifier at any latch. Range Balance's own moves are excluded or the mask chases itself.
+
+**The latch is a POPULATION SPLIT (Otsu), not a percentile.** p98 assumes the highlight is a fixed
+share of frame: it put the edge above a window entirely, and selected 1.97% of a landscape that is
+half cloud. `og::grade::range_latch()` reads the histogram's shape — 58.2 → the window at 7.5%,
+46.9 → the sky at 52.5%. **Otsu always answers**, so the decline test is the ABSOLUTE gap between
+class means (`kRangeGapMin = 20`); Otsu's own separability is scale-invariant and scores a frame
+spanning seven code values the same as a window against a room.
+
+**The mask rises once and stays up** — no upper edge. A window from latch to 100 put the BRIGHTEST
+pixels back outside the highlight mask (27% of the window on the test frame). Resolve gets away
+with that shape because its qualifier axis stops at 100; ours is float and a practical at 121 is
+highlight by any definition.
+
+**Lock Mask** freezes the mask against the exposure under it (unlocked, coverage ran 7.45% → 19.39%
+as Gain rose). Resolved in `resolveConfig()` as a reference grade, never as a kernel branch. Locks
+against the grade curve only — RAW Exposure and Density are upstream and still move it. A locked
+mask is never auto-refreshed.
+
+**The Shape** (ellipse/rectangle, centre/size/rotation/softness/invert) restricts WHERE the stage
+acts and **multiplies** the luminance mask. **A shape is not a blur** — a blur needs a pixel's
+neighbours, a shape needs only its own coordinate, which every backend has. `og::process()` takes
+it as a defaulted trailing `shapeM` scalar because only the caller knows where a pixel is.
+**`Fit To Frame`** measures it off the held region (p2/p98 of positions, never a bounding box —
+one stray specular stretches a bounding box over the whole frame).
+
+**RESOLVE NEVER DRAWS OFX OVERLAYS ON THE COLOR PAGE** (measured 2026-08-17). It *advertises*
+`kOfxImageEffectPropSupportsOverlays`, the interact registers, and `draw()` is never called. So
+on-screen handles and freely-drawn polygons are unavailable there — not because point-in-polygon
+is hard, but because there is nothing to draw one with. `RangeShapeInteract` is kept (costs
+nothing, works if a host ever calls it). **Three conditions fail silently and identically here** —
+host advertises / host calls draw / GL context accepts the calls — and telling them apart needed a
+panel line for each.
+
+**Deferred: spatial feathering (the blur).** Softness is in luminance, not space, so the mask is
+stable where the threshold lands on a hard edge and shimmers where it lands in noise. **Measured
+dead ends for the silk-pillow case: a chroma gate** (window b* +1.49 vs pillow +1.52 — identical)
+**and a 3-class split** (the held pillow pixels are speculars, the bright tail of the bedding
+class, not a class of their own). Full write-up + tables in `docs/ROADMAP.md`.
+
 ## Likely next tasks
 **`docs/ROADMAP.md` is now the single place for deferred work** — it carries the reasoning,
 not just the title, so each item restarts from its conclusion. Read it before re-opening any
