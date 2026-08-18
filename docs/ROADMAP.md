@@ -196,7 +196,43 @@ breaks the whole design, so it does not get switched on speculatively.
 
 ---
 
-## 5. Standing items
+## 5. A more pleasing grade from the first press of Magic Grade
+
+**User's framing, 2026-08-18, and it sets the bar deliberately low for now:** the immediate
+result does not have to be finished, because the point of the panel is that *sliders* take it the
+rest of the way. "So long as the sliders can create good looks with minimal effort, that's good
+enough for now." What is wanted next is that the landing point itself be more pleasing, so fewer
+of those slider moves are corrections rather than taste.
+
+**This is a different item from [2] above.** That one is about the picture a node produces when it
+is merely dropped on a clip, with no button pressed, and its answer is static defaults. This one is
+about the picture after Magic Grade has measured the frame and solved — where there is a
+measurement to reason from, and the question is whether the targets it solves to are the right
+ones.
+
+**Start here, because it is already measured and already costing real frames:**
+
+- **The solve models a shoulder-less render** (see the tone map section below). `MagicResult` seeds
+  `P[33] = 0` while the shipped node has the shoulder on, so the solve reasons about a top end the
+  viewer never sees. On `large-face00102120` this is the whole difference between a clean solve at
+  `hi 0.890` and a decline. Switching it on is a **refit, not a flag flip** — measured, 12 of 19
+  corpus frames move, 4 clearly worse — and that refit is most of this roadmap item.
+- **Every tone target still comes from ONE hand-graded interview** (subject floor 0.125, midtone
+  0.278, frame ceiling 0.968/0.890). They are placeholders with the right shape. More ground truth
+  is the only thing that improves them, and the shape of that work is the same as it was for the
+  first fit: hand-grade shots, read the constants back out.
+- **What "pleasing" means is not yet written down for anything but a face.** The region table has
+  measured targets for SKY and SKIN only; everything else declines. Extending it is a data
+  question, and the 851-film corpus already in `training-data/` is the obvious place to ask it.
+
+**The trap to avoid is the one this feature keeps falling into:** a nicer landing point that is
+nicer on the frames it was fitted on. Any change here is judged across the whole bench corpus, on
+crush percentage and shadow separation as well as on how the frame looks, because three of the four
+regressions found on 2026-08-18 were invisible in the graded thumbnail and obvious in the numbers.
+
+---
+
+## 6. Standing items
 
 Carried from `CLAUDE.md`, kept here so there is one place to look:
 
