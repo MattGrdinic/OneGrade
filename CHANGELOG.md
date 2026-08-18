@@ -76,13 +76,11 @@ Balance & Density, Exposure & White Balance, Range Balance, Look / Film LUT, Tri
 - Highlight Rolloff moved to Exposure, beside the other exposure controls.
 - Sections start open except Role / Preset, Export LUT and Setup / Help.
 
-### Fixes
+### Magic Grade
 
-- **Fixed a crash.** Using Range Balance and then pressing Magic Grade crashed Resolve every time.
-- **Fixed grades that could vary between runs** on the same frame, including through the Bias
-  slider.
-- **Panel status lines** now say what is actually in effect rather than leaving a greyed control
-  showing a stale value.
+Its tone solve now adapts its highlight target per shot rather than using one fixed value, and
+carries targets for subjects other than skin. Magic Grade may therefore land differently than it
+did in v1.4.3 on some footage.
 
 ---
 
