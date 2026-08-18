@@ -442,6 +442,7 @@ public:
     virtual void render(const OFX::RenderArguments& p_Args);
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName);
     void setEnabledness();
+    void syncGradeMirrors();            // push Lift/Gamma/Gain out to their second faces
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
     bool ensureLutLoaded();     // ...and is it actually in memory? Solves need the pixels.
     // forCreative: measure in the configuration Creative Grade is about to CREATE, not the
@@ -625,6 +626,9 @@ private:
     OFX::StringParam*  m_RangeNote;
     OFX::StringParam*  m_SepNote;      // why Face Tone Separation is or is not available
     OFX::DoubleParam*  m_RawExpMirror; // second face of rawExp, shown in the Magic section
+    OFX::DoubleParam*  m_LiftMirror;   // ...and of lift / gamma / gain, likewise
+    OFX::DoubleParam*  m_GammaMirror;
+    OFX::DoubleParam*  m_GainMirror;
     OFX::DoubleParam*  m_ToneSep;
     OFX::DoubleParam*  m_ToneSepDir;
     OFX::StringParam*  m_MagicNote;
@@ -759,6 +763,9 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_RangeNote    = fetchStringParam("rangeNote");
     m_SepNote      = fetchStringParam("sepNote");
     m_RawExpMirror = fetchDoubleParam("rawExpMirror");
+    m_LiftMirror   = fetchDoubleParam("liftMirror");
+    m_GammaMirror  = fetchDoubleParam("gammaMirror");
+    m_GainMirror   = fetchDoubleParam("gainMirror");
     m_ToneSep      = fetchDoubleParam("toneSep");
     m_ToneSepDir   = fetchDoubleParam("toneSepDir");
     m_MagicNote    = fetchStringParam("magicNote");
@@ -2252,6 +2259,7 @@ void OneGrade::applyBias()
     m_Lift->setValue(lift);
     m_Gamma->setValue(gamma);
     m_Gain->setValue(gain);
+    syncGradeMirrors();
 }
 
 // MAGIC GRADE — Creative Grade, then one colour move chosen from what is in the frame.
@@ -2598,8 +2606,37 @@ void OneGrade::applySeparation()
     if (which == 6) m_OffTemp->setValue(v); else m_Temp->setValue(v);
 }
 
+// TWO FACES OF ONE VALUE, kept in step. OFX cannot show a parameter in two groups, so Magic
+// Grade's copies of Bias, Scene Exposure and now Lift/Gamma/Gain are duplicates rather than
+// references, and something has to write one when the other moves.
+//
+// A user edit to either face is handled in changedParam; this covers the other direction -- every
+// path where the PLUGIN writes the grade, which is most of them (a preset, either Auto Grade, a
+// Magic solve, a Bias re-solve). Called from setEnabledness() because that already runs after all
+// of those and on construction, so a project load lands the saved values in both faces; applyBias
+// calls it directly, being the one path that does not.
+//
+// setValue arrives as eChangePluginEdit, which both handlers ignore, so there is no loop.
+void OneGrade::syncGradeMirrors()
+{
+    // Write only on a real difference. setEnabledness() runs constantly, including once from the
+    // constructor, and an unconditional setValue there would write every mirror on project load
+    // -- marking the project dirty before the user has touched anything, and writing into a
+    // parameter mid-drag when the mirror is the control being dragged.
+    auto sync = [](OFX::DoubleParam* dst, OFX::DoubleParam* src) {
+        const double v = src->getValue();
+        if (dst->getValue() != v) dst->setValue(v);
+    };
+    sync(m_LiftMirror,   m_Lift);
+    sync(m_GammaMirror,  m_Gamma);
+    sync(m_GainMirror,   m_Gain);
+    sync(m_RawExpMirror, m_RawExp);
+}
+
 void OneGrade::setEnabledness()
 {
+    syncGradeMirrors();
+
     int role = 0, mode = 0;
     m_NodeRole->getValue(role);
     m_LutMode->getValue(mode);
@@ -2982,7 +3019,17 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     // own setValue calls -- which is most of what touches these params -- never re-anchor.
     else if (p_Args.reason == OFX::eChangeUserEdit &&
              (p_ParamName == "lift" || p_ParamName == "gamma" ||
-              p_ParamName == "gain" || p_ParamName == "rolloff")) {
+              p_ParamName == "gain" || p_ParamName == "rolloff" ||
+              p_ParamName == "liftMirror" || p_ParamName == "gammaMirror" ||
+              p_ParamName == "gainMirror")) {
+        // The Magic section's copies write through to the real control FIRST, inside this same
+        // branch rather than in one of their own. A mirror that only copied the value would be a
+        // different control: the write arrives as eChangePluginEdit, so the re-arming below --
+        // which is what stops the next Bias drag solving the hand edit away -- would never run,
+        // and the two faces would behave differently depending on which one you happened to grab.
+        if      (p_ParamName == "liftMirror")  m_Lift->setValue(m_LiftMirror->getValue());
+        else if (p_ParamName == "gammaMirror") m_Gamma->setValue(m_GammaMirror->getValue());
+        else if (p_ParamName == "gainMirror")  m_Gain->setValue(m_GainMirror->getValue());
         armBias(false);
         // The hand becomes the new zero. Re-anchoring alone preserves the edit on the offset
         // path and cannot on the solving path, which re-solves to stored conditions -- so move
@@ -3842,6 +3889,31 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             bn->setEnabled(false);
             bn->setParent(*gMagic);
             page->addChild(*bn);
+
+            // LIFT / GAMMA / GAIN, MIRRORED, AND LAST -- the point being that Magic Grade should
+            // be a place you can finish, not a place you get a result and then leave. Bias, Face
+            // Tone Separation and Scene Exposure all steer the SOLVE; these three are the solve's
+            // own output, and when the answer is nearly right the shortest correction is to move
+            // the number rather than to re-derive it from a different target.
+            //
+            // Repeating them is safe here in a way it would not have been a few revisions ago.
+            // A hand edit to these used to be solved away by the next Bias drag, and putting them
+            // in front of more people would have multiplied that; it is now preserved, because
+            // tone_targets_of() re-derives the conditions the grade currently meets and Bias
+            // offsets from there. Editing either face re-arms, in the same branch of
+            // changedParam, so the preservation does not depend on which copy was grabbed.
+            //
+            // Ranges and steps match the originals exactly. A mirror whose slider travel differed
+            // from its twin would read as two controls that disagree.
+            page->addChild(*defineSlider(p_Desc, "liftMirror", "Lift",
+                "The same Lift slider as the one under Exposure and White Balance - the two always hold the same value, and moving either moves both. Magic Grade solves this one to place the subject's shadows, so it is the control most worth nudging when the result is close: the shape of the grade is right and only the floor wants moving. Editing it by hand is remembered - the next Bias or Face Tone Separation drag starts from what you set rather than solving it away.",
+                0.0, -0.5, 0.5, 0.001, gMagic));
+            page->addChild(*defineSlider(p_Desc, "gammaMirror", "Gamma",
+                "The same Gamma slider as the one under Exposure and White Balance - the two always hold the same value, and moving either moves both. Magic Grade solves this one to place the subject's midtone, which is the control that decides how legible a face is, so it is worth a nudge when the placement is right in principle but reads a touch heavy or a touch thin. Editing it by hand is remembered rather than solved away.",
+                1.0, 0.2, 3.0, 0.001, gMagic));
+            page->addChild(*defineSlider(p_Desc, "gainMirror", "Gain",
+                "The same Gain slider as the one under Exposure and White Balance - the two always hold the same value, and moving either moves both. Magic Grade solves this one against the frame's brightest content rather than against the subject, so it is what to reach for when the picture as a whole sits too hot or too flat while the subject itself is placed correctly. Editing it by hand is remembered rather than solved away.",
+                1.0, 0.0, 3.0, 0.001, gMagic));
         }
         BooleanParamDescriptor* show = p_Desc.defineBooleanParam("showAnalysis");
         show->setLabels("Show analysis", "Show analysis", "Show analysis");
@@ -4257,10 +4329,69 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     rn->setParent(*gRange);
     page->addChild(*rn);
 
-    // ---- 5. Look / Film LUT ----
+    // ---- 5. Highlight Tone Map ----
+    //
+    // ITS OWN SECTION, IN PIPELINE POSITION. It began life inside Output on the reasoning that a
+    // shoulder is part of the display transform, and that is true of what it ANSWERS ("does this
+    // clip fit in the delivery range") but false about WHERE it runs: og::process() applies it at
+    // the end of the grade curve, before the encode and before the LUT is sampled, so a Custom
+    // Look sees the shouldered picture. The numbers on these sections claim to be application
+    // order, so it sits between Range Balance and the LUT.
+    //
+    // CLOSED by default, unlike every other grading section. The shipped curve is fitted and ON,
+    // so the common case is that nobody needs to open this at all -- the cost is that Fit From
+    // Frame, which is worth pressing on any shot you care about, is one click further away.
+    //
+    // Measured over the training corpus at NEUTRAL parameters, 9 of 18 frames pushed data past 1.0
+    // -- up to 47.8% of channels -- while the SOURCE was pinned essentially nowhere. The footage
+    // had the range and the plugin threw it away.
+    GroupParamDescriptor* gTone = p_Desc.defineGroupParam("gTone");
+    gTone->setLabels("5  Highlight Tone Map", "5  Highlight Tone Map", "5  Highlight Tone Map");
+    gTone->setOpen(false);
+
+    {
+        BooleanParamDescriptor* tm = p_Desc.defineBooleanParam("toneMap");
+        tm->setLabels("Highlight Tone Map", "Highlight Tone Map", "Highlight Tone Map");
+        tm->setHint("Fit the picture into the 0-1023 delivery range instead of clipping whatever will not fit. Log footage carries far more range than a display encode holds, and without a shoulder everything above display white is simply lost - measured across the training footage, half the frames threw away highlight data the camera had actually captured. ON by default with a curve fitted to that footage, which contains every frame tested; press Fit From Frame to measure THIS shot instead, which is better still. Untick to render exactly as the plugin did before this existed.");
+        // ON BY DEFAULT, STATICALLY. Measuring the frame on apply is the obvious better answer
+        // and it is a documented crash: fetchImage() from a lifecycle hook trips an assertion
+        // inside Resolve and calls abort(). See docs/ROADMAP.md 2. So the default is a fitted
+        // constant rather than a measurement -- footage-blind, but it contained every frame in
+        // the training corpus with 15 of 18 medians bit-identical, and Fit From Frame tunes it
+        // per shot with one click.
+        tm->setDefault(true);
+        tm->setParent(*gTone);
+        page->addChild(*tm);
+    }
+    page->addChild(*defineSlider(p_Desc, "toneMapKnee", "Tone Map: Start",
+        "Where the shoulder begins, in display units. Everything below this is left exactly alone - the curve is flat-on at this point, so there is no seam - and everything above is compressed to make room for the highlights. Lower gives the highlights more range at the cost of compressing the upper mid-tones; higher leaves more of the picture untouched but flattens the top. 0.40 was fitted on the training corpus as the point where the median stops moving.",
+        0.40, 0.05, 0.95, 0.001, gTone));
+    page->addChild(*defineSlider(p_Desc, "toneMapWhite", "Tone Map: White Point",
+        "The value that becomes display white. Everything between the shoulder start and this is mapped into the top of the range, so raising it packs more highlight range into the same space and lowering it clips sooner. 3.0 contained every frame in the training corpus with the median untouched; a frame peaking above this is held at white rather than allowed past it.",
+        3.0, 1.0, 20.0, 0.01, gTone));
+
+    {
+        PushButtonParamDescriptor* tf = p_Desc.definePushButtonParam("toneMapFit");
+        tf->setLabels("Fit From Frame", "Fit From Frame", "Fit From Frame");
+        tf->setHint("Measure THIS frame and reshape the shoulder to it, instead of the fitted default that ships with the plugin. Worth pressing on any shot you care about: the default is one curve chosen against a corpus, and a measurement beats it on both ends - a shot that already fits gets no shoulder at all, and a shot three times over white gets the room it needs. A frame that only just exceeds white gets a high start and is barely touched; one that runs three times over gets the room it needs. IMPORTANT: anything already clipped at the SENSOR is excluded from the measurement - a pixel the camera lost is flat whatever we do, and making room for it would compress everything real to protect data that is not there. The status line reports how much of the frame that was, which is the number that tells you whether the shot was recoverable in the first place.");
+        tf->setParent(*gTone);
+        page->addChild(*tf);
+    }
+    {
+        StringParamDescriptor* tn = p_Desc.defineStringParam("toneMapNote");
+        tn->setLabels("Tone Map", "Tone Map", "Tone Map");
+        tn->setStringType(eStringTypeLabel);
+        tn->setDefault("Shoulder on - press Fit From Frame to tune it");
+        tn->setHint("What the shoulder is doing on this frame. After Fit From Frame it reports the recoverable peak it measured and how much of the frame was already clipped at the sensor - the second number is the one that says whether a blown sky can be brought back at all.");
+        tn->setEnabled(false);
+        tn->setParent(*gTone);
+        page->addChild(*tn);
+    }
+
+    // ---- 6. Look / Film LUT ----
     scanLuts();
     GroupParamDescriptor* gLut = p_Desc.defineGroupParam("gLut");
-    gLut->setLabels("5  Look / Film LUT", "5  Look / Film LUT", "5  Look / Film LUT");
+    gLut->setLabels("6  Look / Film LUT", "6  Look / Film LUT", "6  Look / Film LUT");
     gLut->setOpen(true);
     defineBypass(p_Desc, page, "bypassLut",
                  "Mute the LUT at render without losing the selection. This also hands Output Encode back to you: a selected LUT normally pins the encode to the curve it was authored for, so a bypass that left the encode pinned would still be changing the picture. The 'In effect' line under Output Encode says so while this is on.", gLut);
@@ -4309,7 +4440,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     // ---- 7. Trim (after LUT) ----  final display-space trims on top of the look/LUT
     GroupParamDescriptor* gTrim = p_Desc.defineGroupParam("gTrim");
-    gTrim->setLabels("6  Trim (after LUT)", "6  Trim (after LUT)", "6  Trim (after LUT)");
+    gTrim->setLabels("7  Trim (after LUT)", "7  Trim (after LUT)", "7  Trim (after LUT)");
     gTrim->setOpen(true);
     defineBypass(p_Desc, page, "bypassTrim",
                  "Mute this stage at render without losing its values. Exposure Trim, Contrast and Highlight Rolloff are held neutral; the sliders grey out but keep their numbers.", gTrim);
@@ -4341,62 +4472,10 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     }
     page->addChild(*defineSlider(p_Desc, "postCon", "Contrast", "Post-LUT contrast trim about mid (0.5), applied after the LUT.", 1.0, 0.0, 2.0, 0.001, gTrim));
 
-    // ---- 5. Output ----
+    // ---- 8. Output ----
     GroupParamDescriptor* gOut = p_Desc.defineGroupParam("gOutput");
-    gOut->setLabels("7  Output", "7  Output", "7  Output");
+    gOut->setLabels("8  Output", "8  Output", "8  Output");
     gOut->setOpen(true);
-
-    // THE TONE MAP. Lives with Output because it is part of the display transform: the question it
-    // answers is "does this clip fit in the delivery range", not "what should it look like".
-    //
-    // Measured over the training corpus at NEUTRAL parameters, 9 of 18 frames pushed data past 1.0
-    // -- up to 47.8% of channels -- while the SOURCE was pinned essentially nowhere. The footage
-    // had the range and the plugin threw it away.
-    //
-    // DEFAULT OFF, and that is a staging decision rather than a preference. Every Auto/Magic
-    // constant was fitted against a render with no shoulder, and switching one on breaks six tests
-    // structurally: the Clean solve predicts the render as lgg_core() on a measured percentile,
-    // and a curve after lgg_core makes that identity false. Turning it on is a refit against the
-    // hand-graded ground truth, not a flag flip.
-    {
-        BooleanParamDescriptor* tm = p_Desc.defineBooleanParam("toneMap");
-        tm->setLabels("Highlight Tone Map", "Highlight Tone Map", "Highlight Tone Map");
-        tm->setHint("Fit the picture into the 0-1023 delivery range instead of clipping whatever will not fit. Log footage carries far more range than a display encode holds, and without a shoulder everything above display white is simply lost - measured across the training footage, half the frames threw away highlight data the camera had actually captured. ON by default with a curve fitted to that footage, which contains every frame tested; press Fit From Frame to measure THIS shot instead, which is better still. Untick to render exactly as the plugin did before this existed.");
-        // ON BY DEFAULT, STATICALLY. Measuring the frame on apply is the obvious better answer
-        // and it is a documented crash: fetchImage() from a lifecycle hook trips an assertion
-        // inside Resolve and calls abort(). See docs/ROADMAP.md 2. So the default is a fitted
-        // constant rather than a measurement -- footage-blind, but it contained every frame in
-        // the training corpus with 15 of 18 medians bit-identical, and Fit From Frame tunes it
-        // per shot with one click.
-        tm->setDefault(true);
-        tm->setParent(*gOut);
-        page->addChild(*tm);
-    }
-    page->addChild(*defineSlider(p_Desc, "toneMapKnee", "Tone Map: Start",
-        "Where the shoulder begins, in display units. Everything below this is left exactly alone - the curve is flat-on at this point, so there is no seam - and everything above is compressed to make room for the highlights. Lower gives the highlights more range at the cost of compressing the upper mid-tones; higher leaves more of the picture untouched but flattens the top. 0.40 was fitted on the training corpus as the point where the median stops moving.",
-        0.40, 0.05, 0.95, 0.001, gOut));
-    page->addChild(*defineSlider(p_Desc, "toneMapWhite", "Tone Map: White Point",
-        "The value that becomes display white. Everything between the shoulder start and this is mapped into the top of the range, so raising it packs more highlight range into the same space and lowering it clips sooner. 3.0 contained every frame in the training corpus with the median untouched; a frame peaking above this is held at white rather than allowed past it.",
-        3.0, 1.0, 20.0, 0.01, gOut));
-
-    {
-        PushButtonParamDescriptor* tf = p_Desc.definePushButtonParam("toneMapFit");
-        tf->setLabels("Fit From Frame", "Fit From Frame", "Fit From Frame");
-        tf->setHint("Measure THIS frame and reshape the shoulder to it, instead of the fitted default that ships with the plugin. Worth pressing on any shot you care about: the default is one curve chosen against a corpus, and a measurement beats it on both ends - a shot that already fits gets no shoulder at all, and a shot three times over white gets the room it needs. A frame that only just exceeds white gets a high start and is barely touched; one that runs three times over gets the room it needs. IMPORTANT: anything already clipped at the SENSOR is excluded from the measurement - a pixel the camera lost is flat whatever we do, and making room for it would compress everything real to protect data that is not there. The status line reports how much of the frame that was, which is the number that tells you whether the shot was recoverable in the first place.");
-        tf->setParent(*gOut);
-        page->addChild(*tf);
-    }
-    {
-        StringParamDescriptor* tn = p_Desc.defineStringParam("toneMapNote");
-        tn->setLabels("Tone Map", "Tone Map", "Tone Map");
-        tn->setStringType(eStringTypeLabel);
-        tn->setDefault("Shoulder on - press Fit From Frame to tune it");
-        tn->setHint("What the shoulder is doing on this frame. After Fit From Frame it reports the recoverable peak it measured and how much of the frame was already clipped at the sensor - the second number is the one that says whether a blown sky can be brought back at all.");
-        tn->setEnabled(false);
-        tn->setParent(*gOut);
-        page->addChild(*tn);
-    }
-
     ChoiceParamDescriptor* enc = p_Desc.defineChoiceParam("outEncode");
     enc->setLabels("Output Encode", "Output Encode", "Output Encode");
     enc->setHint("Your delivery curve — the transfer function baked into the render. Rec.709 (Gamma 2.2) is the default: it matches what web/streaming platforms like YouTube assume, where most exports end up. Pick Rec.709 (Gamma 2.4) for broadcast/reference delivery, or Rec.709 (Scene) for a scene-referred hand-off. This is NOT the same setting as the project's Timeline Color Space and should not be changed to match it — on macOS the timeline must be Rec.709 (Scene) so Resolve's viewer agrees with QuickTime/YouTube, whatever you deliver in (see Setup / Help). The Lift/Gamma/Gain wheels grade in whichever Rec.709 curve you pick, so a wheel move reads linearly in that curve. An active LUT takes this over and greys it out, because the LUT can only be fed the curve it was authored for (Film Look -> Cineon, Custom Look -> Rec.709 Scene) — the 'In effect' line below always names what is actually being rendered. LUT Mix does not hand it back: Mix blends the LUT in and out within that curve, so Mix 0 still previews the curve the blend happens in. Set LUT Mode to None to get the choice back.");
@@ -4470,9 +4549,9 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         page->addChild(*est);
     }
 
-    // ---- 8. Setup / Help ----
+    // ---- 9. Setup / Help ----
     GroupParamDescriptor* gHelp = p_Desc.defineGroupParam("gHelp");
-    gHelp->setLabels("8  Setup / Help", "8  Setup / Help", "8  Setup / Help");
+    gHelp->setLabels("9  Setup / Help", "9  Setup / Help", "9  Setup / Help");
     gHelp->setOpen(false);
     // The panel truncates these strings, so `text` must stay short enough to read at the
     // default OpenFX panel width (~45 chars) and carry the instruction on its own; the
