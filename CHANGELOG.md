@@ -4,107 +4,85 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
 
 ---
 
-## v1.5.0 — nothing blows out, and one node can hold a window and a room
+## v1.5.0 — Range Balance, and highlights that stay in range
 
-### The plugin no longer throws away highlights the camera captured
+### New: Highlight Tone Map (Output)
 
-Applying OneGrade to a bright shot could put a third of the picture past the top of the scale —
-the sky arriving as a flat white band with the detail gone. It looked like the plugin was broken,
-and on the frame that surfaced it the camera had captured the whole range: nothing was clipped at
-the sensor at all.
+Rolls bright detail smoothly into white instead of cutting off whatever will not fit. **On by
+default** — a shot that used to arrive with a flat white sky now keeps the detail in it.
 
-This was not one camera or one shot. Measured across our test footage at default settings,
-**half the frames were losing highlight data the sensor had recorded** — up to 48% of the picture
-on the worst one. It had been doing that since the first release. Nothing caught it because the
-plugin only ever checked whether the *camera* had clipped, which on all these shots it had not.
+Everything below the shoulder's start point is left exactly as it was, so mid-tones do not move.
 
-**A new Highlight Tone Map, on by default, fixes it.** Instead of cutting off whatever will not
-fit, the picture now rolls smoothly into white. It leaves everything below its start point exactly
-as it was, so mid-tones do not move: across our footage the median stayed identical on 15 of 18
-frames, and the ones that shifted were shots already sitting above display white.
+- **Fit From Frame** — measures the current shot and shapes the shoulder to it. Better than the
+  default on both ends: a shot that already fits gets no shoulder at all, a shot far over white
+  gets the room it needs. Worth pressing on anything you care about.
+- **Start** — where the shoulder begins. Lower gives highlights more range and compresses the
+  upper mid-tones; higher leaves more of the picture untouched.
+- **White Point** — the value that becomes white. Raise it to pack more highlight range in.
+- The status line reports what it found: `peak 2.75 contained, sensor clean`,
+  `3.0% clipped at sensor` (the camera lost that part — nothing recovers it), or
+  `nothing to contain` (this shot already fits).
 
-**Fit From Frame measures the shot and does better still.** One curve for every clip is a
-compromise; with the picture in hand the shoulder can be shaped to it. A shot that already fits
-gets **no shoulder at all** and is left completely alone. A shot running three times over white
-gets the room it needs. Press it on anything you care about.
+Untick it to render exactly as the plugin did before.
 
-It also knows what it cannot fix. Pixels the camera itself clipped are gone, and making room for
-them would squash everything real to protect data that is not there — so they are excluded from
-the measurement, and the panel tells you how much of the frame that was. Speculars and light
-sources are allowed to clip, as they do in a camera and in the eye; the panel says when that is
-happening rather than quietly pretending otherwise.
+### New: Range Balance — a bright window and a dark room, in one node
 
-If you want the old behaviour for a shot, untick it and the render is exactly as it was before.
+Holds the bright part of the picture still while you open up the rest. Replaces a qualifier, an
+invert and a second node.
 
-### New: Range Balance — a window and an unlit room, in one node
+**To use it:**
 
-For footage whose range *was* captured — an exterior through a window with a dark interior around
-it — where one curve has to blow one end to serve the other. In Resolve that is a qualifier, an
-invert and a second node. Here it is a latch and a few sliders.
+1. **Set From Frame** — finds the bright region and sets the Latch to it, and turns on Show Mask.
+2. **Show Mask** — white is held, black is opened up, grey is the soft edge. Adjust **Latch** and
+   **Softness** until the matte selects what you want, then turn it off.
+3. Work the two control sets: **Held: Brightness / Midtones** on what the mask holds, and
+   **Rest: Shadows / Midtones / Brightness** on everything else.
 
-**Set From Frame finds the highlight for you.** It splits the picture into its bright and dark
-populations and puts the edge between them: on a bedroom interior that is the window at 7% of
-frame, on a landscape it is the sky at 53%. One rule, both shots, nothing dialled. If a frame has
-no distinct bright region it says so and leaves your setting alone rather than inventing an edge.
+Typical window shot: pull *Held: Brightness* down to bring the view back, *Held: Midtones* up to
+restore the detail that flattens, then *Rest: Midtones* up to open the room.
 
-**Two sets of controls, because the point is not just to protect the highlights.** *Held:
-Brightness* and *Midtones* work on what the mask holds — pull a blown window down and put its
-detail back. *Rest: Shadows*, *Midtones* and *Brightness* open up everything else. Simply
-protecting the highlights cannot recover a window an earlier stage already threw away, which is
-why both halves exist.
+- **Lock Mask** — freezes the selection so it stops following the exposure underneath it. Without
+  it, pulling the highlights down changes *what* the highlights are. With it, you can pull hard and
+  the shape stays put.
+- **Shape** (ellipse or rectangle) — restricts Range Balance to part of the frame. What gets held
+  is whatever is both above the Latch and inside the shape. Use it when something elsewhere in the
+  picture is the same brightness as your subject — a bright pillow across a room from a window,
+  which no threshold can separate because it is the same brightness *and* the same colour.
+  **Fit To Frame** puts the shape around whatever the Latch is already holding.
+- **Bypass** mutes the stage without losing your values.
 
-**Show Mask** displays the matte itself so you can see what you are selecting — white is held,
-black is opened up, grey is the soft edge between.
+The Latch stays put while you work, and re-measures itself if Auto Grade or Magic Grade changes
+the grade underneath it. Press **Set From Frame** again on a different shot.
 
-**Lock Mask** freezes the selection against the exposure underneath it. Normally the mask follows
-the graded picture, which is what lets it tell a window from a bright pillow — but it also means
-that pulling the highlights down changes *what* the highlights are. Locked, you can pull hard and
-the shape stays exactly where you put it, like changing the power of the sun rather than
-re-choosing what the sun is lighting.
+**Note:** the mask's softness is in brightness, not in space. On a hard edge like a window frame it
+is rock solid; where the edge falls inside noise or a fine gradient it can shimmer. Spatial
+feathering is not in this release.
 
-**A Shape restricts where it acts.** An ellipse or rectangle, multiplied with the brightness mask,
-so what gets held is whatever is both above the latch and inside the shape. On a bedroom this is
-the difference between selecting the window and selecting the window plus a bright silk pillow
-across the room — the two are the same brightness *and* the same colour, so no threshold separates
-them, but they are in different places. **Fit To Frame** puts the shape around whatever the latch
-is already holding, so you rarely have to aim it by hand.
+### New: Face Tone Separation (Magic Grade)
 
-**A known limit:** the mask's softness is in brightness, not in space. Where its edge falls on a
-hard boundary like a window frame it is rock solid; where it falls inside noise or a fine gradient
-it can shimmer. Spatial feathering is the next piece of work on it.
+Opens or closes the distance between a face and everything around it. It re-solves the grade rather
+than nudging one control, so the face stays where Magic Grade placed it while the surround moves.
 
-### Face Tone Separation
-
-A new slider under Magic Grade that opens or closes the distance between a face and everything
-around it, re-solving the grade rather than just nudging a control — so the face stays where it
-was placed while the surround moves.
-
-It **only works where the grade was solved around a face**, which is not every shot. Rather than
-sitting there doing nothing, it now hides itself when it cannot act, and the line above it says
-why — usually that this frame's subject was not a face, in which case solving on a different frame
-may give you one.
+Only works where the grade was solved around a face. On other shots it hides itself, and the line
+above it says why — try Magic Grade on a frame with a clearer face.
 
 ### The panel follows the workflow
 
-Reordered into the order you actually work in: Role and Preset, then the two grade buttons, then
-Input Transform, Balance and Density, Exposure and White Balance, Range Balance, Look, Trim,
-Output, Setup. Balance and Density are now one section, Scene Exposure and White Balance moved out
-of Input Transform, and Highlight Rolloff moved next to the other exposure controls.
+Reordered into the order you work in: Role / Preset, Magic Grade, Auto Grade, Input Transform,
+Balance & Density, Exposure & White Balance, Range Balance, Look / Film LUT, Trim, Output, Setup.
 
-Sections start **open** by default except Role / Preset, Export LUT and Setup / Help — the three
-you set once or read once.
+- Balance and Density are one section now.
+- Scene Exposure and Scene White Balance moved out of Input Transform to Exposure.
+- Highlight Rolloff moved to Exposure, beside the other exposure controls.
+- Sections start open except Role / Preset, Export LUT and Setup / Help.
 
 ### Fixes
 
-- **A hard crash.** Using Range Balance and then pressing Magic Grade crashed Resolve every time.
-  An internal buffer had not grown along with the plugin's controls, so writing a grade into it
-  overwrote three of the panel's own parameters. Range Balance made it reliable rather than
-  occasional; the same fault could in principle have misbehaved without it.
-- **Analysis could depend on uninitialised memory.** Two internal measurement paths — one of them
-  driving the Bias slider — left part of their settings unset, so a grade could in principle vary
-  between runs on the same frame.
-- **The Look LUT dropdown's encode override** and several panel status lines now say what is
-  actually in effect rather than leaving a greyed control showing a stale value.
+- **Fixed a crash.** Using Range Balance and then pressing Magic Grade crashed Resolve every time.
+- **Fixed grades that could vary between runs** on the same frame, including through the Bias
+  slider.
+- **Panel status lines** now say what is actually in effect rather than leaving a greyed control
+  showing a stale value.
 
 ---
 
