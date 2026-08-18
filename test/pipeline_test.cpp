@@ -1352,6 +1352,71 @@ int main() {
         check(ok, "the tone map contains the range and keeps the highlights apart");
     }
 
+    // 39. Fitting the tone map to the frame: adaptive, and blind to what the sensor already lost.
+    // The argument for doing this in a plugin at all is that we hold the pixels -- a fixed curve
+    // is one compromise struck against a corpus, too gentle for a frame peaking at 3.3 and
+    // needless compression on one peaking at 1.1.
+    {
+        bool ok = true;
+        float P[og::analysis::kParamN]; neutral13(P);
+
+        // Build a frame of camera-log greys spanning a given top. cam 1 / enc 1 so decode_log and
+        // the encode are an exact inverse pair and the display value is predictable.
+        auto frameTo = [&](float topLinear, size_t nPinned) {
+            og::analysis::SampleSet S;
+            for (int i = 0; i < 4000; ++i) {
+                const float lin = topLinear * (float)i / 3999.f;
+                const float code = og::di_encode(lin);
+                S.rgb.push_back(code); S.rgb.push_back(code); S.rgb.push_back(code);
+                S.band.push_back(0); S.u.push_back(0.5f); S.v.push_back(0.5f);
+            }
+            // A pinned population sitting ON the clip's own ceiling -- unrecoverable by anything.
+            const float top = og::di_encode(topLinear);
+            for (size_t i = 0; i < nPinned; ++i) {
+                S.rgb.push_back(top); S.rgb.push_back(top); S.rgb.push_back(top);
+                S.band.push_back(0); S.u.push_back(0.5f); S.v.push_back(0.5f);
+            }
+            return S;
+        };
+
+        // A frame that already fits asks for no shoulder at all. A tone map is a remedy, not a
+        // house style, and compressing a picture that fits would be damage for its own sake.
+        const og::grade::ToneMapFit gentle = og::grade::fit_tone_map(frameTo(0.5f, 0), 1, 1, P);
+        ok &= gentle.ok && (gentle.white == 0.0);
+
+        // A frame that runs well over gets a shoulder, and `white` lands above its own peak so the
+        // brightest real highlight keeps a little headroom instead of sitting exactly on white.
+        const og::grade::ToneMapFit wild = og::grade::fit_tone_map(frameTo(40.f, 0), 1, 1, P);
+        ok &= wild.ok && (wild.white > 1.0) && (wild.white > wild.peak);
+
+        // ADAPTIVE: the harder the frame, the lower the knee. A fixed knee is the thing this
+        // replaces, so a fit that returned the same one for both would be no fit at all.
+        const og::grade::ToneMapFit mild = og::grade::fit_tone_map(frameTo(4.f, 0), 1, 1, P);
+        ok &= mild.ok && (mild.white > 1.0) && (mild.knee > wild.knee);
+
+        // ...and it actually contains what it measured.
+        {
+            float Q[og::analysis::kParamN]; neutral13(Q);
+            Q[32] = (float)wild.knee; Q[33] = (float)wild.white;
+            float r, g, b;
+            og::process(1, 1, Q, og::di_encode(40.f), og::di_encode(40.f), og::di_encode(40.f), r, g, b);
+            ok &= (r <= 1.0f + 1e-4f);
+        }
+
+        // SENSOR-CLIPPED SAMPLES ARE EXCLUDED FROM THE PEAK. Pixels pinned at the clip's own
+        // ceiling are flat and no curve recovers them; letting them set `white` would compress
+        // everything real to make room for data that is not there. Adding a large pinned
+        // population must move `pin`, and must NOT drag the fitted white point up with it.
+        const og::grade::ToneMapFit clean  = og::grade::fit_tone_map(frameTo(4.f, 0),    1, 1, P);
+        const og::grade::ToneMapFit blown  = og::grade::fit_tone_map(frameTo(4.f, 2000), 1, 1, P);
+        // The clean frame is not pin-free: a ramp's top samples legitimately sit within eps of the
+        // ramp's own ceiling, which is the pin test working. What matters is the large gap.
+        ok &= (blown.pin > 20.0) && (clean.pin < 5.0) && (blown.pin > 5.0 * clean.pin);
+        ok &= close((float)blown.white, (float)clean.white, 0.05f);
+
+        check(ok, "the tone map fit adapts to the frame and ignores what the sensor lost");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

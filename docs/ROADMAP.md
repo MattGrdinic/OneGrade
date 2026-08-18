@@ -975,6 +975,38 @@ fitted against a render with no shoulder. **Turning this on is a refit against t
 hand-graded ground truth, not a flag flip** — and that ground truth is theirs to re-shoot judgement
 on. Ship the control, judge it on footage, then flip the default and re-fit.
 
-**Next, in order:** validate the curve on footage (the Insta360 shot is the case) → decide the
-default → re-derive the Clean black point and the three Magic tone targets with the shoulder in the
-model → flip `toneMap` on and remove the staging note.
+### Fit From Frame — the shoulder measured, not assumed (2026-08-18, user's call)
+
+The user's point, and it is the argument for doing any of this in a plugin: *we hold the pixels, so
+a fixed curve is a compromise struck once against a corpus* — too gentle for a frame peaking at 3.3,
+needless compression on one peaking at 1.1. `og::grade::fit_tone_map()` measures instead.
+
+**It fits `white` to the recoverable peak and solves `knee` from a compression ratio** — the input
+range above the knee may be at most `ratio` (4.0) times the output range it is squeezed into. That
+one number with a meaning is what makes it adaptive: a gentle frame gets knee 0.90 and is barely
+touched, a wild one gets knee 0.24 and the room it needs. Across the corpus every frame that needs
+containment lands at max 1.00, and **the median is unchanged on all but the two whose median was
+already above the knee**.
+
+**SENSOR-CLIPPED PIXELS ARE EXCLUDED FROM THE MEASUREMENT.** A pixel already pinned at the sensor
+ceiling is flat and no curve recovers it; letting it set `white` would compress everything real to
+make room for data that is not there. Third outing for `hot` vs `pin` — the same distinction that
+decides Rolloff, and the one whose absence let the whole tone-map defect exist. Pinning is tested
+against the **clip's own maximum**, never 1.0, or every Blackmagic shot reports 0%.
+
+**SPECULARS ARE ALLOWED TO CLIP, and the panel says so.** The peak is p99.95, not the true maximum:
+one corpus frame reads p99.95 = 0.85 against a true max of 4.13, and fitting white to 4.13 would
+drive the knee to its floor and compress the entire picture to protect a speck that is a light
+source rather than detail. **Reporting the SHARE above p99.95 was tried and is a tautology** — 0.05%
+on every frame by construction, the "a number compared against a constant must be the number that
+matters" trap in yet another hat. The magnitude is what distinguishes a sun from noise, so the note
+carries `speculars to 3.1 clip` / `3.0% clipped at sensor` / `nothing to contain (peak 0.48)`.
+
+**Still open — what to do about genuinely sensor-clipped scenes.** The fit reports the percentage
+and declines to pretend; deciding whether to reconstruct, flag, or leave it is the user's call and
+has no measurement behind it yet.
+
+**Next, in order:** validate the curve on footage (the Insta360 shot is the case) → decide whether
+Fit From Frame should run on apply (needs an image at `createInstance`, unverified — same class of
+spike as the original probe) → re-derive the Clean black point and the three Magic tone targets
+with the shoulder in the model → flip `toneMap` on and remove the staging note.

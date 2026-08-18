@@ -461,6 +461,7 @@ public:
     void setRangeLatch(double p_Time, bool p_Reanalyse = true, bool p_ShowMatte = true);
     void refreshRangeLatch();                // keep an existing latch current after a new grade
     void fitRangeShape(double p_Time);       // measure the held region and put the shape round it
+    void fitToneMap(double p_Time);          // measure the frame and shape the shoulder to it
     void populateMagicSubject();        // rebuild the Subject list from the cached segmentation
     void applyMagicSubject();           // re-grade around the subject the user picked
     void applyMagicResult(const og::grade::MagicResult& R, const char* src, bool repopulate);
@@ -546,6 +547,8 @@ private:
     OFX::BooleanParam* m_ToneMap;      // the display-range shoulder (experimental)
     OFX::DoubleParam*  m_ToneMapKnee;
     OFX::DoubleParam*  m_ToneMapWhite;
+    OFX::PushButtonParam* m_ToneMapFit;
+    OFX::StringParam*  m_ToneMapNote;
     OFX::ChoiceParam* m_LutMode;    // 0 none, 1 custom look, 2 film-look built-in
     OFX::ChoiceParam* m_FilmLut;
     OFX::ChoiceParam* m_LookGroup;
@@ -745,6 +748,8 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ToneMap      = fetchBooleanParam("toneMap");
     m_ToneMapKnee  = fetchDoubleParam("toneMapKnee");
     m_ToneMapWhite = fetchDoubleParam("toneMapWhite");
+    m_ToneMapFit   = fetchPushButtonParam("toneMapFit");
+    m_ToneMapNote  = fetchStringParam("toneMapNote");
     m_RangeLock    = fetchBooleanParam("rangeLock");
     m_RangeRefLift  = fetchDoubleParam("rangeRefLift");
     m_RangeRefGamma = fetchDoubleParam("rangeRefGamma");
@@ -2026,6 +2031,41 @@ void OneGrade::fitRangeShape(double p_Time)
     m_RangeShapeNote->setValue(note);
 }
 
+// SHAPE THE SHOULDER TO THIS FRAME, rather than using one curve for every shot.
+//
+// The whole argument for doing this in a plugin instead of a fixed transform is that we have the
+// pixels. A constant knee/white is a compromise struck once against a corpus -- too gentle for a
+// frame that peaks at 3.3, needless compression on one that peaks at 1.1. The measurement lives in
+// og::grade::fit_tone_map() so the bench calls the same code.
+void OneGrade::fitToneMap(double p_Time)
+{
+    probeAnalyze(p_Time);
+    if (m_LastSamples.size() < 512) { m_ToneMapNote->setValue("Could not read this frame"); return; }
+
+    float P[oga::kParamN]; oga::neutral_params(P);
+    P[2]=(float)m_Density->getValue();
+    P[3]=(float)m_Lift->getValue(); P[4]=(float)m_Gamma->getValue(); P[5]=(float)m_Gain->getValue();
+    P[10]=(float)m_RawExp->getValue(); P[11]=(float)m_RawTemp->getValue();
+    int cam = 0, enc = 0;
+    m_Camera->getValue(cam); m_Encode->getValue(enc);
+    const int dispEnc = (enc <= 2) ? enc : 1;
+
+    const og::grade::ToneMapFit f = og::grade::fit_tone_map(m_LastSamples, cam, dispEnc, P);
+    if (!f.ok) { m_ToneMapNote->setValue(f.why); return; }
+
+    if (f.white <= 0.0) {
+        // Nothing exceeds white, so the honest fit is no shoulder at all. Switching one on anyway
+        // would compress a picture that already fits -- a tone map is a remedy, not a house style.
+        m_ToneMap->setValue(false);
+        m_ToneMapNote->setValue(f.why);
+        return;
+    }
+    m_ToneMapKnee->setValue(f.knee);
+    m_ToneMapWhite->setValue(f.white);
+    m_ToneMap->setValue(true);
+    m_ToneMapNote->setValue(f.why);
+}
+
 void OneGrade::armToneTargets()
 {
     double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0, tFLo = -1.0;
@@ -2623,6 +2663,15 @@ void OneGrade::setEnabledness()
                               : lock       ? "Mask locked: exposure will not move it"
                                            : "Holding above the latch");
     }
+    {
+        // The shoulder's two numbers follow the checkbox; the button leads, because it SETS them.
+        bool tmOn = false; m_ToneMap->getValue(tmOn);
+        m_ToneMapKnee->setEnabled(look && tmOn);
+        m_ToneMapWhite->setEnabled(look && tmOn);
+        m_ToneMap->setEnabled(look);
+        m_ToneMapFit->setEnabled(look);
+        if (!tmOn) m_ToneMapNote->setValue("Off - tick to contain the range");
+    }
     m_BypLut->setEnabled(look);
     m_BypTrim->setEnabled(look);
 
@@ -2894,6 +2943,13 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
     // The latch and the lock both change what the note says, and the latch also decides whether
     // the rest of the group is live at all. Neither re-runs any measurement -- this is the panel
     // catching up with a value, which is why it is not guarded on eChangeUserEdit.
+    else if (p_ParamName == "toneMapFit" && p_Args.reason == OFX::eChangeUserEdit) {
+        fitToneMap(p_Args.time);
+        setEnabledness();
+    }
+    else if (p_ParamName == "toneMap") {
+        setEnabledness();
+    }
     else if (p_ParamName == "rangeShapeFit" && p_Args.reason == OFX::eChangeUserEdit) {
         fitRangeShape(p_Args.time);
         setEnabledness();
@@ -3569,19 +3625,20 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ignores the request rather than failing to load, and every group is stated explicitly
     // instead of some being left to the host's default.
     //
-    // OPEN is the happy path, and nothing else: pick a role or preset, press a button, tell it
-    // what camera it is looking at, choose a look. CLOSED is everything that refines a grade by
-    // hand (Balance, Exposure, Range Balance, Trim), plus the reference and delivery groups
-    // (Output, Export LUT, Setup/Help) which are set once and then not looked at.
+    // OPEN is nearly everything, judged on footage (2026-08-18) rather than reasoned about: the
+    // first split had the refinement groups closed, and scrolling past a wall of collapsed headers
+    // to reach a slider you use on every shot is worse than scrolling past the slider itself.
     //
-    // The panel is now twelve groups deep, and a full-height wall of collapsed headers is as hard
-    // to read as a wall of open ones -- so this is the one call that decides what a colorist sees
-    // when they drop the node on a clip. Worth revisiting on footage rather than reasoning about.
+    // CLOSED is only what you touch ONCE or NEVER: Role / Preset is set when the node is created,
+    // Export LUT is a delivery action rather than a control, and Setup / Help is reference. Those
+    // three are the ones that earn a collapse.
+    //
+    // This is the one call that decides what a colorist sees when they drop the node on a clip.
 
     // ---- 0. Role + Preset ----
     GroupParamDescriptor* gPreset = p_Desc.defineGroupParam("gPreset");
     gPreset->setLabels("0  Role / Preset", "0  Role / Preset", "0  Role / Preset");
-    gPreset->setOpen(true);
+    gPreset->setOpen(false);
 
     // Node Role splits the pipeline across Resolve's group grading levels. See
     // OneGrade::setEnabledness / setupAndProcess — the role is enforced at render.
@@ -3985,7 +4042,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 2. Balance ----  (white balance in linear; watch the vectorscope while adjusting)
     GroupParamDescriptor* gBal = p_Desc.defineGroupParam("gBalance");
     gBal->setLabels("2  Balance & Density", "2  Balance & Density", "2  Balance & Density");
-    gBal->setOpen(false);
+    gBal->setOpen(true);
     defineBypass(p_Desc, page, "bypassBalance",
                  "Mute this stage at render without losing its values. Gain and Offset balance are held neutral; the sliders grey out but keep their numbers, so switching back restores the grade exactly.", gBal);
     {
@@ -4019,7 +4076,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // exposure decision, and it was in Trim only because it happens last.
     GroupParamDescriptor* gExp = p_Desc.defineGroupParam("gExposure");
     gExp->setLabels("3  Exposure and White Balance", "3  Exposure", "3  Exposure");
-    gExp->setOpen(false);
+    gExp->setOpen(true);
     defineBypass(p_Desc, page, "bypassExposure",
                  "Mute this stage at render without losing its values. Lift/Gamma/Gain are held neutral (0/1/1); the sliders grey out but keep their numbers. Note Auto Grade drives Gain, so bypassing this also mutes the auto exposure.", gExp);
     page->addChild(*defineSlider(p_Desc, "rawExp", "Scene Exposure", "Exposure in stops applied to scene light immediately after the camera decode, before the gamut transform - a linear gain on the scene, which is mechanically the same operation the Camera RAW tab's Exposure performs. Called 'Scene' rather than 'RAW' because this acts on the decoded image, not on the raw file: no sensor data reaches an OpenFX plugin.", 0.0, -5.0, 5.0, 0.01, gExp));
@@ -4040,7 +4097,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // whole reason the plugin exists.
     GroupParamDescriptor* gRange = p_Desc.defineGroupParam("gRange");
     gRange->setLabels("4  Range Balance", "4  Range Balance", "4  Range Balance");
-    gRange->setOpen(false);
+    gRange->setOpen(true);
 
     page->addChild(*defineSlider(p_Desc, "rangeLatch", "Latch",
         "Where the highlight mask starts, on the same 0-100 scale as Resolve's Luminance qualifier - everything brighter than this is held, everything below it is opened up. 0 switches the whole stage off, which is the default. Press 'Set From Frame' to measure it from the shot rather than guessing: it reads the bright population off the current frame and puts the latch where that population starts. Measured against a hand-dialled qualifier on a bedroom interior it landed within half a point.",
@@ -4246,7 +4303,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 7. Trim (after LUT) ----  final display-space trims on top of the look/LUT
     GroupParamDescriptor* gTrim = p_Desc.defineGroupParam("gTrim");
     gTrim->setLabels("6  Trim (after LUT)", "6  Trim (after LUT)", "6  Trim (after LUT)");
-    gTrim->setOpen(false);
+    gTrim->setOpen(true);
     defineBypass(p_Desc, page, "bypassTrim",
                  "Mute this stage at render without losing its values. Exposure Trim, Contrast and Highlight Rolloff are held neutral; the sliders grey out but keep their numbers.", gTrim);
     {
@@ -4280,7 +4337,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 5. Output ----
     GroupParamDescriptor* gOut = p_Desc.defineGroupParam("gOutput");
     gOut->setLabels("7  Output", "7  Output", "7  Output");
-    gOut->setOpen(false);
+    gOut->setOpen(true);
 
     // THE TONE MAP. Lives with Output because it is part of the display transform: the question it
     // answers is "does this clip fit in the delivery range", not "what should it look like".
@@ -4308,6 +4365,24 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     page->addChild(*defineSlider(p_Desc, "toneMapWhite", "Tone Map: White Point",
         "The value that becomes display white. Everything between the shoulder start and this is mapped into the top of the range, so raising it packs more highlight range into the same space and lowering it clips sooner. 3.0 contained every frame in the training corpus with the median untouched; a frame peaking above this is held at white rather than allowed past it.",
         3.0, 1.0, 20.0, 0.01, gOut));
+
+    {
+        PushButtonParamDescriptor* tf = p_Desc.definePushButtonParam("toneMapFit");
+        tf->setLabels("Fit From Frame", "Fit From Frame", "Fit From Frame");
+        tf->setHint("Measure this frame and set the shoulder to it, instead of using one curve for every shot. A frame that only just exceeds white gets a high start and is barely touched; one that runs three times over gets the room it needs. IMPORTANT: anything already clipped at the SENSOR is excluded from the measurement - a pixel the camera lost is flat whatever we do, and making room for it would compress everything real to protect data that is not there. The status line reports how much of the frame that was, which is the number that tells you whether the shot was recoverable in the first place.");
+        tf->setParent(*gOut);
+        page->addChild(*tf);
+    }
+    {
+        StringParamDescriptor* tn = p_Desc.defineStringParam("toneMapNote");
+        tn->setLabels("Tone Map", "Tone Map", "Tone Map");
+        tn->setStringType(eStringTypeLabel);
+        tn->setDefault("Off - tick to contain the range");
+        tn->setHint("What the shoulder is doing on this frame. After Fit From Frame it reports the recoverable peak it measured and how much of the frame was already clipped at the sensor - the second number is the one that says whether a blown sky can be brought back at all.");
+        tn->setEnabled(false);
+        tn->setParent(*gOut);
+        page->addChild(*tn);
+    }
 
     ChoiceParamDescriptor* enc = p_Desc.defineChoiceParam("outEncode");
     enc->setLabels("Output Encode", "Output Encode", "Output Encode");

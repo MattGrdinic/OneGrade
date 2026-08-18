@@ -1649,5 +1649,109 @@ static inline RangeLatch range_latch(const std::vector<float>& y)
     return out;
 }
 
+// ---------------------------------------------------------------------------------------
+// FIT THE TONE MAP TO THE FRAME — because we have the whole image, and a fixed curve does not.
+//
+// A constant knee/white is a compromise struck once against a corpus: too gentle for a frame that
+// peaks at 3.3, and needless compression on one that peaks at 1.1. With the pixels in hand the
+// right shoulder is a measurement, not a default.
+//
+// THE ONE THING THAT MAKES IT CORRECT: MEASURE ONLY WHAT IS RECOVERABLE. A pixel already pinned at
+// the SENSOR ceiling is flat and detail-free and no curve brings it back; including it in the peak
+// would stretch `white` to make room for data that does not exist, compressing everything real to
+// accommodate a blown sky that stays blown either way. So source-pinned samples are excluded from
+// the peak and allowed to ride up to white. This is `hot` versus `pin` a third time -- the same
+// distinction that decides Rolloff, and the same one whose absence let this defect exist at all.
+//
+// Pinning is tested against the CLIP'S OWN maximum, never against 1.0: log formats do not all
+// reach the top of the code range and Blackmagic peaks near 0.75, so a fixed threshold reports 0%
+// on every Blackmagic shot including the blown ones.
+struct ToneMapFit {
+    double knee  = 0.40;
+    double white = 0.0;    // 0 = off, i.e. nothing needed
+    double peak  = 0.0;    // recoverable peak in display units, tone map bypassed
+    double pin   = 0.0;    // % of frame already clipped at the SENSOR -- unrecoverable
+    double top   = 0.0;    // the TRUE recoverable maximum -- how far past `peak` the tail goes
+    bool   ok    = false;
+    char   why[64] = {0};
+};
+
+// `ratio` bounds the compression: the input range above the knee may be at most `ratio` times the
+// output range it is squeezed into. That is what makes the fit ADAPTIVE rather than merely
+// sufficient -- solving knee from it gives a gentle frame a high knee (almost nothing moves) and a
+// wild one a low knee (the shoulder gets the room it needs), from one number with a meaning.
+static inline ToneMapFit fit_tone_map(const analysis::SampleSet& S, int cam, int enc,
+                                      const float* P, double ratio = 4.0)
+{
+    ToneMapFit f;
+    const size_t n = S.size();
+    if (n < 512) { snprintf(f.why, sizeof f.why, "too few samples"); return f; }
+
+    float srcMax = 0.f;
+    for (size_t i = 0; i < n; ++i)
+        srcMax = std::max(srcMax, std::max(S.rgb[i*3], std::max(S.rgb[i*3+1], S.rgb[i*3+2])));
+    const float eps = std::max(0.002f, srcMax * 0.004f);
+
+    // Render with the tone map BYPASSED -- this measures what the shoulder has to contain, so
+    // measuring through a shoulder would be the control reading its own output.
+    float Q[analysis::kParamN];
+    for (int k = 0; k < analysis::kParamN; ++k) Q[k] = P[k];
+    Q[33] = 0.f;
+
+    std::vector<float> peaks;
+    peaks.reserve(n);
+    size_t pinned = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const float s0 = S.rgb[i*3], s1 = S.rgb[i*3+1], s2 = S.rgb[i*3+2];
+        if (std::max(s0, std::max(s1, s2)) >= srcMax - eps) { ++pinned; continue; }
+        float r, g, b;
+        og::process(cam, enc, Q, s0, s1, s2, r, g, b);
+        peaks.push_back(std::max(r, std::max(g, b)));
+    }
+    f.pin = 100.0 * (double)pinned / (double)n;
+    if (peaks.size() < 64) { snprintf(f.why, sizeof f.why, "almost everything is clipped at source"); return f; }
+
+    // p99.95 rather than the true maximum: one hot pixel is not a highlight, and stretching the
+    // white point to cover it would compress the whole picture to protect a speck.
+    const size_t k = (size_t)(0.9995 * (peaks.size() - 1));
+    std::nth_element(peaks.begin(), peaks.begin() + k, peaks.end());
+    f.peak = (double)peaks[k];
+
+    // HOW FAR THE TRIMMED TAIL ACTUALLY GOES, which is the number that says what it is. Counting
+    // the SHARE above p99.95 was tried first and it is a tautology -- it is 0.05% on every frame by
+    // construction, which is the "a number compared against a constant must be the number that
+    // matters" trap wearing yet another hat. The magnitude is what distinguishes a sun from noise:
+    // one corpus frame reads p99.95 = 0.85 against a true maximum of 4.13, nearly five times over.
+    //
+    // Reserving range for that is actively wrong. Fitting white to 4.13 drives the knee to its
+    // floor and compresses the ENTIRE picture to protect a speck that is a light source, not
+    // detail. Speculars are allowed to clip -- that is what they do in a camera and in the eye.
+    // What is not allowed is for the plugin to be quiet about it.
+    for (float v : peaks) f.top = std::max(f.top, (double)v);
+
+    if (f.peak <= 1.0) {
+        // Everything but the trimmed tail already fits, so the honest fit is no shoulder at all.
+        // Say when that tail is a real light source, or "nothing to contain" is a claim the
+        // waveform will contradict.
+        if (f.top > 1.05) snprintf(f.why, sizeof f.why, "fits already; speculars reach %.1fx", f.top);
+        else              snprintf(f.why, sizeof f.why, "nothing to contain (peak %.2f)", f.peak);
+        f.white = 0.0;                      // off: identity, and honest about why
+        f.ok = true;
+        return f;
+    }
+    // A little margin so the peak lands just BELOW white rather than exactly on it -- landing on
+    // it means the brightest real highlight in the frame is the one value with no headroom left.
+    f.white = f.peak * 1.02;
+    f.knee  = std::min(0.90, std::max(0.05, (ratio - f.white) / (ratio - 1.0)));
+    if (f.pin >= 0.05)
+        snprintf(f.why, sizeof f.why, "peak %.2f, %.1f%% clipped at sensor", f.peak, f.pin);
+    else if (f.top > f.white * 1.10)
+        snprintf(f.why, sizeof f.why, "peak %.2f, speculars to %.1f clip", f.peak, f.top);
+    else
+        snprintf(f.why, sizeof f.why, "peak %.2f contained, sensor clean", f.peak);
+    f.ok = true;
+    return f;
+}
+
 } // namespace grade
 } // namespace og
