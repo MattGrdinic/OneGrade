@@ -49,7 +49,7 @@
                            "Set Output Encode to Cineon Log to feed a film-look LUT node."
 #define kPluginIdentifier  "com.mattgrdinic.OneGrade"
 #define kPluginVersionMajor 1
-#define kPluginVersionMinor 4
+#define kPluginVersionMinor 5
 
 #define kSupportsTiles              false
 #define kSupportsMultiResolution    false
