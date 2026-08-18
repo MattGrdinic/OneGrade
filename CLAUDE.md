@@ -861,6 +861,48 @@ dead ends for the silk-pillow case: a chroma gate** (window b* +1.49 vs pillow +
 **and a 3-class split** (the held pillow pixels are speculars, the bright tail of the bedding
 class, not a class of their own). Full write-up + tables in `docs/ROADMAP.md`.
 
+## The tone map — the display shoulder, fitted per frame (2026-08-18)
+
+**The plugin had no tone map and was throwing away recoverable highlights on half of everything.**
+A log clip carries ~13 stops, a display encode holds about six, nothing bridged them. Measured at
+NEUTRAL params over the corpus: **9 of 18 frames push data past 1.0**, up to **47.8%** of channels,
+while the SOURCE is pinned essentially nowhere. The Insta360 Ace Pro 2 frame that surfaced it: source
+max **0.842, 0.000% pinned**, neutral apply peaks at **3.26**. Present since v0.1.0. Nothing caught
+it because Rolloff keys off `pin` — *source* clipping — which correctly reads 0% when the clipping
+is ours.
+
+`og::tone_map(v, knee, white)` (`P[32]/P[33]`): identity below `knee`, then a Reinhard shoulder
+reaching **exactly 1.0 at `white`**. C1 at the knee so no seam. `white <= knee` is OFF, which is how
+the four render paths carry two floats and **no branch**.
+
+**Placement: AFTER the grade curve.** Before it was tried and is wrong — a shoulder starting below
+1.0 moves diffuse white off display white, and the grade curve is *defined* against those pivots
+(Lift pins white, Gain pins black), so test 7 fails and every documented pivot quietly changes
+meaning. The cost of "after" lands on the solves' render model instead: **`tone_render()` applies it
+in the same position and all six call sites pass `P[32]/P[33]`**. Rejected alternatives, both
+measured: scaling to fit costs −3.75 EV and drags the median 0.443 → 0.136; `softclip` contains
+everything but leaves the sky FLAT (top decile spanning 0.033) — it is an asymptote for practicals,
+not a scene-to-display map.
+
+**IT IS FITTED PER FRAME, AND RUNS ON APPLY.** `fit_tone_map()` sets `white` to the recoverable peak
+and solves `knee` from a compression ratio (input range above the knee ≤ 4× the output range it is
+squeezed into) — so a gentle frame gets knee 0.90 and is barely touched, a wild one gets 0.24.
+A frame that already fits gets **no shoulder at all**. `autoFitOnApply()` runs it from
+**`changedClip`** (the constructor is too early — no clip, no pixels), guarded by the saved hidden
+`autoFitDone` flag so a project reload cannot re-measure over the user's values.
+
+**SENSOR-CLIPPED PIXELS ARE EXCLUDED FROM THE PEAK** — flat, unrecoverable, and letting them set
+`white` would compress everything real to make room for data that is not there. Third outing for
+`hot` vs `pin`. **Speculars are allowed to clip**: peak is p99.95, because one corpus frame reads
+0.85 against a true max of 4.13 and fitting to that drives the knee to its floor to protect a light
+source. Reporting the *share* above p99.95 was tried and is a **tautology** (0.05% on every frame by
+construction) — the magnitude is what distinguishes a sun from noise.
+
+**Open: the fitted layer above it.** Auto/Magic constants were derived on shoulder-less renders. The
+subject floor (0.125) and midtone (0.278) sit below any fitted knee and are fine; **the frame-ceiling
+target (0.968) now means something different** and wants re-deriving. Full write-up + tables:
+`docs/ROADMAP.md`.
+
 ## Likely next tasks
 **`docs/ROADMAP.md` is now the single place for deferred work** — it carries the reasoning,
 not just the title, so each item restarts from its conclusion. Read it before re-opening any

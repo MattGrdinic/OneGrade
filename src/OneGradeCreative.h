@@ -395,14 +395,13 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
     // while the curve ran in Cineon, and the analysis reading the node's encode before the preset
     // that changes it. The rule from docs/AUTO-GRADE.md 2 covers this too: a number pushed
     // through the pipeline needs the space the pipeline runs in, and the LUT is in the pipeline.
+    // CALL tone_render(), DO NOT RE-INLINE IT. This was a hand-copied duplicate of that function
+    // and it drifted the moment the tone map landed: the render grew a shoulder and this did not.
+    // The black point sits far below any knee so nothing moved in practice -- which is exactly why
+    // it would have gone unnoticed until something else was solved up here.
     const double pe = P[8], gm = P[4], con = P[9];
     const double lift = solve1d(-0.50, 0.50, t.blackTarget, [&](double lf) {
-        float x = og::lgg_core((float)m.d01, (float)lf, (float)gm, (float)gain);
-        float r = x, g = x, b = x;
-        if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
-        og::apply_trim((float)pe, (float)con, r, g, b);
-        if (rolloff > 0.0) g = og::softclip(g, (float)rolloff);
-        return (double)g;
+        return tone_render(m.d01, lf, gm, gain, pe, con, rolloff, lut, lutSize, P[32], P[33]);
     });
 
     P[3]  = (float)lift;

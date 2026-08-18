@@ -1006,7 +1006,26 @@ carries `speculars to 3.1 clip` / `3.0% clipped at sensor` / `nothing to contain
 and declines to pretend; deciding whether to reconstruct, flag, or leave it is the user's call and
 has no measurement behind it yet.
 
-**Next, in order:** validate the curve on footage (the Insta360 shot is the case) → decide whether
-Fit From Frame should run on apply (needs an image at `createInstance`, unverified — same class of
-spike as the original probe) → re-derive the Clean black point and the three Magic tone targets
-with the shoulder in the model → flip `toneMap` on and remove the staging note.
+### It runs on apply now (2026-08-18, validated on footage, user's call)
+
+Matt's verdict after testing: *"about perfect — for scenes where it's needed like the Insta360 shot
+it brings the sky into proper exposure; for talking-head shots it doesn't act on the image in any
+meaningful way, which is what I want; for shots with genuine clipped content we leave that alone
+but bring recovered content back into line."* So it became the default: **a plugin that blows the
+sky the moment it is applied reads as broken**, and every frame it did that on had the range in the
+source. Cost is one frame analysis on apply, accepted knowingly.
+
+**`changedClip` is the hook, not the constructor** — at construction the source clip is not
+connected, so there is no image to measure. The clip-connected action is the first moment pixels
+exist. **Guarded by a saved hidden flag (`autoFitDone`)** because a project reload runs the same
+actions, and without it the fit would re-measure on every open and overwrite whatever had been
+dialled since. The flag is set BEFORE the fit runs, so a fit that fails cannot leave itself armed
+to fire later and move things after the fact.
+
+**Still open — the fitted layer above it.** Auto/Magic constants were derived against shoulder-less
+renders. The exposure is smaller than it first looked: `tone_render()` now models the shoulder and
+every call site passes `P[32]/P[33]`, and `solve_creative_px` was found hand-inlining a copy of
+`tone_render` that had already drifted (the render grew a shoulder, the copy did not) and now calls
+it. The subject floor (0.125) and midtone (0.278) targets sit below any fitted knee and are
+untouched; **the frame-ceiling target (0.968) is the one that now means something different** and
+wants re-deriving against hand-graded shots.

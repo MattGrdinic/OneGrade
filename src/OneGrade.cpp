@@ -462,6 +462,8 @@ public:
     void refreshRangeLatch();                // keep an existing latch current after a new grade
     void fitRangeShape(double p_Time);       // measure the held region and put the shape round it
     void fitToneMap(double p_Time);          // measure the frame and shape the shoulder to it
+    void autoFitOnApply(double p_Time);      // ...once, when the plugin first lands on a clip
+    virtual void changedClip(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ClipName);
     void populateMagicSubject();        // rebuild the Subject list from the cached segmentation
     void applyMagicSubject();           // re-grade around the subject the user picked
     void applyMagicResult(const og::grade::MagicResult& R, const char* src, bool repopulate);
@@ -549,6 +551,7 @@ private:
     OFX::DoubleParam*  m_ToneMapWhite;
     OFX::PushButtonParam* m_ToneMapFit;
     OFX::StringParam*  m_ToneMapNote;
+    OFX::BooleanParam* m_AutoFitDone;
     OFX::ChoiceParam* m_LutMode;    // 0 none, 1 custom look, 2 film-look built-in
     OFX::ChoiceParam* m_FilmLut;
     OFX::ChoiceParam* m_LookGroup;
@@ -750,6 +753,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_ToneMapWhite = fetchDoubleParam("toneMapWhite");
     m_ToneMapFit   = fetchPushButtonParam("toneMapFit");
     m_ToneMapNote  = fetchStringParam("toneMapNote");
+    m_AutoFitDone  = fetchBooleanParam("autoFitDone");
     m_RangeLock    = fetchBooleanParam("rangeLock");
     m_RangeRefLift  = fetchDoubleParam("rangeRefLift");
     m_RangeRefGamma = fetchDoubleParam("rangeRefGamma");
@@ -2066,6 +2070,35 @@ void OneGrade::fitToneMap(double p_Time)
     m_ToneMapNote->setValue(f.why);
 }
 
+// RUN THE FIT ONCE, WHEN THE PLUGIN FIRST LANDS ON A CLIP.
+//
+// The user's call after validating it on footage: a plugin that blows the sky the moment it is
+// applied reads as broken, and every frame it does that on had the range in the source. So the
+// default is no longer a fixed curve -- it is a measurement. The cost is that applying the node is
+// slower by one frame analysis, which is the trade the user chose knowingly.
+//
+// changedClip IS THE HOOK, not the constructor. At construction the source clip is not connected
+// yet, so there is no image to measure and fetchImage has nothing to return; the clip-connected
+// action is the first moment the pixels exist. Wrapped by fitToneMap's own probeAnalyze guards, so
+// a host that still has nothing to give simply leaves the note asking for the button.
+//
+// GUARDED BY A SAVED FLAG, because a project reload runs these same actions. Without it the fit
+// would re-measure on every open and overwrite whatever had been dialled since.
+void OneGrade::autoFitOnApply(double p_Time)
+{
+    bool done = false;
+    m_AutoFitDone->getValue(done);
+    if (done) return;
+    m_AutoFitDone->setValue(true);   // set FIRST: a fit that fails must not leave this armed to
+                                     // fire again on the next clip change and move things later
+    fitToneMap(p_Time);
+}
+
+void OneGrade::changedClip(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ClipName)
+{
+    if (p_ClipName == kOfxImageEffectSimpleSourceClipName) autoFitOnApply(p_Args.time);
+}
+
 void OneGrade::armToneTargets()
 {
     double tLo = -1.0, tMid = -1.0, tShi = -1.0, tHi = -1.0, tFLo = -1.0;
@@ -2670,7 +2703,14 @@ void OneGrade::setEnabledness()
         m_ToneMapWhite->setEnabled(look && tmOn);
         m_ToneMap->setEnabled(look);
         m_ToneMapFit->setEnabled(look);
-        if (!tmOn) m_ToneMapNote->setValue("Off - tick to contain the range");
+        // Only stamp the idle text over the FACTORY default. The fit writes its finding here --
+        // "nothing to contain (peak 0.48)" is the answer on a frame that needs no shoulder, and
+        // replacing it with "Off" would throw away the one line that says why.
+        if (!tmOn) {
+            std::string cur; m_ToneMapNote->getValue(cur);
+            if (cur.empty() || cur.rfind("Measuring", 0) == 0)
+                m_ToneMapNote->setValue("Measured: this frame needs no shoulder");
+        }
     }
     m_BypLut->setEnabled(look);
     m_BypTrim->setEnabled(look);
@@ -4354,7 +4394,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     {
         BooleanParamDescriptor* tm = p_Desc.defineBooleanParam("toneMap");
         tm->setLabels("Highlight Tone Map", "Highlight Tone Map", "Highlight Tone Map");
-        tm->setHint("Fit the picture into the 0-1023 delivery range instead of clipping whatever will not fit. Log footage carries far more range than a display encode holds, and without a shoulder everything above display white is simply lost - measured across the training footage, half the frames threw away highlight data the camera had actually captured. This adds a shoulder that reaches white smoothly rather than hitting it. EXPERIMENTAL and off by default: the Auto Grade and Magic Grade constants were all fitted without it, so their results need re-checking on footage before this becomes the default.");
+        tm->setHint("Fit the picture into the 0-1023 delivery range instead of clipping whatever will not fit. Log footage carries far more range than a display encode holds, and without a shoulder everything above display white is simply lost - measured across the training footage, half the frames threw away highlight data the camera had actually captured. This is set for you when the plugin is applied: the frame is measured and the shoulder shaped to it, or left off entirely if the shot already fits. Untick to render exactly as the plugin did before this existed.");
         tm->setDefault(false);
         tm->setParent(*gOut);
         page->addChild(*tm);
@@ -4367,9 +4407,20 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         3.0, 1.0, 20.0, 0.01, gOut));
 
     {
+        // HOW A FRESH APPLY IS TOLD FROM A PROJECT RELOAD. Both run the same instance actions, so
+        // without this the auto-fit would re-measure every load and overwrite whatever the user
+        // had dialled -- the loudest possible version of a control moving on its own. Saved with
+        // the project, so a reloaded node reads `true` and the fit never runs again.
+        BooleanParamDescriptor* af = p_Desc.defineBooleanParam("autoFitDone");
+        af->setDefault(false);
+        af->setIsSecret(true);
+        af->setParent(*gOut);
+        page->addChild(*af);
+    }
+    {
         PushButtonParamDescriptor* tf = p_Desc.definePushButtonParam("toneMapFit");
         tf->setLabels("Fit From Frame", "Fit From Frame", "Fit From Frame");
-        tf->setHint("Measure this frame and set the shoulder to it, instead of using one curve for every shot. A frame that only just exceeds white gets a high start and is barely touched; one that runs three times over gets the room it needs. IMPORTANT: anything already clipped at the SENSOR is excluded from the measurement - a pixel the camera lost is flat whatever we do, and making room for it would compress everything real to protect data that is not there. The status line reports how much of the frame that was, which is the number that tells you whether the shot was recoverable in the first place.");
+        tf->setHint("Re-measure this frame and reshape the shoulder to it. This runs automatically when the plugin is first applied, so reach for it when the shot has changed under the node - a different clip, a big exposure move, or a frame that represents the scene better than the one that happened to be under the playhead. A frame that only just exceeds white gets a high start and is barely touched; one that runs three times over gets the room it needs. IMPORTANT: anything already clipped at the SENSOR is excluded from the measurement - a pixel the camera lost is flat whatever we do, and making room for it would compress everything real to protect data that is not there. The status line reports how much of the frame that was, which is the number that tells you whether the shot was recoverable in the first place.");
         tf->setParent(*gOut);
         page->addChild(*tf);
     }
@@ -4377,7 +4428,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         StringParamDescriptor* tn = p_Desc.defineStringParam("toneMapNote");
         tn->setLabels("Tone Map", "Tone Map", "Tone Map");
         tn->setStringType(eStringTypeLabel);
-        tn->setDefault("Off - tick to contain the range");
+        tn->setDefault("Measuring on apply...");
         tn->setHint("What the shoulder is doing on this frame. After Fit From Frame it reports the recoverable peak it measured and how much of the frame was already clipped at the sensor - the second number is the one that says whether a blown sky can be brought back at all.");
         tn->setEnabled(false);
         tn->setParent(*gOut);

@@ -88,13 +88,13 @@ static inline void neutral_params(float* P)
     P[25]=0.f;  P[26]=0.f;                           //   centre x / y (centre-origin, half-height units)
     P[27]=0.5f; P[28]=0.5f;                          //   size x / y
     P[29]=0.f;  P[30]=0.25f; P[31]=0.f;              //   rotation (deg) / softness / invert
-    // THE TONE MAP -- OFF by default, which is `white <= knee` (see tone_map()). The fitted
-    // curve is knee 0.40 / white 3.0 and it works; what is not yet done is the FITTED LAYER ABOVE
-    // it. Every Auto/Magic constant was derived against a render with no shoulder, and switching
-    // one on breaks six tests structurally rather than by a tolerance -- the Clean solve predicts
-    // the render as lgg_core() on a measured percentile, and a curve after lgg_core makes that
-    // identity false. Turning it on is therefore a refit, not a flag, and the refit needs the
-    // user's hand-graded ground truth. Shipped as a control so it can be judged on footage first.
+    // THE TONE MAP, off in the NEUTRAL set -- `white <= knee` is what tone_map() reads as identity.
+    //
+    // Off here is not the shipping default. The node measures the frame when it is applied and
+    // shapes the shoulder to it (fit_tone_map / autoFitOnApply), so a real render usually carries
+    // one. This is the ANALYSIS neutral, and it stays off for the same reason every other stage
+    // does: it is the reference the Jacobian differentiates around, and a reference that moved per
+    // frame would make the derivatives incomparable between shots.
     P[32]=0.40f; P[33]=0.0f;                         // shoulder knee / white point (0 = off)
     static_assert(kParamN == 34, "neutral_params() needs an entry for every parameter");
 }
