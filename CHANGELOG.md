@@ -6,7 +6,7 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
 
 ## v1.5.0 — Range Balance, and highlights that stay in range
 
-### New: Highlight Tone Map (Output)
+### New: Highlight Tone Map
 
 Rolls bright detail smoothly into white instead of cutting off whatever will not fit. **On by
 default** — a shot that used to arrive with a flat white sky now keeps the detail in it.
@@ -69,12 +69,18 @@ above it says why — try Magic Grade on a frame with a clearer face.
 ### The panel follows the workflow
 
 Reordered into the order you work in: Role / Preset, Magic Grade, Auto Grade, Input Transform,
-Balance & Density, Exposure & White Balance, Range Balance, Look / Film LUT, Trim, Output, Setup.
+Balance & Density, Exposure & White Balance, Range Balance, Highlight Tone Map, Look / Film LUT,
+Trim, Output, Setup.
 
 - Balance and Density are one section now.
 - Scene Exposure and Scene White Balance moved out of Input Transform to Exposure.
 - Highlight Rolloff moved to Exposure, beside the other exposure controls.
-- Sections start open except Role / Preset, Export LUT and Setup / Help.
+- Highlight Tone Map has its own section, placed where it actually runs — after Range Balance
+  and before the LUT, so a Custom Look sees the shouldered picture.
+- Sections start open except Role / Preset, Highlight Tone Map, Export LUT and Setup / Help.
+- Magic Grade carries its own Lift, Gamma and Gain, alongside the Bias and Scene Exposure copies
+  already there. They are the same controls as the ones in Exposure — moving either moves both —
+  so a Magic result can be finished without leaving the section that produced it.
 
 ### Magic Grade
 
