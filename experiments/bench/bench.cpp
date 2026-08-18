@@ -174,6 +174,10 @@ int main(int argc, char** argv)
     tun.subjMid      = argd(argc, argv, "--subj-mid",      tun.subjMid);
     tun.rawExpMax    = argd(argc, argv, "--raw-exp-max",   tun.rawExpMax);
     tun.subjNeutralMid = argd(argc, argv, "--subj-neutral-mid", tun.subjNeutralMid);
+    // The SKIN credibility ceiling, so the guard can be walked rather than argued about. It is a
+    // proxy for an infeasible mask and the only way to see what it is refusing is to lift it.
+    tun.region[og::analysis::R_SKIN].maxCover =
+        argd(argc, argv, "--skin-max-cover", tun.region[og::analysis::R_SKIN].maxCover);
     tun.frameCeiling = argd(argc, argv, "--frame-ceiling", tun.frameCeiling);
     tun.frameCeilingLow = argd(argc, argv, "--frame-ceiling-low", tun.frameCeilingLow);
     tun.frameFloorMin= argd(argc, argv, "--frame-floor-min", tun.frameFloorMin);
@@ -358,8 +362,11 @@ int main(int argc, char** argv)
                          R.tone.mid, R.tone.subjHi, R.tone.subjHi - R.tone.subjLo, R.tone.frameHi,
                          R.tone.ceil, R.tone.branch);
             else if (R.tone.why[0])
-                snprintf(toneNote, sizeof toneNote, " tone declined: %s (neutral subj mid %.3f, %.2fEV)",
-                         R.tone.why, R.tone.sMidNeutral, R.tone.rawExp);
+                snprintf(toneNote, sizeof toneNote,
+                         " tone declined: %s (neutral subj mid %.3f, %.2fEV,"
+                         " neutral subj %.3f/%.3f/%.3f spread %.3f)",
+                         R.tone.why, R.tone.sMidNeutral, R.tone.rawExp,
+                         R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.sHi - R.tone.sLo);
         }
 
         const char* nm = strrchr(argv[i], '/'); nm = nm ? nm + 1 : argv[i];

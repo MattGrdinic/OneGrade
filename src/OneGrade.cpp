@@ -4176,7 +4176,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // whole reason the plugin exists.
     GroupParamDescriptor* gRange = p_Desc.defineGroupParam("gRange");
     gRange->setLabels("4  Range Balance", "4  Range Balance", "4  Range Balance");
-    gRange->setOpen(true);
+    gRange->setOpen(false);
 
     page->addChild(*defineSlider(p_Desc, "rangeLatch", "Latch",
         "Where the highlight mask starts, on the same 0-100 scale as Resolve's Luminance qualifier - everything brighter than this is held, everything below it is opened up. 0 switches the whole stage off, which is the default. Press 'Set From Frame' to measure it from the shot rather than guessing: it reads the bright population off the current frame and puts the latch where that population starts. Measured against a hand-dialled qualifier on a bedroom interior it landed within half a point.",

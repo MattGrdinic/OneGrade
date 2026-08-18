@@ -77,7 +77,8 @@ Trim, Output, Setup.
 - Highlight Rolloff moved to Exposure, beside the other exposure controls.
 - Highlight Tone Map has its own section, placed where it actually runs — after Range Balance
   and before the LUT, so a Custom Look sees the shouldered picture.
-- Sections start open except Role / Preset, Highlight Tone Map, Export LUT and Setup / Help.
+- Sections start open except Role / Preset, Range Balance, Highlight Tone Map, Export LUT and
+  Setup / Help.
 - Magic Grade carries its own Lift, Gamma and Gain, alongside the Bias and Scene Exposure copies
   already there. They are the same controls as the ones in Exposure — moving either moves both —
   so a Magic result can be finished without leaving the section that produced it.

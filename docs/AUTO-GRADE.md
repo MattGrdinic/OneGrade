@@ -536,7 +536,7 @@ names its cause, because a bare `false` cost an hour spent inspecting the wrong 
 | decline | meaning |
 |---|---|
 | `not a face` | the targets are a face's; sky belongs near the top, foliage low, sand bright |
-| `face too large to be one` | over 35% coverage — the tell `skin_trustworthy()` already uses at 25% |
+| `face too large to be one` | over **60%** coverage. Was 35%, which rejected a genuine close-up reading 46% (face, hands, forearms, nothing else). Raised on measurement: the car-interior frame it was built for, whose skin mask swallows the windscreen at 42%, declines anyway as `highlight blown` once the RAW Exposure rescue asks for 3.18 EV — the feasibility tests were doing the work and the proxy was taking the credit. A tonal-spread test is **ruled out** as the replacement: that mask's neutral spread is 0.455 against 0.312–0.459 for the five frames that solve correctly. Corpus outcomes are unchanged by the raise; only the decline *reason* moves. |
 | `subject is black, not dark` | midtone renders at 0.000; scene gain multiplies, and 0 × anything is 0 |
 | `subject unplaceable` | no arrangement of the controls reaches the midtone target |
 | `highlight blown` | the result clips at the top |

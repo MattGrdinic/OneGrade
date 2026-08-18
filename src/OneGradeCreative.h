@@ -169,11 +169,10 @@ struct Tunables {
     // gets the tone solve; one without still declines, so nothing is guessed and the default
     // behaviour for every unmeasured region is exactly what it was before.
     //
-    // maxCover is per-region for the same reason the target is. The 0.35 ceiling is a
-    // face-plausibility check -- a mask calling 43% of the frame skin has stopped meaning what it
-    // says -- and it is nonsense elsewhere: sky is over 35% of the frame in HALF of all films, and
-    // built in 77%. Applying one ceiling everywhere would reject the very frames the target was
-    // measured on.
+    // maxCover is per-region for the same reason the target is. The face ceiling is a
+    // plausibility check on the label, and it is nonsense elsewhere: sky is over 35% of the frame
+    // in HALF of all films, and built in 77%. Applying one ceiling everywhere would reject the
+    // very frames the target was measured on.
     struct RegionTone {
         double floor    = 0.0;
         double mid      = 0.0;
@@ -202,7 +201,7 @@ struct Tunables {
         // ranked by max channel, so it never saw the crushing it was there to prevent.
         /* SKY     */ { 0.475, 0.602, 0.90, true  },
         /* WATER   */ { 0.0,   0.0,   1.00, false },
-        /* SKIN    */ { 0.125, 0.278, 0.35, true  },   // the hand-graded interview, unchanged
+        /* SKIN    */ { 0.125, 0.278, 0.60, true  },   // the hand-graded interview, unchanged
         /* VEG     */ { 0.0,   0.0,   1.00, false },
         /* TERRAIN */ { 0.0,   0.0,   1.00, false },
         /* GROUND  */ { 0.0,   0.0,   1.00, false },
@@ -1231,18 +1230,28 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     const double subjFloorT = t.region[subject].floor;
     const double subjMidT   = t.region[subject].mid;
 
-    // AND ONLY WHEN THE MASK PLAUSIBLY IS A FACE. Coverage is the tell, the same tell
-    // skin_trustworthy() already uses at 25% for the chromatic mask: a face occupies a modest
-    // share of frame, and when the number climbs the label has stopped meaning what it says.
+    // AND ONLY WHEN THE MASK PLAUSIBLY IS A FACE. Coverage is a PROXY -- the thing that actually
+    // makes a merged mask unusable is that no monotone curve can place its p10 and p50 and still
+    // keep its top in the picture -- and a proxy set too tight refuses the case it was meant to
+    // serve. It was 0.35, and a genuine close-up (face, hands and forearms, nothing else in the
+    // frame) reads 46%: the guard rejected the most obviously face-shaped frame there is.
     //
-    // One frame came back SKIN 43% with the region spanning 0.875 of the tonal range and its p90
-    // pinned at 1.000. No monotone curve can place p10 and p50 for a region that wide and still
-    // keep its top inside the picture, and the solve duly ran Gain to its bound trying: the
-    // symptom of an infeasible target is a control on a bound, and the cause was that the mask
-    // covered a dark interior AND a window rather than a face.
+    // RAISED TO 0.60 ON MEASUREMENT, not on argument. The frame this was built for is in the
+    // corpus -- a car interior whose skin mask swallows the windscreen at 42% -- and with the
+    // ceiling lifted it declines ANYWAY, as "highlight blown", after the RAW Exposure rescue asks
+    // for 3.18 EV and the top goes. The real acceptance tests catch it; the proxy was collecting
+    // the credit.
     //
-    // Set above the chromatic mask's 25% because this one is a segmentation label rather than a
-    // hue window, so a genuine close-up can legitimately read higher.
+    // A tonal-spread test was the obvious replacement and is RULED OUT BY THE SAME MEASUREMENT.
+    // The bad mask's neutral spread is 0.455 against 0.312-0.459 for the five frames that solve
+    // correctly -- indistinguishable. (The 0.875 in the note this replaces predates the RAW
+    // Exposure rescue, which changes the render the spread is measured through.) So there is no
+    // second signal to lean on here, and the honest shape is a loose ceiling plus the feasibility
+    // tests downstream rather than a tight ceiling standing in for them.
+    //
+    // Still a ceiling rather than nothing: a mask calling most of the frame skin has stopped
+    // meaning what it says whatever the solve then does with it, and 0.60 is above any real
+    // close-up while well below that.
     {
         size_t cover = 0;
         for (size_t i = 0; i < n; ++i) if ((int)S.region[i] == subject) ++cover;
@@ -1379,6 +1388,10 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     r.ceil = (float)ceil;
     r.rawExp = Pe[10];
     r.sMidNeutral = (float)neutralMid(0.0);
+    // Stamp the neutral percentiles whatever the outcome. They were being written only on the
+    // success path, so a declined frame reported spread 0.000 -- exactly the frames where the
+    // question "what did the mask actually cover" is the one being asked.
+    r.sLo = (float)mLo; r.sMid = (float)mMid; r.sHi = (float)mHi;
     return r;
 }
 
