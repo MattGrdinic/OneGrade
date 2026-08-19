@@ -89,6 +89,21 @@ Its tone solve now adapts its highlight target per shot rather than using one fi
 carries targets for subjects other than skin. Magic Grade may therefore land differently than it
 did in v1.4.3 on some footage.
 
+### Fixes
+
+- **White Balance First now actually balances.** The checkbox has been in Magic Grade since
+  v1.4.0 and never changed a pixel. It measured the shot's colour cast correctly and reported the
+  temperature it had chosen, then the value was overwritten before it reached the render — so
+  every frame graded at 6500 K no matter what the estimator found. Across the test footage it had
+  been finding real corrections between 5445 K and 9500 K and discarding all of them. Tick it and
+  the picture changes now; the temperature it picks lands in **Scene White Balance**, where you
+  can adjust it like any other value.
+- **Separation greys out when there is nothing to separate.** Some frames have no subject to set
+  against their surround — a flat aerial, or one subject filling the picture — and Magic Grade
+  says so in the *Chose* line. The slider stayed active anyway, so it could be dragged and would
+  report a value while moving nothing. It is greyed in that case now. It is not permanent: park on
+  a different frame and press Magic Grade again, and it usually comes back.
+
 ---
 
 ## v1.4.3 — the Bias slider behaves
