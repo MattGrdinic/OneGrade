@@ -2837,6 +2837,27 @@ void OneGrade::setEnabledness()
     // Nothing to choose between until a press has produced a segmentation. Greyed rather than
     // hidden, so the control is visible as something the button will fill in.
     m_MagicSubject->setEnabled(m_HaveMagicBase);
+
+    // SEPARATION IS INERT WITHOUT A CHOSEN MOVE, and looked exactly as live as when it works.
+    //
+    // applySeparation() rescales a STORED decision -- which control, how far, from what anchor --
+    // and its first line returns unless magicParam names Offset Temp or Gain Temp. So on a frame
+    // with nothing to separate (a flat aerial, one subject filling the picture) the slider
+    // dragged, reported a value, and moved no pixels. Reported as "the separation slider no
+    // longer does anything", which is precisely what it was.
+    //
+    // Greyed rather than hidden, the same call as Face Tone Separation above: "no subject on THIS
+    // frame" is a statement about the frame, not about the plugin, and parking on another frame
+    // and pressing again frequently arms it. A control that disappears cannot say that. The
+    // "Chose" line already carries the reason -- "No subject to separate - this is Creative
+    // Grade" -- so the pair reads as greyed-plus-why rather than greyed alone.
+    //
+    // Driven from here rather than only from applyMagicResult so it survives a project load:
+    // magicParam is saved, so a reopened project greys the slider without needing a press.
+    {
+        int mp = -1; m_MagicParam->getValue(mp);
+        m_Separation->setEnabled(mp == 0 || mp == 6);
+    }
 }
 
 // Rebuild the Look LUT dropdown to list only the currently selected group's LUTs.
