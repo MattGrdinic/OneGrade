@@ -1561,7 +1561,11 @@ void OneGrade::applyAutoGrade(double p_Time)
     meas.valid = true;
     og::grade::Tunables tun;
     m_CreativeLow->getValue(tun.blackTarget);
-    float Pc[og::analysis::kParamN];
+    // NEUTRAL FIRST. This was a bare declaration, and creative_preset() writes only [0..12] --
+    // so Range Balance, the shape and the tone map went into solve_black_px() as stack garbage,
+    // and the black point was solved through a render with a random latch and a random shoulder.
+    // Same shape as the m_MagicBaseP overflow: an array sized or filled to an older kParamN.
+    float Pc[og::analysis::kParamN]; oga::neutral_params(Pc);
     // The LUT goes in, because the black point is judged on the picture the stock produces and
     // not on the one feeding it. Without this the solve hit 0.050 while the screen showed 0.000.
     const bool lutOkC = ensureLutLoaded();

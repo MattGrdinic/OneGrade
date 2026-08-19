@@ -339,7 +339,7 @@ int main(int argc, char** argv)
         oga::Desc d = oga::describe(S, cam, enc <= 2 ? enc : 1, P);
 
         std::string decision = seg.ready() ? "no move" : "no model";
-        char wbNote[80] = "", toneNote[256] = "";
+        char wbNote[128] = "", toneNote[256] = "";
         if (R.choice.ok) {
             char buf[96];
             snprintf(buf, sizeof buf, "%d/%d %s %.0f%% -> %s %+.3f", R.choice.option + 1,
@@ -348,8 +348,10 @@ int main(int argc, char** argv)
             decision = buf;
         }
         if (R.wbRan) {
-            if (R.wb.ok) snprintf(wbNote, sizeof wbNote, " WB %.0fK (%.0f%% ref, b0 %+.1f)",
-                                  R.wb.kelvin, R.wb.cover, R.wb.b0);
+            // P[11] alongside the solved kelvin, because the two are not the same claim: one is
+            // what the estimator decided, the other is what survived into the render.
+            if (R.wb.ok) snprintf(wbNote, sizeof wbNote, " WB %.0fK -> P11 %.0fK (%.0f%% ref, b0 %+.1f)",
+                                  R.wb.kelvin, R.P[11], R.wb.cover, R.wb.b0);
             else         snprintf(wbNote, sizeof wbNote, " WB declined: %s (%.0f%% ref)",
                                   R.wb.why, R.wb.cover);
         }

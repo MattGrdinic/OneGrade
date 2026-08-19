@@ -1417,6 +1417,46 @@ int main() {
         check(ok, "the tone map fit adapts to the frame and ignores what the sensor lost");
     }
 
+    // 40. THE CREATIVE PRESET MUST NOT TOUCH SCENE WHITE BALANCE.
+    //
+    // It used to stamp P[11] = 6500 along with the rest of the look, and that one line destroyed
+    // "White Balance First" outright. solve_magic measures the cast, writes the kelvin into
+    // out.P[11], and then runs solve_creative_px -- whose first act is creative_preset. Across the
+    // whole bench corpus the estimator solved a real temperature on 13 frames, between 5445 K and
+    // 9500 K, reported it in the panel, and every one of them rendered at 6500 K.
+    //
+    // The bug was invisible from either end: the WB solve was correct and said so, and the render
+    // was correct for the parameters it was given. Only holding the two numbers side by side
+    // showed one was not reaching the other -- which is why the assertion is on the ARRAY rather
+    // than on any picture.
+    //
+    // Scene Exposure is checked with it. It is the same kind of parameter, scene-referred and
+    // upstream of the look, and it IS stamped -- correctly, because in solve_magic nothing has
+    // written it yet at that point and the tone solve sets it afterwards. Pinned so that if it
+    // ever moves ahead of the preset the way white balance did, this fails instead of going quiet.
+    {
+        bool ok = true;
+        float P[og::analysis::kParamN]; og::analysis::neutral_params(P);
+        P[11] = 9242.f;    // the user's own measured warm value, from the interview shot
+        P[10] = 1.75f;
+        og::grade::creative_preset(P);
+        ok &= (P[11] == 9242.f);            // survives the look stamp
+        ok &= (P[10] == 0.f);               // scene exposure still reset, deliberately
+        ok &= (P[5]  == 0.80f);             // and the look itself is still stamped
+        ok &= (P[0]  == -0.22f);
+
+        // A neutral array must come out of it holding a usable temperature rather than whatever
+        // the caller left on the stack: creative_preset no longer supplies one, so every caller
+        // has to start from neutral_params(). This is the invariant applyAutoGradeClean broke by
+        // declaring its array bare -- there, [13..33] were stack garbage feeding og::process.
+        float Q[og::analysis::kParamN]; og::analysis::neutral_params(Q);
+        og::grade::creative_preset(Q);
+        ok &= (Q[11] == 6500.f);
+        ok &= (Q[13] == 0.f) && (Q[33] == 0.f);   // Range Balance off, shoulder off
+
+        check(ok, "the Creative preset stamps the look and leaves white balance alone");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

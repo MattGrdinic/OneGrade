@@ -351,8 +351,22 @@ static inline void creative_preset(float P[analysis::kParamN])
     P[8]  =  0.55f;   // Post Exposure
     P[9]  =  1.00f;   // Contrast
     P[10] =  0.00f;   // Scene Exposure
-    P[11] =  6500.f;  // Scene White Balance
     P[12] =  0.00f;   // Rolloff     -- overwritten from `pin` below
+    // SCENE WHITE BALANCE (P[11]) IS DELIBERATELY NOT HERE, and it used to be, at 6500.
+    //
+    // This is the Creative LOOK, and white balance is a scene-referred correction that happens
+    // upstream of any look -- the same reason presets set the balance controls but never RAW.
+    // Stamping it here made the preset assert an opinion it does not have, and that assertion
+    // silently destroyed the "White Balance First" feature: solve_magic measures the cast, writes
+    // the kelvin into out.P[11], and then calls solve_creative_px, whose first act is this
+    // function. Every frame in the corpus solved a real temperature -- 5445 K to 9500 K -- and
+    // every frame rendered at 6500 K. The estimator was right, was reported in the panel, and was
+    // thrown away one line later.
+    //
+    // Third instance of THIS EXACT LANDMINE: the note above solve_black_px records the same
+    // function erasing the Magic colour move, differently on each side of the plugin/bench split.
+    // The array-wide stamp is the hazard; leaving scene-referred parameters out of it is the fix.
+    // Callers wanting a full neutral start already have analysis::neutral_params().
 }
 
 // Monotonic bisection. Used rather than a closed form because the controls interact and a closed
