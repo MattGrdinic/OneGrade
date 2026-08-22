@@ -726,3 +726,34 @@ deliberately untouched — the two guards ask different questions ("did a channe
 **Corpus effect of both changes together: total crushed share 108.9% → 74.6%, seven frames better,
 one a trade** (`00092022`, 13.84% → 6.73% crushed for 0.053 of separation). Pinned by test 41,
 which fails if the guard is put back on the luma anchor.
+
+### REVERTED THE SAME DAY — the numbers improved and the picture did not
+
+**Both changes are defaulted OFF** (`rawExpMin = 0`, `frameFloorMin` back to 0.020, both reachable
+from the bench). The mechanism works; what it produces is worse than what it replaced.
+
+Pulling an ETTR frame down 3.07 stops leaves the solve needing **Gain 1.5** to reach the frame
+ceiling again, and the render comes back washed out — the whole frame milky, the shirt and wall at
+white. It was reported as a fix on the strength of crushed 2.14% → 0.14% and shadow separation
+0.000 → 0.114.
+
+**Every one of those numbers describes the shadow end.** The bench had no highlight term at all,
+so the trade it was actually making was invisible:
+
+| | crushed | **blown** |
+|---|---|---|
+| before | 2.14% | **13.28%** |
+| after | 0.16% | **69.37%** |
+
+2% of crushed pixels bought 69% blown. `%blown` and `%blownY` now sit on the same line as
+`%crushMin`, which is the durable part of this.
+
+**The lesson is not "measure the highlights too" — it is that the bench writes rendered PNGs and
+they were never opened.** A `crushed% -> 0` that arrives with a washed-out picture is visible in
+one second of looking. The corpus tables in this document are all shadow-weighted for the same
+reason, and any conclusion drawn from them before 2026-08-22 should be re-checked against the
+render before it is trusted.
+
+**Still open, and not yet investigated: the user reports the bench and Resolve disagreeing on this
+frame.** That is the one failure an offline harness exists to prevent, and it wants pinning before
+any further attempt at the ETTR case.

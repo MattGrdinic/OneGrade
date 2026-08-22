@@ -650,7 +650,12 @@ int main(int argc, char** argv)
         }
         long long masked = 0;
 
-        long long crushed = 0, crushedY = 0, total = 0;
+        // AND THE OTHER END. There was no highlight term here at all, and it cost a whole
+        // investigation: a change that took crushed% from 2.14 to 0.14 and shadow separation from
+        // 0.000 to 0.114 was reported as a fix, while the rendered frame it produced was washed
+        // out and unusable. Every number on this line described the shadows. `blown` is the mirror
+        // of `crushed` -- per-pixel MAX at or above 254/255 -- and `blownY` its luminance form.
+        long long crushed = 0, crushedY = 0, blown = 0, blownY = 0, total = 0;
         // Same normalisation the four render paths use: centre-origin, half-height on both axes.
         const float shHalf = 0.5f*(float)f.h;
         for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
@@ -677,6 +682,9 @@ int main(int argc, char** argv)
             const float mn = std::min(r, std::min(g, b));
             if (mn <= 0.004f) ++crushed;          // min channel -- confounded by saturation
             if (0.2126f*r + 0.7152f*g + 0.0722f*b <= 0.004f) ++crushedY;
+            const float mx = std::max(r, std::max(g, b));
+            if (mx >= 0.996f) ++blown;
+            if (0.2126f*r + 0.7152f*g + 0.0722f*b >= 0.996f) ++blownY;
             ++total;
             out[k*3+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
             out[k*3+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
@@ -723,9 +731,11 @@ int main(int argc, char** argv)
                 sep10 = (double)(g1 - g0);
             }
         }
-        printf("%-24s %6s %6s %6.3f %6.2f %6.2f %6.3f  blk / %%crushMin / %%crushY / shadowSep\n",
+        printf("%-24s %6s %6s %6.3f %6.2f %6.2f %6.3f %6.2f %6.2f"
+               "  blk / %%crushMin / %%crushY / shadowSep / %%blown / %%blownY\n",
                "", "", "", postBlk, 100.0 * (double)crushed / (double)total,
-               100.0 * (double)crushedY / (double)total, sep10);
+               100.0 * (double)crushedY / (double)total, sep10,
+               100.0 * (double)blown / (double)total, 100.0 * (double)blownY / (double)total);
         // BOTH SEPARATION TRIPLES, side by side, because the whole question is whether the region
         // version says something the band version cannot. Printing only the new one would make it
         // impossible to tell a real improvement from a differently-scaled number.

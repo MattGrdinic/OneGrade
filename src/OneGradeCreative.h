@@ -151,7 +151,7 @@ struct Tunables {
     // seven frames better, one a trade (13.84% -> 6.73% crushed for 0.053 of separation).
     // frameFloorMax still reads fLo and is untouched -- the two guards ask different questions,
     // "did a channel hit zero" against "did the picture go black", and want different statistics.
-    double frameFloorMin = 0.060;
+    double frameFloorMin = 0.020;   // back to inert; 0.060 was fitted against the same bad render
     double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
 
     // THE OTHER DIRECTION, and it was missing for the same reason frameFloorMin was: nothing in
@@ -165,7 +165,13 @@ struct Tunables {
     // never the problem -- placing the subject at its midtone is right on this frame. Only the
     // INSTRUMENT was wrong. RAW Exposure is a scene-linear gain applied before the transform,
     // which is precisely the operation ETTR is asking to have undone.
-    double rawExpMin      = -4.0;  // stops; the mirror of rawExpMax, for a shot exposed right
+    // DEFAULT 0 = OFF, PENDING A CORRECT FIX. The reasoning below still holds and the mechanism
+    // works; what it produces does not. Pulling an ETTR frame down 3.07 stops leaves the solve
+    // needing Gain 1.5 to reach the frame ceiling again, and the rendered picture comes back
+    // washed out -- worse than the crushed one it replaced. The shadow metrics said it improved
+    // (crushed 2.14% -> 0.14%, separation 0.000 -> 0.114) because they only describe the SHADOW
+    // end; nobody had looked at the render. Reachable from the bench with --raw-exp-min.
+    double rawExpMin      = 0.0;   // stops; the mirror of rawExpMax, for a shot exposed right
 
     // ---------------------------------------------------------------------------------------
     // PER-SUBJECT TONE TARGETS -- why the solve declined everything that was not a face.
