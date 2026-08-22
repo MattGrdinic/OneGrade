@@ -189,6 +189,9 @@ int main(int argc, char** argv)
     const double sep = argd(argc, argv, "--sep", 1.0);
     const bool  wb  = argf(argc, argv, "--wb");
     const bool  noTone = argf(argc, argv, "--no-tone");
+    // 1 = the shipped point sample; 4 = box-averaged, which makes the thumbnail
+    // resolution-independent and moves every frame. See build_thumb.
+    const int   thumbTaps = (int)argd(argc, argv, "--thumb-taps", 1.0);
     // Which press. Magic Grade offers a different subject each time it is pressed, and until
     // now the bench could only ever see press one -- so a grade the user reached on press two
     // could not be reproduced here at all.
@@ -308,13 +311,17 @@ int main(int argc, char** argv)
         // the re-solve after the colour move landed here and not there, and the two produced
         // different pictures from the same still. Only the segmentation is supplied locally,
         // because the model belongs to the caller.
+        // The SAME builder the plugin uses. It was a hand-written point sample here and a
+        // hand-written point sample there, which is two implementations of one thing -- and they
+        // were fed different resolutions, so they produced different thumbnails from one shot and
+        // the harness could not check the plugin. PNGs are already top-down, so no flip.
         std::vector<float> tsrc((size_t)512 * 512 * 3);
-        for (int y = 0; y < 512; ++y)
-            for (int x = 0; x < 512; ++x) {
-                const float* q = &f.px[(((size_t)(y * f.h / 512) * f.w) + (x * f.w / 512)) * 3];
-                const size_t o = ((size_t)y * 512 + x) * 3;
-                tsrc[o] = q[0]; tsrc[o+1] = q[1]; tsrc[o+2] = q[2];
-            }
+        oga::build_thumb(512, f.w, f.h,
+            [&](int sx, int sy, float& r, float& g, float& b) {
+                const float* q = &f.px[((size_t)sy * f.w + sx) * 3];
+                r = q[0]; g = q[1]; b = q[2];
+            },
+            tsrc.data(), thumbTaps);
         og::grade::SegmentFn segfn = [&](const unsigned char* rgb, int w, int h,
                                          std::vector<unsigned char>& regions) {
             if (!seg.ready()) return false;

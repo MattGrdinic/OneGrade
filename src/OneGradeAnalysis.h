@@ -67,6 +67,69 @@ static const int kParamN = 34;   // matches P[] in OneGradePipeline.h
 // stayed 13 while kParamN reached 21, so copying a grade into it wrote 32 bytes over the three
 // OFX parameter pointers that follow it. A default that has to be retyped in twelve places is a
 // defect waiting for the next parameter.
+// THE SEGMENTATION THUMBNAIL, box-averaged, and shared so the two callers cannot drift.
+//
+// It was nearest-neighbour point sampling in both the plugin and the bench: one source pixel per
+// 512x512 cell, everything else discarded. That is resolution-dependent by construction. At 1228
+// wide it keeps about one pixel in two; at the user's native 12K it keeps one in ~550, so the
+// model reads an aliased frame full of whatever single pixels the grid happened to land on --
+// skin texture, hair, sensor noise -- rather than the picture.
+//
+// Measured on one frame at two sizes: SKIN coverage 12% at 1228x511 against 24% at 6144x2556, the
+// colour move reversing sign (+0.161 to -0.127), a different solve branch, crushed 2.14% -> 11.23%
+// and blown 13.28% -> 3.38%. The frame MEASUREMENT was stable across both (key -0.58, src99 0.617
+// vs 0.618) -- it is only what the model sees that moves, and everything downstream follows it.
+//
+// That is also why the bench and Resolve disagreed on the same shot: the bench was fed a downsized
+// export and Resolve the native clip, so the two built different thumbnails from one frame. The
+// harness cannot check the plugin while the thing it checks depends on how the file was exported.
+//
+// TAPS ARE CAPPED. A true box filter at 12K is ~550 fetches per cell and 144M for the thumbnail,
+// which is not something a button press can do. 4x4 evenly spaced taps per cell is 16 at any
+// source size, and buys almost all of the anti-aliasing -- the point is to stop reading ONE pixel,
+// not to be exact.
+//
+// Fetch is void(int sx, int sy, float& r, float& g, float& b) in TOP-DOWN source coordinates; the
+// caller owns any flip, since OFX images arrive bottom-up and PNGs do not.
+// TAPS DEFAULTS TO 1, WHICH IS THE OLD POINT SAMPLE EXACTLY -- and that is a staging decision,
+// not a preference. Box-averaging is the correct resampling and it fixes the resolution
+// dependence, but the segmentation model's behaviour on this corpus was established against
+// point-sampled thumbnails: switching to taps=4 moves ALL 19 frames, and several badly --
+// `00093080` from 0.90% crushed to 54.24%, `dark-scene` losing its shadow separation 0.184 ->
+// 0.011, `large-face` reversing its colour move. Every validated grade would need re-checking.
+//
+// So the fix exists, is one argument away (`--thumb-taps` on the bench), and does not ship until
+// somebody has looked at 19 rendered frames. taps=1 reproduces the previous output bit for bit.
+template <class Fetch>
+static inline void build_thumb(int T, int w, int h, const Fetch& at, float* dst, int taps = 1)
+{
+    if (T <= 0 || w <= 0 || h <= 0 || !dst) return;
+    const int kMaxTap = (taps < 1) ? 1 : taps;
+    for (int ty = 0; ty < T; ++ty) {
+        const int y0 = (int)(((long long)ty * h) / T);
+        const int y1 = std::max(y0 + 1, (int)(((long long)(ty + 1) * h) / T));
+        const int ny = std::min(kMaxTap, y1 - y0);
+        for (int tx = 0; tx < T; ++tx) {
+            const int x0 = (int)(((long long)tx * w) / T);
+            const int x1 = std::max(x0 + 1, (int)(((long long)(tx + 1) * w) / T));
+            const int nx = std::min(kMaxTap, x1 - x0);
+            float ar = 0.f, ag = 0.f, ab = 0.f;
+            for (int j = 0; j < ny; ++j) {
+                const int sy = y0 + (int)(((long long)j * (y1 - y0)) / ny);
+                for (int i = 0; i < nx; ++i) {
+                    const int sx = x0 + (int)(((long long)i * (x1 - x0)) / nx);
+                    float r = 0.f, g = 0.f, b = 0.f;
+                    at(sx, sy, r, g, b);
+                    ar += r; ag += g; ab += b;
+                }
+            }
+            const float inv = 1.f / (float)(nx * ny);
+            float* o = &dst[((size_t)ty * T + tx) * 3];
+            o[0] = ar * inv; o[1] = ag * inv; o[2] = ab * inv;
+        }
+    }
+}
+
 static inline void neutral_params(float* P)
 {
     P[0]=0.f;   P[1]=0.f;  P[2]=0.f;                 // balance temp / tint / density

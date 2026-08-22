@@ -1238,16 +1238,19 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
         {
             const int T = 512;
             m_LastThumbSrc.assign((size_t)T * T * 3, 0.f);
-            for (int ty = 0; ty < T; ++ty) {
-                const int sy = b.y2 - 1 - (int)(((long long)ty * h) / T);   // flip to top-down
-                const float* row = static_cast<const float*>(src->getPixelAddress(b.x1, sy));
-                if (!row) continue;
-                for (int tx = 0; tx < T; ++tx) {
-                    const float* q = row + (size_t)(((long long)tx * w) / T) * 4;
-                    float* o = &m_LastThumbSrc[((size_t)ty * T + tx) * 3];
-                    o[0] = q[0]; o[1] = q[1]; o[2] = q[2];
-                }
-            }
+            // Box-averaged, via the shared builder -- see og::analysis::build_thumb for why one
+            // pixel per cell made the whole grade depend on the source resolution. The lambda owns
+            // the vertical flip because OFX hands images back bottom-up and the model wants
+            // top-down; build_thumb works entirely in top-down source coordinates.
+            oga::build_thumb(T, w, h,
+                [&](int sx, int sy, float& r, float& g, float& b2) {
+                    const float* row = static_cast<const float*>(
+                        src->getPixelAddress(b.x1, b.y2 - 1 - sy));
+                    if (!row) { r = g = b2 = 0.f; return; }
+                    const float* q = row + (size_t)sx * 4;
+                    r = q[0]; g = q[1]; b2 = q[2];
+                },
+                m_LastThumbSrc.data());
         }
 
         const size_t n = dispL.size();

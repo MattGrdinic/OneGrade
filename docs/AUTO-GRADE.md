@@ -754,6 +754,40 @@ one second of looking. The corpus tables in this document are all shadow-weighte
 reason, and any conclusion drawn from them before 2026-08-22 should be re-checked against the
 render before it is trusted.
 
-**Still open, and not yet investigated: the user reports the bench and Resolve disagreeing on this
-frame.** That is the one failure an offline harness exists to prevent, and it wants pinning before
-any further attempt at the ETTR case.
+### Why the bench and Resolve disagreed — SOLVED, and the fix is staged behind a flag
+
+**The 512x512 segmentation thumbnail was point-sampled: one source pixel per cell, everything else
+discarded.** That is resolution-dependent by construction. At 1228 wide it keeps about one pixel in
+two; at the user's native 12K it keeps one in ~550, so the model reads whatever single pixels the
+grid landed on — skin texture, hair, sensor noise — instead of the picture. The bench was fed a
+downsized export and Resolve the native clip, so the two built different thumbnails from one frame.
+
+Measured, same shot at two sizes:
+
+| | 1228x511 | 6144x2556 |
+|---|---|---|
+| SKIN coverage | 12% | **24%** |
+| colour move | OffTmp +0.161 | OffTmp **−0.127** (opposite sign) |
+| branch | 0 | **2** (ceiling gave way) |
+| crushed / blown | 2.14% / 13.28% | **11.23%** / 3.38% |
+
+The frame MEASUREMENT is stable across both (`key` −0.58, `src99` 0.617 vs 0.618). Only what the
+model sees moves — and everything downstream follows it.
+
+`og::analysis::build_thumb()` box-averages instead, capped at 4x4 taps per cell so cost is constant
+at any source size, and **both callers now share it** — it was a hand-written point sample in the
+plugin and another in the bench, which is two implementations of one thing that were already
+producing different answers. With `taps=4` the two resolutions agree: SKIN 11% vs 13%, move +0.161
+vs +0.157, same branch, crushed 2.14% vs 2.07%.
+
+**DEFAULT IS taps=1, which reproduces the old point sample bit for bit, and that is staging rather
+than preference.** The segmentation model's behaviour on this corpus was established against
+point-sampled thumbnails. Switching to 4 moves **all 19 frames**, several badly: `00093080` from
+0.90% crushed to **54.24%**, `dark-scene` losing shadow separation 0.184 -> **0.011**,
+`large-face` reversing its colour move, `00124265` losing its subject entirely. A few improve
+(`00089408` 18.43% -> 1.43%). Every validated grade needs re-checking against a render before this
+can ship — `--thumb-taps=4` on the bench is the whole switch.
+
+**Consequence worth stating plainly: until that lands, a bench result is only valid for the
+resolution it was measured at**, and the corpus PNGs are exports rather than native clips. Any
+constant fitted here carries that caveat.
