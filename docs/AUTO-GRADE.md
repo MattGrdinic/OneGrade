@@ -682,3 +682,47 @@ nothing in between is. Test 33 pins the shape, not the numbers.
 Bias needed no change: `tone_targets_of` reads the ceiling a grade **achieves** from its live
 parameters, so it picks up whichever endpoint was used without being told — the hand-edit fix
 paying for itself on a feature written after it.
+
+## Exposure rescue, both directions (2026-08-22)
+
+**ETTR is the case the tone solve could not see.** A Sony Cine EI shooter exposes to the right
+deliberately — nothing clipped, everything lifted, shadow detail banked — intending to bring it
+back in post. The subject-midtone rescue only ever ran **upward**, so there was nothing to bring
+it back with, and the grade curve did the whole job: on the user's frame **Lift went to −0.500,
+its own floor**, Gain to 1.192 on an already-bright shot, and shadow separation to **0.000**.
+
+A control on a bound is the documented signature of an infeasible target — and the target was
+never wrong here. Placing the subject at its midtone is right on this frame. Only the *instrument*
+was. RAW Exposure is a scene-linear gain applied before the transform, which is exactly the
+operation ETTR asks to have undone. **The subject still lands on the same target; what changed is
+which control gets it there.**
+
+**The two directions use different thresholds, on purpose.** Up keeps `subjNeutralMid` (0.28, one
+constant for every subject). Down keys on the subject's OWN target midtone, because a single
+constant cannot serve both ends: the corpus's four sky-subject frames sit at neutral midtones of
+0.54–0.70 while SKY's target is 0.602, and pulling those to 0.28 would be correcting an exposure
+that is already correct using a number only ever fitted for faces. Both branches ask for ~0 EV at
+their own threshold, so the control law is continuous through zero — no deadband, no fifth
+discontinuity.
+
+### The floor guard was inert, and the value was never the problem
+
+Lifting the down-rescue made one frame that previously *declined* (`00104865`, "highlight blown")
+start solving — into 5.07% crushed and **zero** shadow separation. `frameFloorMin` exists to
+prevent exactly that and did nothing, because it was anchored on a single extreme pixel: first
+`fLo` (min channel of the pixel ranked p0.1 by MAX channel — a saturated pixel scores well there
+while sitting at zero), then `mBotY` (darkest by luma). What it guards against is `crushed%`,
+which counts EVERY pixel whose min channel is at or under 1/255. **One pixel cannot count pixels.**
+Measured: that frame and the high-key frame both render their guarded pixel to an identical
+**0.041**, while one is 5.07% crushed and the other 0.14%.
+
+Re-anchored on `TonePick::iMinP` — p1 of per-pixel MIN across the frame, the statistic `crushed%`
+is actually made of. With that anchor the sweep behaves as the earlier one could not: 0.02 and
+0.04 still do nothing, **0.060** takes the regressed frame from 5.07% crushed to 0.00% and leaves
+the high-key frame within 0.02 points of untouched. `frameFloorMax` still reads `fLo` and is
+deliberately untouched — the two guards ask different questions ("did a channel hit zero" versus
+"did the picture go black") and want different statistics.
+
+**Corpus effect of both changes together: total crushed share 108.9% → 74.6%, seven frames better,
+one a trade** (`00092022`, 13.84% → 6.73% crushed for 0.053 of separation). Pinned by test 41,
+which fails if the guard is put back on the luma anchor.

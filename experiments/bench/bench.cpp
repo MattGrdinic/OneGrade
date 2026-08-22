@@ -173,6 +173,7 @@ int main(int argc, char** argv)
     tun.subjFloor    = argd(argc, argv, "--subj-floor",    tun.subjFloor);
     tun.subjMid      = argd(argc, argv, "--subj-mid",      tun.subjMid);
     tun.rawExpMax    = argd(argc, argv, "--raw-exp-max",   tun.rawExpMax);
+    tun.rawExpMin    = argd(argc, argv, "--raw-exp-min",   tun.rawExpMin);
     tun.subjNeutralMid = argd(argc, argv, "--subj-neutral-mid", tun.subjNeutralMid);
     // The SKIN credibility ceiling, so the guard can be walked rather than argued about. It is a
     // proxy for an infeasible mask and the only way to see what it is refusing is to lift it.
@@ -359,10 +360,10 @@ int main(int argc, char** argv)
             if (R.tone.ok)
                 snprintf(toneNote, sizeof toneNote,
                          " tone L%+.3f G%.3f g%.3f x%.2fEV -> subj %.3f/%.3f/%.3f spread %.3f"
-                         "  hi %.3f (want %.3f, br %d)",
+                         "  hi %.3f (want %.3f, br %d) nmid %.3f flo %.3f",
                          R.tone.lift, R.tone.gamma, R.tone.gain, R.tone.rawExp, R.tone.subjLo,
                          R.tone.mid, R.tone.subjHi, R.tone.subjHi - R.tone.subjLo, R.tone.frameHi,
-                         R.tone.ceil, R.tone.branch);
+                         R.tone.ceil, R.tone.branch, R.tone.sMidNeutral, R.tone.frameLo);
             else if (R.tone.why[0])
                 snprintf(toneNote, sizeof toneNote,
                          " tone declined: %s (neutral subj mid %.3f, %.2fEV,"

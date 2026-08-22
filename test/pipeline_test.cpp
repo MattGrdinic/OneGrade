@@ -1457,6 +1457,49 @@ int main() {
         check(ok, "the Creative preset stamps the look and leaves white balance alone");
     }
 
+    // 41. THE FRAME FLOOR GUARD READS A POPULATION, NOT ONE PIXEL.
+    //
+    // frameFloorMin exists to stop the tone solve crushing the shadows, and it was inert for its
+    // whole life because it was anchored on a single extreme pixel -- first fLo, the min channel
+    // of the pixel ranked p0.1 by MAX channel, then mBotY, the darkest by luma. What it guards
+    // against is `crushed%`, which counts EVERY pixel whose min channel is at or under 1/255, and
+    // one pixel cannot count pixels. On real footage two frames rendered that pixel to an
+    // identical 0.041 while one had 5.07% of its frame crushed and the other 0.14%.
+    //
+    // The frame below is that disagreement in miniature: a population of SATURATED pixels whose
+    // min channel is zero but whose luma is not low, plus a smaller population of genuinely dark
+    // neutral pixels. Ranked by luma the dark neutrals win and the guard sees 0.02 -- fine.
+    // Ranked by min channel the saturated ones win and it sees 0.00 -- crushed. Both readings are
+    // correct about their own question; only one is about the thing being prevented.
+    {
+        bool ok = true;
+        const size_t N = 4000;
+        std::vector<unsigned char> region(N, (unsigned char)og::analysis::R_SKIN);
+        // 4% saturated: min channel 0, luma 0.064 -- crushed but NOT darkest by luma.
+        // 1% neutral dark: min channel 0.02, luma 0.02 -- darkest by luma, NOT crushed.
+        auto at = [&](size_t i, float& r, float& g, float& b) {
+            if (i < N / 25)                { r = 0.30f; g = 0.f; b = 0.f; }
+            else if (i < N / 25 + N / 100) { r = g = b = 0.02f; }
+            else                           { r = g = b = 0.50f; }
+        };
+        const og::grade::TonePick pk =
+            og::grade::pick_tone_samples(N, region.data(), og::analysis::R_SKIN, at);
+        ok &= pk.ok;
+
+        auto minOf  = [&](size_t i) { float r,g,b; at(i,r,g,b); return std::min(r, std::min(g,b)); };
+        auto lumaOf = [&](size_t i) { float r,g,b; at(i,r,g,b); return 0.2126f*r+0.7152f*g+0.0722f*b; };
+
+        // The new statistic lands ON the crushed population...
+        ok &= (minOf(pk.iMinP) < 0.001f);
+        // ...and the luma-ranked pick does not, which is precisely why it could not see crushing.
+        // Swap iMinP for iBotY in the line above and this test fails -- that is the old anchor.
+        ok &= (minOf(pk.iBotY) > 0.01f);
+        // Sanity: the luma pick really is darkest by luma, so it is wrong here without being broken.
+        ok &= (lumaOf(pk.iBotY) < lumaOf(pk.iMinP));
+
+        check(ok, "the frame floor guard counts crushed pixels instead of finding one dark one");
+    }
+
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");
     return g_fail ? 1 : 0;
 }

@@ -132,21 +132,40 @@ struct Tunables {
     //
     // A guard fitted to the only case that had ever come up looked complete for as long as that
     // was the only case.
-    // INERT AT THIS VALUE, AND THE VALUE IS NOT THE PROBLEM. Swept 0.00/0.02/0.04/0.06 on the
-    // four sky clips: the first three changed nothing at all and 0.06 moved one clip from 23.2%
-    // crushed to 12.5%, still worse than the 6.3% Creative gave it.
+    // RE-ANCHORED AND NOW LIVE (2026-08-22). It was inert at 0.020, and the note here said the
+    // value was not the problem -- the statistic was. That turned out to be exactly right.
     //
-    // The guard is anchored on the wrong statistic. `crushed%` counts EVERY pixel whose MIN
-    // channel is at or under 1/255; fLo is the min channel of ONE pixel, the one ranked p0.1 by
-    // MAX channel. A saturated pixel ranks high on max while its min sits at zero, so the pixel
-    // being guarded is not the darkest pixel by the measure that matters and the two barely track.
+    // `crushed%` counts EVERY pixel whose MIN channel is at or under 1/255. The guard was reading
+    // one pixel: first fLo (min channel of the pixel ranked p0.1 by MAX channel, so a saturated
+    // pixel scores well while sitting at zero), then mBotY (darkest by luma). Neither counts
+    // anything, and a single pixel cannot say how MUCH of the frame went black. Measured: two
+    // corpus frames both render that pixel to 0.041 while one crushes 5.07% of its pixels with
+    // zero shadow separation and the other 0.14% with 0.114.
     //
-    // Same shape as the black-point encode bug and hot-versus-pin: the number compared against a
-    // constant has to be the number that matters. Fixing it means a separate statistic for this
-    // guard -- a percentile of per-pixel MIN across the frame -- rather than reusing fLo, which is
-    // shared with frameFloorMax and would move every validated face grade if changed.
-    double frameFloorMin = 0.020;
+    // It now reads TonePick::iMinP -- p1 of per-pixel MIN across the frame, the statistic
+    // `crushed%` is actually made of. With that anchor the sweep behaves the way the earlier one
+    // could not: 0.02 and 0.04 still do nothing, and 0.06 takes the frame that regressed from
+    // 5.07% crushed to 0.00% while leaving the high-key frame within 0.02 points of untouched.
+    //
+    // Across the corpus, with the downward exposure rescue: total crushed share 108.9% -> 74.6%,
+    // seven frames better, one a trade (13.84% -> 6.73% crushed for 0.053 of separation).
+    // frameFloorMax still reads fLo and is untouched -- the two guards ask different questions,
+    // "did a channel hit zero" against "did the picture go black", and want different statistics.
+    double frameFloorMin = 0.060;
     double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
+
+    // THE OTHER DIRECTION, and it was missing for the same reason frameFloorMin was: nothing in
+    // the test footage had ever pushed that way. ETTR does. A Sony Cine EI shooter deliberately
+    // exposes to the right to keep shadow detail, clipping nothing, intending to bring it back in
+    // post -- and the tone solve had no way to bring it back, because the exposure rescue only
+    // ran upward. So the grade curve did the whole job: on the user's frame Lift went to -0.500,
+    // its own floor, Gain to 1.192 on an already-bright shot, and shadow separation to 0.000.
+    //
+    // A control on a bound is the documented signature of an infeasible target, and the target was
+    // never the problem -- placing the subject at its midtone is right on this frame. Only the
+    // INSTRUMENT was wrong. RAW Exposure is a scene-linear gain applied before the transform,
+    // which is precisely the operation ETTR is asking to have undone.
+    double rawExpMin      = -4.0;  // stops; the mirror of rawExpMax, for a shot exposed right
 
     // ---------------------------------------------------------------------------------------
     // PER-SUBJECT TONE TARGETS -- why the solve declined everything that was not a face.
@@ -1167,6 +1186,12 @@ struct TonePick {
     // pixel scores well on that while sitting at zero in its other two -- so the sample iBot
     // selects is not the darkest thing in the frame by the measure a viewer uses.
     size_t iBotY = 0;
+    // THE FRAME'S FLOOR AS A POPULATION, not as one pixel. p1 of per-pixel MIN channel: the
+    // statistic the frameFloorMin guard was always supposed to use and never had. iBot and iBotY
+    // each identify a single extreme pixel, and a single pixel cannot say how MUCH of the frame
+    // went black -- measured on two frames that both render their floor to 0.041 while one crushes
+    // 5.07% of its pixels and the other 0.14%.
+    size_t iMinP = 0;
     // The SURROUND's midtone: p50 by luma over everything the subject is not. The thing the
     // subject has to stand out from, and the only reading here that is about neither the subject
     // nor the frame as a whole.
@@ -1189,13 +1214,14 @@ static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, 
     TonePick p;
     if (!region || n < 64) return p;
 
-    std::vector<std::pair<float,size_t>> subjK, allK, allY, surK;
-    subjK.reserve(n / 4 + 1); allK.reserve(n); allY.reserve(n); surK.reserve(n);
+    std::vector<std::pair<float,size_t>> subjK, allK, allY, surK, allM;
+    subjK.reserve(n / 4 + 1); allK.reserve(n); allY.reserve(n); surK.reserve(n); allM.reserve(n);
     for (size_t i = 0; i < n; ++i) {
         float r, g, b;
         at(i, r, g, b);
         allK.push_back({ (float)tone_hi(r, g, b), i });
         allY.push_back({ (float)tone_luma(r, g, b), i });
+        allM.push_back({ (float)tone_lo(r, g, b), i });
         if ((int)region[i] == subject) subjK.push_back({ (float)tone_luma(r, g, b), i });
         else                           surK.push_back({ (float)tone_luma(r, g, b), i });
     }
@@ -1211,6 +1237,9 @@ static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, 
     p.iLo  = pct(subjK, 0.10); p.iMid = pct(subjK, 0.50); p.iHi = pct(subjK, 0.90);
     p.iTop = pct(allK,  0.999); p.iBot = pct(allK,  0.001);
     p.iBotY = pct(allY, 0.001);
+    // p1 rather than p0.1: this one is meant to speak for a population, so it must sit where there
+    // is a population to speak for. At p0.1 it is another extreme pixel wearing a different name.
+    p.iMinP = pct(allM, 0.01);
     // Falls back to the frame's own midtone when the subject fills the frame. A surround of
     // nothing has no midtone, and a separation target against an empty population would be a
     // number describing noise -- the same failure the 200-sample gate on the region triple exists
@@ -1302,7 +1331,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
         });
     if (!pk.ok) { out.why = "subject too small"; return out; }
     const size_t iLo = pk.iLo, iMid = pk.iMid, iHi = pk.iHi, iTop = pk.iTop, iBot = pk.iBot;
-    const size_t iBotY = pk.iBotY, iSur = pk.iSur;
+    const size_t iBotY = pk.iBotY, iSur = pk.iSur, iMinP = pk.iMinP;
 
     // UNDEREXPOSURE IS NOT LOW KEY, AND THE SUBJECT IS HOW YOU TELL THEM APART.
     //
@@ -1345,9 +1374,32 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     };
     // Target the subject's NEUTRAL midtone, so the tone solve then starts from a shot that looks
     // correctly exposed rather than one it has to rescue with the grade curve.
-    if (neutralMid(0.0) < t.subjNeutralMid) {
+    //
+    // BOTH DIRECTIONS, AND THEY USE DIFFERENT THRESHOLDS ON PURPOSE.
+    //
+    // Up is unchanged: `subjNeutralMid`, one constant for every subject. Down keys on the
+    // SUBJECT'S OWN target midtone instead, because a single constant cannot serve both ends. The
+    // up threshold is 0.28, which happens to equal SKIN's target -- and the corpus's four
+    // sky-subject frames sit at neutral midtones of 0.54 to 0.70 while SKY's target is 0.602.
+    // Pulling those down to 0.28 would be correcting an exposure that is already right, on the
+    // strength of a number that was only ever fitted for faces.
+    //
+    // CONTINUOUS THROUGH ZERO, which is why neither branch has a deadband. Just above the down
+    // threshold the solve asks for ~0 EV, just below the up threshold likewise, and for SKIN the
+    // two thresholds are 0.278 and 0.28 -- so the control law has no step in it. This project has
+    // shipped four discontinuities at boundaries already; a margin here would have been the fifth.
+    //
+    // Note what this does NOT change: the subject is still placed at exactly the same target. The
+    // solve was already trying to bring an ETTR frame's face down and running Lift into its floor
+    // to do it. This changes which control gets there, not where "there" is.
+    const double nm0 = neutralMid(0.0);
+    if (nm0 < t.subjNeutralMid) {
         Pe[10] = (float)std::min(t.rawExpMax,
                                  solve1d(0.0, t.rawExpMax, t.subjNeutralMid, neutralMid));
+        Pn[10] = Pe[10];
+    } else if (nm0 > subjMidT) {
+        Pe[10] = (float)std::max(t.rawExpMin,
+                                 solve1d(t.rawExpMin, 0.0, subjMidT, neutralMid));
         Pn[10] = Pe[10];
     }
 
@@ -1378,10 +1430,16 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     // different sample and a different reading from mBot, which is why it is measured
     // separately rather than derived from it.
     const double mBotY = shade(iBotY), mSur = shade(iSur);
+    // RE-ANCHORED ON A POPULATION. frameFloorMin used mBotY -- the frame's darkest pixel by luma --
+    // and could not see crushing, because one pixel does not count pixels. Two corpus frames both
+    // render that pixel to 0.041 while one has 5.07% of the frame crushed and zero shadow
+    // separation and the other 0.14% and 0.114. mMinP is p1 of per-pixel MIN channel, which is the
+    // statistic %crushMin is actually measuring, and it separates them.
+    const double mMinP = shadeMin(iMinP);
     auto solve_at = [&](double c) {
         return solve_magic_tone_from(mLo, mMid, mHi, mTop, Pe, lut, lutSize,
                                      subjFloorT, subjMidT, c,
-                                     mBot, t.frameFloorMax, t.frameFloorMin, mBotY,
+                                     mBot, t.frameFloorMax, t.frameFloorMin, mMinP,
                                      mSur, -1.0);
     };
 
