@@ -80,12 +80,13 @@ Trim, Output, Setup.
 - **Section numbers are gone.** They implied an order to work in that stopped being true once the
   panel was reorganised around the button, and the new **Mode** selector makes the list shorter
   anyway.
-- **New: a Mode selector at the top.** *Simple* shows the button and the controls used to adjust
-  its result; *Advanced* shows everything and is the default; *Color Correction* shows the manual
-  path with the automatic stages out of the way. It only changes what is visible — no mode alters
+- **New: a Mode selector at the top.** *Simple* — the default — shows the button and the controls
+  used to adjust its result; *Advanced* shows everything; *Color Correction* shows the manual path
+  with the automatic stages out of the way. It only changes what is visible — no mode alters
   a value, and **a section that is actively changing the picture is never hidden**, so a look
-  cannot be lost behind a dropdown. The line under it says how many sections were hidden and how
-  many were kept because they are in use.
+  cannot be lost behind a dropdown — a grade you saved with Range Balance or a LUT in use still
+  shows the controls that produced it, even in Simple. The line under it says how many sections
+  were hidden and how many were kept because they are in use.
 - Sections start open except Role / Preset, Range Balance, Highlight Tone Map, Export LUT and
   Setup / Help.
 - Magic Grade carries its own Lift, Gamma and Gain, alongside the Bias and Scene Exposure copies

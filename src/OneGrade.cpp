@@ -663,7 +663,10 @@ private:
     OFX::DoubleParam* m_CreativeLow;   // where Creative places its black point (pre-LUT)
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
-    OFX::StringParam* m_ProbeColor;    // a*/b*/chroma/separation, at NEUTRAL
+    // NAME stays British, LABEL is American. An OFX param name is saved in the project and is not
+    // user-facing; renaming one is how saved grades break. The Americanisation pass was about what
+    // the user reads, so the label says "Color" and the identifier is left alone.
+    OFX::StringParam* m_ProbeColour;    // a*/b*/chroma/separation, at NEUTRAL
     OFX::StringParam* m_ProbeGraded;    // the same, for the grade actually on the node
     OFX::StringParam* m_ProbeRegions;   // the two color populations + the vertical split
     OFX::StringParam* m_ProbeResponse;  // what the controls DO on this shot (Jacobian rows)
@@ -813,7 +816,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_CreativeLow   = fetchDoubleParam("creativeLow");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
-    m_ProbeColor   = fetchStringParam("probeColor");
+    m_ProbeColour  = fetchStringParam("probeColour");
     m_ProbeGraded   = fetchStringParam("probeGraded");
     m_ProbeRegions  = fetchStringParam("probeRegions");
     m_ProbeResponse = fetchStringParam("probeResponse");
@@ -1022,7 +1025,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
     m_ProbeShape->setValue("");
     m_ProbeSubject->setValue("");
     m_ProbePeak->setValue("");
-    m_ProbeColor->setValue("");
+    m_ProbeColour->setValue("");
     m_ProbeGraded->setValue("");
     m_ProbeRegions->setValue("");
     m_ProbeResponse->setValue("");
@@ -1379,7 +1382,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
             snprintf(m2, sizeof m2, "a*%+.1f b*%+.1f C%.1f sep%.1f",
                      m_LastDesc.v[oga::D_A], m_LastDesc.v[oga::D_B],
                      m_LastDesc.v[oga::D_CHROMA], m_LastDesc.v[oga::D_SEP]);
-            m_ProbeColor->setValue(m2);
+            m_ProbeColour->setValue(m2);
 
             // THE SAME SAMPLES, THE SAME SPACE, THE GRADE THAT IS ACTUALLY ON THE NODE.
             //
@@ -1490,7 +1493,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
             // fetchImage. Moved rather than copied — SS is dead after this point.
             m_LastSamples = std::move(SS);
         } else {
-            m_ProbeColor->setValue("too few samples for color analysis");
+            m_ProbeColour->setValue("too few samples for color analysis");
         }
     }
     catch (std::exception& e) {
@@ -2853,7 +2856,7 @@ void OneGrade::setEnabledness()
     m_ProbeShape->setIsSecret(!debug);
     m_ProbeSubject->setIsSecret(!debug);
     m_ProbeStatus->setIsSecret(!debug);
-    m_ProbeColor->setIsSecret(!debug);
+    m_ProbeColour->setIsSecret(!debug);
     m_ProbeGraded->setIsSecret(!debug);
     m_ProbeRegions->setIsSecret(!debug);
     m_ProbeResponse->setIsSecret(!debug);
@@ -3821,7 +3824,15 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         um->appendOption("Simple");
         um->appendOption("Advanced");
         um->appendOption("Color Correction");
-        um->setDefault(1);   // Advanced: a project saved before this feature must look unchanged
+        // SIMPLE BY DEFAULT (user's call, 2026-08-25). The busy panel was the problem this feature
+        // exists to solve, so defaulting to Advanced would have solved it only for people who
+        // found the dropdown.
+        //
+        // Safe for older projects because of groupIsActive(): a section that is changing the
+        // picture is shown whatever the mode says, so a grade saved with Range Balance or a LUT in
+        // use still displays the controls that produced it. Mode hides idle sections, never
+        // working ones.
+        um->setDefault(0);
         page->addChild(*um);
 
         StringParamDescriptor* mn = p_Desc.defineStringParam("modeNote");
@@ -4198,7 +4209,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
         probeLine("probeApplied", "Applied",
                   "What the Auto Grade button last wrote, and the measurement it came from. Blank until you press it. Analyze Frame never changes anything; only Auto Grade does.");
-        probeLine("probeColor", "Color",
+        probeLine("probeColour", "Color",
                   "The frame's color, in CIELAB over the mid-tones: a* is green-to-magenta, b* is cool-to-warm, C is overall colorfulness. 'sep' is how far apart the two dominant color populations sit - a low number on a frame that visibly has two subjects (sky over water, say) means they are sharing a color and would separate if pushed apart. Lab rather than HSV because b* lines up one-for-one with the Temp controls and a* with the Tint ones, which is what makes the Response row below readable.");
         probeLine("probeGraded", "Graded",
                   "The same color measurements as the row above, but for the grade currently on this node instead of a neutral one - so the two lines together say what your grade DID. Every other row here deliberately measures the ungraded footage, which makes them identical no matter what you set; this is the one that moves. Camera and Output Encode are held the same as the neutral row so the only difference is the sliders. It is measured before the LUT, so with a film stock selected this is the grade underneath the stock rather than the picture on screen - the row says 'pre-LUT' when that is the case.");

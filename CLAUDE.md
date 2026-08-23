@@ -930,8 +930,10 @@ Those three are the entire toolkit for a dynamic panel here.
 
 **Hence the Mode selector hides sections rather than collapsing them** — which is the better answer
 anyway: a Simple panel with four sections beats one with twelve collapsed. `uiMode` is a choice
-param (Simple / Advanced / Color Correction), default **Advanced** so older projects are unchanged,
-and `kModeGroups` in `OneGrade.cpp` is the table of which sections each mode shows.
+param (Simple / Advanced / Color Correction), default **Simple**,
+and `kModeGroups` in `OneGrade.cpp` is the table of which sections each mode shows. **Simple is
+the default** (user's call): the busy panel is the problem the feature exists to solve, so
+defaulting to Advanced would have solved it only for people who found the dropdown.
 
 **A SECTION THAT IS DOING SOMETHING IS NEVER HIDDEN**, whatever the mode says — `groupIsActive()`
 forces Range Balance off its latch, a non-default tone-map curve, an active LUT or a non-default
@@ -947,7 +949,9 @@ previous renumber.
 are OFX spec identifiers — `kOfxImageEffectPropColourManagementStyle` and
 `kOfxImageClipPropColourspace` — and the header `ofxColour.h`, because the standard is British. A
 global replace over source needs the BUILD as its check: skipping lines containing `kOfx` still
-broke that `#include`.
+broke that `#include`. **PARAM NAMES ARE NOT USER-FACING** and were reverted: an OFX
+param name is saved in the project, so renaming one is how saved grades break. `probeColour` keeps
+its British identifier while its label reads "Color".
 
 ## Rules earned the hard way on Magic Grade (2026-08-18..24) — read before touching the solve
 
