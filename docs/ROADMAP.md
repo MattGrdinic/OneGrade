@@ -360,6 +360,39 @@ and every future analysis fix hits the same cliff.**
 Shipped OFF, behind `Tunables::skinToneMask` / `--skin-tone-mask=1`; corpus verified byte-identical
 to v1.5.0 with it off.
 
+### 2026-08-24: the ETTR frame, and a branch-ordering bug that makes the floor guard pointless
+
+User: Magic Grade on ETTR footage still gives extreme face contrast by default, correctable only
+by pushing **both** Bias and Face Tone Separation to their maximum — which works but leaves no
+headroom. *"I'd prefer our results of Magic Grade are nearly perfect; here the skin preset requires
+major slider moves to get right, which hurts confidence."*
+
+**What the Bias sweep says.** At bias 0 the solve is `L−0.402 G1.000 g0.961`, subject placed at
+0.123/0.278/0.450 — the targets are MET exactly. At bias +2.0, where the user ends up, the floor
+target has moved 0.125 → **0.245** and the grade becomes `L+0.110 g0.452`. So the disagreement is
+with the target, not with the solve's ability to reach it. **Below bias −0.30 Lift saturates at
+−0.500 and nothing changes for the remaining 85% of the slider's travel.**
+
+**Three hypotheses tested and killed, all by measurement:**
+
+| tried | result |
+|---|---|
+| the frame ceiling is forcing Gain up | **No** — `br 2` at every ceiling from 0.968 to 0.800, achieved highlight 0.687, never binding |
+| gamma is frozen in branch 2, so give it a bounded leash | **Barely** — subject spread 0.327 → 0.312 at leash 0.35, Lift unmoved at −0.41, declines at 0.5. Reverted. |
+| the frame-floor guard should stop the crushing | **Fires and does nothing** — `br 6` at floorMin 0.060–0.100, Lift still −0.402, shadow separation still 0.000 |
+
+**That last one is a bug, and it explains a long-standing mystery.** `branch |= 4` (the frame-floor
+guard) runs at line 986; `branch |= 2` (ceiling-gives-way) runs at line 1008 **and re-solves `lf`
+against `subjFloor`**, discarding whatever the guard just set. Whenever both fire — which is
+precisely the hard frames — the shadow protection is silently overwritten. This is why
+`frameFloorMin` has looked inert at every value anyone has ever swept, and why re-anchoring it on a
+population statistic changed nothing either: the anchor was never the problem, the ordering is.
+
+**Next step, and it is small:** make branch 2 respect the floor guard rather than undo it — either
+re-apply the floor constraint after the ceiling fallback, or fold the guard into branch 2's 2x2 so
+Lift is solved against `max(subjFloor, floor-that-protects-the-frame)`. On the ETTR frame the
+symptom to watch is shadow separation, currently **0.000** with 11.2% of the frame crushed.
+
 ### The work, in order
 
 0. **Make `highlight blown` survivable.** It is a cliff with a bad landing. Options: judge blownness
