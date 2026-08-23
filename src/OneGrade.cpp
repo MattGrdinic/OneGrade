@@ -442,6 +442,7 @@ public:
     virtual void render(const OFX::RenderArguments& p_Args);
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName);
     void setEnabledness();
+    bool groupIsActive(int idx);        // is this section changing the picture right now?
     void syncGradeMirrors();            // push Lift/Gamma/Gain out to their second faces
     bool lutSelected();         // does a LUT resolve behind the current LUT Mode? (Mix-independent)
     bool ensureLutLoaded();     // ...and is it actually in memory? Solves need the pixels.
@@ -631,6 +632,11 @@ private:
     OFX::DoubleParam*  m_GainMirror;
     OFX::DoubleParam*  m_ToneSep;
     OFX::DoubleParam*  m_ToneSepDir;
+    // UI MODE. Group handles are fetched once: setEnabledness() runs constantly and a host call
+    // per group per invocation would be a real cost for a cosmetic feature.
+    OFX::ChoiceParam*  m_UiMode;
+    OFX::StringParam*  m_ModeNote;
+    OFX::GroupParam*   m_Groups[12];   // in panel order; see kModeGroups
     OFX::StringParam*  m_MagicNote;
     OFX::StringParam*  m_MagicWhy;    // the reasoning, in a sentence
     OFX::BooleanParam* m_ShowAnalysis;
@@ -768,6 +774,14 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_GainMirror   = fetchDoubleParam("gainMirror");
     m_ToneSep      = fetchDoubleParam("toneSep");
     m_ToneSepDir   = fetchDoubleParam("toneSepDir");
+    m_UiMode       = fetchChoiceParam("uiMode");
+    m_ModeNote     = fetchStringParam("modeNote");
+    {
+        static const char* kNames[12] = { "gPreset","gMagic","gAuto","gInput","gBalance",
+                                          "gExposure","gRange","gTone","gLut","gTrim",
+                                          "gOutput","gHelp" };
+        for (int i = 0; i < 12; ++i) m_Groups[i] = fetchGroupParam(kNames[i]);
+    }
     m_MagicNote    = fetchStringParam("magicNote");
     m_MagicWhy     = fetchStringParam("magicWhy");
     m_BiasArmed    = fetchBooleanParam("biasArmed");
@@ -2640,9 +2654,78 @@ void OneGrade::syncGradeMirrors()
     sync(m_RawExpMirror, m_RawExp);
 }
 
+// WHICH SECTIONS EACH MODE SHOWS. Index order matches m_Groups.
+//   0 gPreset 1 gMagic 2 gAuto 3 gInput 4 gBalance 5 gExposure
+//   6 gRange  7 gTone  8 gLut  9 gTrim 10 gOutput 11 gHelp
+static const bool kModeGroups[3][12] = {
+    // Simple: press the button, adjust the result, deliver. No transforms, no qualifier, no LUTs.
+    { true,  true,  false, false, false, true,  false, false, false, false, true,  true  },
+    // Advanced: everything. The default, so a project made before this feature is unchanged.
+    { true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true  },
+    // Colour Correction: the manual path. No Magic/Auto, no Range Balance, no tone map.
+    { true,  false, false, true,  true,  true,  false, false, true,  true,  true,  true  },
+};
+
+// A SECTION THAT IS DOING SOMETHING IS NEVER HIDDEN, whatever the mode says.
+//
+// Hiding a stage that is changing the picture is the silent-override bug this project has now
+// fixed three times -- the LUT encode override, the CUDA fallback, the Windows LUT directory. A
+// user who cannot see Range Balance cannot understand why their highlights are held, and Mode is
+// a convenience, so it loses every argument against comprehensibility.
+bool OneGrade::groupIsActive(int idx)
+{
+    switch (idx) {
+        case 6: {   // Range Balance -- off entirely at latch 0
+            double v = 0.0; m_RangeLatch->getValue(v); return v > 0.0;
+        }
+        case 7: {   // Highlight Tone Map -- on by default, so only a NON-default curve counts
+            double k = 0.0, w = 0.0; bool on = false;
+            m_ToneMap->getValue(on); m_ToneMapKnee->getValue(k); m_ToneMapWhite->getValue(w);
+            return !on || std::fabs(k - 0.40) > 1e-4 || std::fabs(w - 3.0) > 1e-4;
+        }
+        case 8: {   // Look / Film LUT
+            int m = 0; m_LutMode->getValue(m); return m != 0;
+        }
+        case 3: {   // Input Transform -- a non-default camera is load-bearing
+            int c = 0; m_Camera->getValue(c); return c != 11;
+        }
+        default: return false;
+    }
+}
+
 void OneGrade::setEnabledness()
 {
     syncGradeMirrors();
+
+    // MODE. Hides whole sections; it never changes a value, so switching mode cannot alter the
+    // render. getIsOpen() is read back into the note because OFX has no runtime setOpen() -- if
+    // Resolve reports it truthfully, "remember my layout" becomes possible later; if it returns a
+    // constant, that idea is dead and this line is how we find out.
+    {
+        int mode = 1; m_UiMode->getValue(mode);
+        if (mode < 0 || mode > 2) mode = 1;
+        int hidden = 0, kept = 0;
+        for (int i = 0; i < 12; ++i) {
+            if (!m_Groups[i]) continue;
+            const bool active = groupIsActive(i);
+            const bool show   = kModeGroups[mode][i] || active;
+            m_Groups[i]->setIsSecret(!show);
+            if (!show) ++hidden;
+            else if (!kModeGroups[mode][i] && active) ++kept;
+        }
+        char mn[96];
+        if (mode == 1)      snprintf(mn, sizeof mn, "Advanced - all sections shown");
+        else if (kept)      snprintf(mn, sizeof mn, "%d hidden, %d kept (in use)", hidden, kept);
+        else                snprintf(mn, sizeof mn, "%d sections hidden", hidden);
+        // The probe: two groups' reported open state, appended for the one-time test.
+        if (m_Groups[6] && m_Groups[10]) {
+            char probe[40];
+            snprintf(probe, sizeof probe, "  [open %d/%d]",
+                     m_Groups[6]->getIsOpen() ? 1 : 0, m_Groups[10]->getIsOpen() ? 1 : 0);
+            strncat(mn, probe, sizeof mn - strlen(mn) - 1);
+        }
+        m_ModeNote->setValue(mn);
+    }
 
     int role = 0, mode = 0;
     m_NodeRole->getValue(role);
@@ -3103,6 +3186,7 @@ void OneGrade::changedParam(const OFX::InstanceChangedArgs& p_Args, const std::s
         m_BiasMirror->setValue(m_AutoBias->getValue());
         applyBias();
     }
+    else if (p_ParamName == "uiMode") setEnabledness();
     else if (p_ParamName == "showAnalysis") setEnabledness();
     // Only on a real user edit — project load / plugin edits must not re-stamp the preset
     // over values the user has since tweaked.
@@ -3718,6 +3802,34 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // This is the one call that decides what a colorist sees when they drop the node on a clip.
 
     // ---- 0. Role + Preset ----
+    // ---- MODE, above everything ----
+    //
+    // OFX HAS NO RUNTIME setOpen(). GroupParam exposes getIsOpen() and nothing to set it, so a
+    // plugin cannot collapse or expand a section while running, and "remember which sections I
+    // opened" is not buildable on that alone. What IS available at runtime is setIsSecret, which
+    // this plugin already uses for the analysis UI and which Resolve is known to honour on params.
+    //
+    // So Mode HIDES sections rather than collapsing them, which is also the better answer for the
+    // problem it solves: a Simple panel with four sections beats one with twelve collapsed.
+    {
+        ChoiceParamDescriptor* um = p_Desc.defineChoiceParam("uiMode");
+        um->setLabels("Mode", "Mode", "Mode");
+        um->setHint("How much of the panel to show. It only changes what is VISIBLE - no mode alters a value or the render, and a section that is actively changing the picture is never hidden whatever the mode says, so you cannot lose a look behind a dropdown. Simple is the button and the controls you adjust it with. Advanced is everything, and is the default. Colour Correction is the manual path - transforms, balance, exposure, LUT and trim - with the automatic and experimental stages out of the way.");
+        um->appendOption("Simple");
+        um->appendOption("Advanced");
+        um->appendOption("Colour Correction");
+        um->setDefault(1);   // Advanced: a project saved before this feature must look unchanged
+        page->addChild(*um);
+
+        StringParamDescriptor* mn = p_Desc.defineStringParam("modeNote");
+        mn->setLabels("Showing", "Showing", "Showing");
+        mn->setStringType(eStringTypeLabel);
+        mn->setDefault("Advanced - all sections shown");
+        mn->setHint("What the current mode is hiding, and how many sections were kept visible because they are in use despite the mode. Greying alone is only half the truth - the same reason Output Encode carries an 'In effect' line.");
+        mn->setEnabled(false);
+        page->addChild(*mn);
+    }
+
     GroupParamDescriptor* gPreset = p_Desc.defineGroupParam("gPreset");
     gPreset->setLabels("0  Role / Preset", "0  Role / Preset", "0  Role / Preset");
     gPreset->setOpen(false);
