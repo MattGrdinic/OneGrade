@@ -174,6 +174,7 @@ int main(int argc, char** argv)
     tun.subjMid      = argd(argc, argv, "--subj-mid",      tun.subjMid);
     tun.rawExpMax    = argd(argc, argv, "--raw-exp-max",   tun.rawExpMax);
     tun.rawExpMin    = argd(argc, argv, "--raw-exp-min",   tun.rawExpMin);
+    tun.skinToneMask = argd(argc, argv, "--skin-tone-mask", 0.0) != 0.0;
     tun.subjNeutralMid = argd(argc, argv, "--subj-neutral-mid", tun.subjNeutralMid);
     // The SKIN credibility ceiling, so the guard can be walked rather than argued about. It is a
     // proxy for an infeasible mask and the only way to see what it is refusing is to lift it.

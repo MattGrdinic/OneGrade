@@ -499,6 +499,18 @@ int main(int argc, char** argv)
                     reg.push_back(mask[(size_t)my * mw + mx]);
                 }
             }
+            // NARROW `person` TO SKIN, exactly as the plugin does, so this measures the population
+            // the target is applied to. Measuring one thing and grading another is how the shipped
+            // face target came to be 1.8x away from what the corpus said.
+            {
+                std::vector<unsigned char> rgb8(R.size() * 3);
+                for (size_t i = 0; i < R.size(); ++i) {
+                    rgb8[i*3+0] = (unsigned char)(R[i] * 255.f + 0.5f);
+                    rgb8[i*3+1] = (unsigned char)(G[i] * 255.f + 0.5f);
+                    rgb8[i*3+2] = (unsigned char)(B[i] * 255.f + 0.5f);
+                }
+                oga::refine_skin(reg.data(), rgb8.data(), reg.size());
+            }
             const size_t n = R.size();
             if (n < 64) continue;
 

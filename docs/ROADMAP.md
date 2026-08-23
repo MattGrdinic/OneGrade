@@ -322,9 +322,51 @@ that kind of frame. On a wide shot the region is mostly dark clothing, so:
 
 So one confound explains both the bad corpus number and the bad grades.
 
-### The work
+### RESULT, 2026-08-23: the shipped face target is CORRECT, and the corpus now agrees
 
-1. **Narrow `R_SKIN` to actual skin**: person mask ∩ the chromatic skin window the plugin already
+Narrowing the measurement to skin chroma within the `person` region and re-running:
+
+| | n | subjFloor | subjMid |
+|---|---|---|---|
+| corpus, region = `person` | 613 | 0.051 | **0.158** |
+| corpus, region = skin within person | 411 | **0.120** | **0.273** |
+| **shipped, from ONE hand-graded interview** | 1 | **0.125** | **0.278** |
+
+**411 films land within 0.005 of a number measured off a single frame.** Relative spread tightens
+73% -> 44%. The interview target was right the whole time; the corpus could not see it because it
+was averaging wardrobe. That also retires the old note that skin is too inconsistent to have an
+absolute target -- it is not, once "skin" means skin.
+
+**So the target is not the cause of the bad grades.** What was wrong is that a correct FACE target
+was being applied to a CLOTHED-BODY population: close up, `person` is a lit face and it works; wide,
+it is mostly dark clothing, and driving its shadows and midtone to a face's is the "too bright,
+oversaturated" failure.
+
+### ...and fixing that is blocked on the decline, which is the real wall
+
+Two shapes were tried. **Narrowing the region map** is wrong: with skin-only regions the WALLS win
+subject selection on nearly every face shot (SKIN 21% -> BUILT 55%, dark-scene's face 16% -> BUILT
+77%). Selection wants `person`; only the percentiles want skin. **Selecting on `person` and
+measuring on skin** keeps every subject choice identical and is the right shape -- and still
+regresses the corpus: `dark-scene` goes from the validated +2.29 EV rescue (shadow separation
+0.184) to declining outright (0.011), and `00093080` likewise. Both trip `highlight blown`.
+
+**That is the third independent route to the same wall** after box-averaged thumbnails and the
+exposure back-off. Every improvement to the analysis moves the subject percentiles, every move
+pushes some frame past `kFrameBlown`, and the fallback -- Creative alone -- is unusable on exactly
+the frames that most need the grade. **Fix the decline first and these become shippable; leave it
+and every future analysis fix hits the same cliff.**
+
+Shipped OFF, behind `Tunables::skinToneMask` / `--skin-tone-mask=1`; corpus verified byte-identical
+to v1.5.0 with it off.
+
+### The work, in order
+
+0. **Make `highlight blown` survivable.** It is a cliff with a bad landing. Options: judge blownness
+   on a population rather than p99.9 (tried, inert -- those frames are genuinely blown at 2% of
+   frame); accept a blown ceiling when the subject is placed, per the stated priority that "the
+   ceiling gives way to the subject"; or fall back to a partial grade instead of none.
+1. ~~**Narrow `R_SKIN` to actual skin**~~ -- done, and it is `skinToneMask` above: person mask ∩ the chromatic skin window the plugin already
    carries (`S.skin`, hue 0.01–0.11, sat 0.10–0.65). It exists and is used by the heuristic
    classifier; the model path ignores it.
 2. **Apply the same narrowing in `experiments/looks`**, so the corpus measures the population the

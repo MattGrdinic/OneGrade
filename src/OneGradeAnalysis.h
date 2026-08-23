@@ -382,6 +382,43 @@ static inline float region_salience(int r)
 // instead. See magic_decide().
 static inline bool region_protected(int r) { return r == R_SKIN; }
 
+// THE CHROMATIC SKIN WINDOW, in one place. It was written out inline in classify() and nowhere
+// else, which was fine while only the heuristic classifier used it.
+static inline bool skin_chroma(float r, float g, float b)
+{
+    float h, s, v; og::rgb2hsv(r, g, b, h, s, v);
+    return (h >= 0.01f && h <= 0.11f && s >= 0.10f && s <= 0.65f && v >= 0.03f && v <= 1.05f);
+}
+
+// NARROW THE MODEL'S `person` LABEL TO ACTUAL SKIN.
+//
+// ADE20K class 12 is "person" -- whole body, wardrobe and hair -- and in the model path that IS
+// R_SKIN, the region the face tone target is applied to. Those are different populations and the
+// difference is not small: on a close-up, person is essentially a lit face, which is why a target
+// measured on one hand-graded interview works there; on a wide shot the region is mostly dark
+// clothing, and driving ITS shadows and midtone to a face's floor and midtone is the "too bright,
+// oversaturated" failure reported on 2026-08-23.
+//
+// The same confound corrupted the corpus measurement, which is the tell that it is one bug and not
+// two: over 1064 stills SKIN measured floor 0.051 / mid 0.158 against a shipped 0.125 / 0.278,
+// because 613 of those regions were mostly clothes. Measuring one population and grading another.
+//
+// Demoted to R_OTHER rather than dropped, because "not skin" is not "not there" -- the pixels
+// still belong to the frame and still count against coverage. R_OTHER has no tone target, so
+// nothing is guessed about them.
+//
+// Runs on the DISPLAY-referred thumbnail, which is what the window was fitted on and what the
+// segmentation itself is handed.
+static inline void refine_skin(unsigned char* regions, const unsigned char* rgb8, size_t n)
+{
+    if (!regions || !rgb8) return;
+    for (size_t i = 0; i < n; ++i) {
+        if (regions[i] != (unsigned char)R_SKIN) continue;
+        if (!skin_chroma(rgb8[i*3+0] / 255.f, rgb8[i*3+1] / 255.f, rgb8[i*3+2] / 255.f))
+            regions[i] = (unsigned char)R_OTHER;
+    }
+}
+
 struct RegionStat { float cover = 0.f, L = 0.f, a = 0.f, b = 0.f; };
 
 // Is the skin mask worth believing on this frame? A FLOOR ALONE IS NOT ENOUGH, which the
@@ -465,10 +502,7 @@ static inline Extras classify(SampleSet& S, int cam, int enc)
         // Skin mask: the existing chromaticity-only window from probeAnalyze, unchanged.
         // It still cannot tell skin from sand — Extras::skinPct is the tell, and the two
         // skin descriptors are zeroed below when coverage is too low to mean anything.
-        float h, s, v; og::rgb2hsv(r, g, b, h, s, v);
-        if (h >= 0.01f && h <= 0.11f && s >= 0.10f && s <= 0.65f && v >= 0.03f && v <= 1.05f) {
-            S.skin[i] = 1; ++skinN;
-        }
+        if (skin_chroma(r, g, b)) { S.skin[i] = 1; ++skinN; }
 
         // Clustering pool: everything except crushed blacks and blown whites, where a
         // chromaticity carries no information.

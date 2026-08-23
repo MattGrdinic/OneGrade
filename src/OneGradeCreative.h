@@ -173,6 +173,11 @@ struct Tunables {
     // end; nobody had looked at the render. Reachable from the bench with --raw-exp-min.
     double rawExpMin      = 0.0;   // stops; the mirror of rawExpMax, for a shot exposed right
 
+    // Take the face's shadows and midtone from SKIN pixels within the `person` region rather than
+    // from the whole region. Correct by the corpus and currently regressive on footage -- see the
+    // note in pick_tone_samples. --skin-tone-mask=1 on the bench.
+    bool   skinToneMask   = false;
+
     // ---------------------------------------------------------------------------------------
     // PER-SUBJECT TONE TARGETS -- why the solve declined everything that was not a face.
     //
@@ -1203,6 +1208,7 @@ struct TonePick {
     // nor the frame as a whole.
     size_t iSur = 0;
     size_t subjN = 0;                    // how many samples carried the subject label
+    size_t skinN = 0;                    // ...and how many of those were skin by chroma
     bool   ok = false;
 };
 
@@ -1214,13 +1220,32 @@ static inline double tone_luma(float r, float g, float b) { return 0.2126*r + 0.
 static inline double tone_hi(float r, float g, float b)   { return std::max(r, std::max(g, b)); }
 static inline double tone_lo(float r, float g, float b)   { return std::min(r, std::min(g, b)); }
 
+// SELECT ON `person`, MEASURE ON SKIN -- two jobs, and collapsing them breaks one or the other.
+//
+// The model's class 12 is `person`: body, wardrobe and hair. That is the right region for CHOOSING
+// a subject -- a face shot should read as being about the person in it -- and the wrong pixels to
+// take a face's shadows and midtone from, because on a wide shot most of them are clothes.
+//
+// Narrowing the region map itself was tried first and is worse: with skin-only regions the WALLS
+// win subject selection on nearly every face shot in the corpus (SKIN 21% -> BUILT 55%, and
+// dark-scene's face 16% -> BUILT 77%). The subject was correct; only its percentiles were not.
+//
+// So the region stays as the model drew it and the SUBJECT PERCENTILES are taken from the skin
+// pixels within it, tested on the rendered colour the callback already produces. Falls back to the
+// whole region when there is too little skin to rank -- a silhouette or a back-of-head shot has no
+// face to measure, and 32 is the same floor the subject population already uses.
+//
+// This is what the corpus says the target means: narrowed the same way, 411 stills land on
+// floor 0.120 / mid 0.273 against the 0.125 / 0.278 measured from one hand-graded interview.
+// Unnarrowed they land on 0.051 / 0.158, which is a photograph of clothing.
 static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, int subject,
-                                         const std::function<void(size_t, float&, float&, float&)>& at)
+                                         const std::function<void(size_t, float&, float&, float&)>& at,
+                                         bool skinMask = false)
 {
     TonePick p;
     if (!region || n < 64) return p;
 
-    std::vector<std::pair<float,size_t>> subjK, allK, allY, surK, allM;
+    std::vector<std::pair<float,size_t>> subjK, allK, allY, surK, allM, skinK;
     subjK.reserve(n / 4 + 1); allK.reserve(n); allY.reserve(n); surK.reserve(n); allM.reserve(n);
     for (size_t i = 0; i < n; ++i) {
         float r, g, b;
@@ -1228,7 +1253,11 @@ static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, 
         allK.push_back({ (float)tone_hi(r, g, b), i });
         allY.push_back({ (float)tone_luma(r, g, b), i });
         allM.push_back({ (float)tone_lo(r, g, b), i });
-        if ((int)region[i] == subject) subjK.push_back({ (float)tone_luma(r, g, b), i });
+        if ((int)region[i] == subject) {
+            subjK.push_back({ (float)tone_luma(r, g, b), i });
+            if (skinMask && subject == analysis::R_SKIN && analysis::skin_chroma(r, g, b))
+                skinK.push_back({ (float)tone_luma(r, g, b), i });
+        }
         else                           surK.push_back({ (float)tone_luma(r, g, b), i });
     }
     p.subjN = subjK.size();
@@ -1240,7 +1269,23 @@ static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, 
             [](const std::pair<float,size_t>& a, const std::pair<float,size_t>& b) { return a.first < b.first; });
         return v[k].second;
     };
-    p.iLo  = pct(subjK, 0.10); p.iMid = pct(subjK, 0.50); p.iHi = pct(subjK, 0.90);
+    // OFF BY DEFAULT, AND THE CORPUS SAYS IT IS RIGHT ANYWAY -- which is the tension worth
+    // recording rather than resolving in either direction.
+    //
+    // Narrowed this way, 411 corpus stills put a face at floor 0.120 / mid 0.273 against the
+    // 0.125 / 0.278 measured from one hand-graded interview. Unnarrowed, 613 stills say
+    // 0.051 / 0.158, which is a photograph of clothing. The narrowing is what makes the shipped
+    // target and the corpus agree, so it is describing the right population.
+    //
+    // It still regresses the corpus: dark-scene goes from the user's validated +2.29 EV rescue
+    // (shadow separation 0.184) to declining outright (0.011), and 00093080 likewise. Both trip
+    // `highlight blown`. That is the THIRD independent route to the same wall -- box-averaged
+    // thumbnails, the exposure back-off and this all end at the same decline -- and its fallback,
+    // Creative alone, is unusable on the frames that most need help. The blocker is the decline,
+    // not this. See docs/ROADMAP.md 7.
+    std::vector<std::pair<float,size_t>>& tone = (skinK.size() >= 32) ? skinK : subjK;
+    p.skinN = skinK.size();
+    p.iLo  = pct(tone, 0.10); p.iMid = pct(tone, 0.50); p.iHi = pct(tone, 0.90);
     p.iTop = pct(allK,  0.999); p.iBot = pct(allK,  0.001);
     p.iBotY = pct(allY, 0.001);
     // p1 rather than p0.1: this one is meant to speak for a population, so it must sit where there
@@ -1334,7 +1379,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     const TonePick pk = pick_tone_samples(n, S.region.data(), subject,
         [&](size_t i, float& r, float& g, float& b) {
             og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        });
+        }, t.skinToneMask);
     if (!pk.ok) { out.why = "subject too small"; return out; }
     const size_t iLo = pk.iLo, iMid = pk.iMid, iHi = pk.iHi, iTop = pk.iTop, iBot = pk.iBot;
     const size_t iBotY = pk.iBotY, iSur = pk.iSur, iMinP = pk.iMinP;
