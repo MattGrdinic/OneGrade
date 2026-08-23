@@ -91,21 +91,27 @@ static const int kParamN = 34;   // matches P[] in OneGradePipeline.h
 //
 // Fetch is void(int sx, int sy, float& r, float& g, float& b) in TOP-DOWN source coordinates; the
 // caller owns any flip, since OFX images arrive bottom-up and PNGs do not.
-// TAPS DEFAULTS TO 4 -- box-averaged, and therefore resolution-independent, which is the user's
-// stated requirement for Magic Grade (2026-08-23): the same shot must grade the same whether it
-// arrives as a 12K native clip or a 2K proxy.
+// TAPS DEFAULTS TO 1 -- the old point sample, bit for bit -- AND THAT IS NOT THE END STATE.
 //
-// It is not a free change and was not made as one. Point sampling moved ALL 19 corpus frames when
-// it was replaced, several of them a long way, because the segmentation model's observed behaviour
-// on this corpus had been established against point-sampled thumbnails -- every constant fitted
-// against those numbers inherited the aliasing. That re-validation is the work this default
-// commits us to, and it is the right way round: a grade that changes with the export size cannot
-// be validated at all, so the resolution-independent render is the one worth fitting to.
+// Box-averaging (taps=4) is correct and is the user's stated requirement: the same shot must grade
+// the same whether it arrives as a 12K native clip or a 2K proxy. It was made the default on
+// 2026-08-23 and reverted the same day, because it made the plugin unusable rather than merely
+// different.
 //
-// `--thumb-taps=1` on the bench restores the old point sample bit for bit, for A/B against any
-// number recorded before this date.
+// The thumbnail feeds segmentation, segmentation produces the subject mask, and every tone target
+// was fitted against masks the OLD thumbnail produced. On `dark-scene00117737` the mask moved 16%
+// -> 14% by area while the subject's tonal SPREAD halved, 0.429 -> 0.226; placing a subject half as
+// wide at both a 0.125 floor and a 0.278 midtone needs a far harder curve, which blows the frame,
+// which trips the decline. The frame went from the user's validated +2.29 EV rescue to no grade at
+// all. Their verdict on the corpus as a whole: results "so extreme that using the sliders cannot
+// save the image", where before they were a workable default that Bias and Separation could tune.
+//
+// So this ships at 1 until the tone targets are re-derived against box-averaged masks --
+// `docs/ROADMAP.md` 6, which carries the measurement and the list. `--thumb-taps=4` on the bench
+// is the switch, and the acceptance criterion is not a metric: it is whether the sliders can still
+// recover the picture.
 template <class Fetch>
-static inline void build_thumb(int T, int w, int h, const Fetch& at, float* dst, int taps = 4)
+static inline void build_thumb(int T, int w, int h, const Fetch& at, float* dst, int taps = 1)
 {
     if (T <= 0 || w <= 0 || h <= 0 || !dst) return;
     const int kMaxTap = (taps < 1) ? 1 : taps;

@@ -232,7 +232,64 @@ regressions found on 2026-08-18 were invisible in the graded thumbnail and obvio
 
 ---
 
-## 6. Standing items
+## 6. Resolution independence — the refit it actually requires
+
+**The requirement is right and it is not one change.** A Magic Grade must not depend on whether the
+shot arrives as a 12K native clip or a 2K proxy (user, 2026-08-23). The mechanism is built and
+works: `og::analysis::build_thumb()` box-averages the 512x512 the segmentation model reads, shared
+by the plugin and the bench, `--thumb-taps=4` on the bench, **defaulted to 1 (the old point sample)
+because switching it on today made the plugin unusable.**
+
+**Why it is a refit and not a flag.** The thumbnail feeds segmentation, segmentation produces the
+subject mask, and the tone targets were fitted against the masks the OLD thumbnail produced.
+Measured on `dark-scene00117737`:
+
+| | subject | result | **subject tonal spread** |
+|---|---|---|---|
+| `taps=1` | SKIN 16% | solves, +2.29 EV, hi 0.890 | **0.429** |
+| `taps=4` | SKIN 14% | **declines, highlight blown** | **0.226** |
+
+The mask barely moved in area and its tonal spread **halved**. Placing a subject half as wide at
+both a 0.125 floor and a 0.278 midtone needs a far harder curve, which blows the frame, which trips
+the decline. Every fitted constant in the tone solve inherited the aliasing of point-sampled masks.
+
+**The user's verdict on shipping it unrefitted, and it is the bar to clear:** *"previously we would
+get a default look after applying Magic Grade that sometimes worked great, but would usually
+benefit from small adjustments to separation, bias, and for valid shots, face tone. What's happened
+now is we get a result from Magic Grade that's so extreme that using the sliders cannot save the
+image."* **Recoverable-by-slider is the acceptance criterion**, not any metric in the bench.
+
+### What the refit needs
+
+1. **Re-derive the subject tone targets against box-averaged masks.** `subjFloor` 0.125, `subjMid`
+   0.278 and the SKY pair 0.475/0.602 all came from hand-graded frames measured through the old
+   masks. They are the same kind of number as before; they need measuring again, not adjusting.
+2. **Re-check the frame ceiling** (0.890 / 0.968) and `frameFloorMax`/`frameFloorMin` on the same
+   basis.
+3. **Judge on rendered frames, not on the metric table.** See the tone-map section — a change that
+   improved every shadow number produced a washed-out picture, because there was no highlight term.
+   `%blown`/`%blownY` now exist for that reason; they are still not a substitute for looking.
+
+### Two ideas tried on 2026-08-23, both INERT on the corpus, both worth keeping in mind
+
+Neither shipped — they changed no frame at `taps=1`, and inert unvalidated code that activates
+later is exactly how the CUDA fallback and the mis-anchored floor guard happened. Recoverable from
+this branch's history.
+
+- **Back the exposure rescue off instead of declining.** When the rescue blows the highlight, bisect
+  the exposure down to the largest value that is accepted, rather than discarding the whole result.
+  The argument still holds — **declining is only safe when what it falls back to is safe**, and on a
+  2.3-stop-under frame Creative's ungraded picture is not. It did not fire because on those frames
+  *zero* exposure is also rejected, so there is no feasible point to bisect toward. That says the
+  blocker is the target set, not the exposure.
+- **Judge blownness on p98 rather than p99.9.** `kFrameBlown` tests `fHi`, the top one pixel in a
+  thousand, and through a print stock every frame with a window or specular has that at 1.000 --
+  the same `hot` versus `pin` shape a third time. p98 changed no outcome, which means those frames
+  are genuinely blown at 2% of frame and the decline is honest.
+
+---
+
+## 7. Standing items
 
 Carried from `CLAUDE.md`, kept here so there is one place to look:
 
