@@ -191,7 +191,7 @@ int main(int argc, char** argv)
     const bool  noTone = argf(argc, argv, "--no-tone");
     // 1 = the shipped point sample; 4 = box-averaged, which makes the thumbnail
     // resolution-independent and moves every frame. See build_thumb.
-    const int   thumbTaps = (int)argd(argc, argv, "--thumb-taps", 1.0);
+    const int   thumbTaps = (int)argd(argc, argv, "--thumb-taps", 4.0);
     // Which press. Magic Grade offers a different subject each time it is pressed, and until
     // now the bench could only ever see press one -- so a grade the user reached on press two
     // could not be reproduced here at all.

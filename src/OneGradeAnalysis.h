@@ -91,17 +91,21 @@ static const int kParamN = 34;   // matches P[] in OneGradePipeline.h
 //
 // Fetch is void(int sx, int sy, float& r, float& g, float& b) in TOP-DOWN source coordinates; the
 // caller owns any flip, since OFX images arrive bottom-up and PNGs do not.
-// TAPS DEFAULTS TO 1, WHICH IS THE OLD POINT SAMPLE EXACTLY -- and that is a staging decision,
-// not a preference. Box-averaging is the correct resampling and it fixes the resolution
-// dependence, but the segmentation model's behaviour on this corpus was established against
-// point-sampled thumbnails: switching to taps=4 moves ALL 19 frames, and several badly --
-// `00093080` from 0.90% crushed to 54.24%, `dark-scene` losing its shadow separation 0.184 ->
-// 0.011, `large-face` reversing its colour move. Every validated grade would need re-checking.
+// TAPS DEFAULTS TO 4 -- box-averaged, and therefore resolution-independent, which is the user's
+// stated requirement for Magic Grade (2026-08-23): the same shot must grade the same whether it
+// arrives as a 12K native clip or a 2K proxy.
 //
-// So the fix exists, is one argument away (`--thumb-taps` on the bench), and does not ship until
-// somebody has looked at 19 rendered frames. taps=1 reproduces the previous output bit for bit.
+// It is not a free change and was not made as one. Point sampling moved ALL 19 corpus frames when
+// it was replaced, several of them a long way, because the segmentation model's observed behaviour
+// on this corpus had been established against point-sampled thumbnails -- every constant fitted
+// against those numbers inherited the aliasing. That re-validation is the work this default
+// commits us to, and it is the right way round: a grade that changes with the export size cannot
+// be validated at all, so the resolution-independent render is the one worth fitting to.
+//
+// `--thumb-taps=1` on the bench restores the old point sample bit for bit, for A/B against any
+// number recorded before this date.
 template <class Fetch>
-static inline void build_thumb(int T, int w, int h, const Fetch& at, float* dst, int taps = 1)
+static inline void build_thumb(int T, int w, int h, const Fetch& at, float* dst, int taps = 4)
 {
     if (T <= 0 || w <= 0 || h <= 0 || !dst) return;
     const int kMaxTap = (taps < 1) ? 1 : taps;
