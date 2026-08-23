@@ -2698,9 +2698,19 @@ void OneGrade::setEnabledness()
     syncGradeMirrors();
 
     // MODE. Hides whole sections; it never changes a value, so switching mode cannot alter the
-    // render. getIsOpen() is read back into the note because OFX has no runtime setOpen() -- if
-    // Resolve reports it truthfully, "remember my layout" becomes possible later; if it returns a
-    // constant, that idea is dead and this line is how we find out.
+    // render.
+    //
+    // WHY HIDING RATHER THAN COLLAPSING, and why "remember which sections I opened" is not
+    // buildable: OFX has no runtime setOpen(). GroupParam exposes getIsOpen() and no setter, so a
+    // plugin cannot expand or collapse a section while running.
+    //
+    // AND RESOLVE DOES NOT REPORT THE LIVE STATE EITHER -- measured 2026-08-25, not assumed. A
+    // probe printed getIsOpen() for two groups into the note below; the user opened Range Balance,
+    // changed a value, opened Output, and the readout never moved from `0/1`. That pair is exactly
+    // what describeInContext set (gRange closed, gOut open), so the call returns the DESCRIBE-TIME
+    // default and never learns anything. Persisting the user's layout would need a value the host
+    // will not give us. Second instance of Resolve exposing an OFX facility that does nothing,
+    // after overlays -- see the RESOLVE NEVER DRAWS OFX OVERLAYS note.
     {
         int mode = 1; m_UiMode->getValue(mode);
         if (mode < 0 || mode > 2) mode = 1;
@@ -2717,13 +2727,6 @@ void OneGrade::setEnabledness()
         if (mode == 1)      snprintf(mn, sizeof mn, "Advanced - all sections shown");
         else if (kept)      snprintf(mn, sizeof mn, "%d hidden, %d kept (in use)", hidden, kept);
         else                snprintf(mn, sizeof mn, "%d sections hidden", hidden);
-        // The probe: two groups' reported open state, appended for the one-time test.
-        if (m_Groups[6] && m_Groups[10]) {
-            char probe[40];
-            snprintf(probe, sizeof probe, "  [open %d/%d]",
-                     m_Groups[6]->getIsOpen() ? 1 : 0, m_Groups[10]->getIsOpen() ? 1 : 0);
-            strncat(mn, probe, sizeof mn - strlen(mn) - 1);
-        }
         m_ModeNote->setValue(mn);
     }
 

@@ -911,6 +911,44 @@ subject floor (0.125) and midtone (0.278) sit below any fitted knee and are fine
 target (0.968) now means something different** and wants re-deriving. Full write-up + tables:
 `docs/ROADMAP.md`.
 
+## Panel layout — what OFX and Resolve actually allow (measured 2026-08-25)
+
+**THERE IS NO RUNTIME `setOpen()`.** `GroupParam` exposes `getIsOpen()` and no setter; `setOpen()`
+lives only on `GroupParamDescriptor`, i.e. describe time. A plugin cannot collapse or expand a
+section while running, and no event fires when the user twirls one.
+
+**AND `getIsOpen()` DOES NOT REPORT THE LIVE STATE IN RESOLVE.** A probe printed it for two groups
+into a panel label; the user opened Range Balance, changed a value, opened Output, and the readout
+never moved from `0/1` — exactly the pair `describeInContext` had set (gRange closed, gOut open).
+The call returns the **describe-time default** and never learns anything. So "remember which
+sections the user opened" is not buildable: we can neither set the state nor read it.
+**Second instance of Resolve exposing an OFX facility that does nothing, after overlays.**
+
+**What DOES work at runtime:** `setIsSecret()` (hide/show, including whole groups — validated),
+`setEnabled()` (grey out), and `setValue()` on an `eStringTypeLabel` param (live status text).
+Those three are the entire toolkit for a dynamic panel here.
+
+**Hence the Mode selector hides sections rather than collapsing them** — which is the better answer
+anyway: a Simple panel with four sections beats one with twelve collapsed. `uiMode` is a choice
+param (Simple / Advanced / Color Correction), default **Advanced** so older projects are unchanged,
+and `kModeGroups` in `OneGrade.cpp` is the table of which sections each mode shows.
+
+**A SECTION THAT IS DOING SOMETHING IS NEVER HIDDEN**, whatever the mode says — `groupIsActive()`
+forces Range Balance off its latch, a non-default tone-map curve, an active LUT or a non-default
+camera to stay visible, and the note says how many were kept. Hiding a stage that is changing the
+picture is the silent-override bug this project has already fixed three times.
+
+**Section numbers were removed (2026-08-25)** — they implied a working order that stopped being
+true once the panel was reorganised around the button. Don't reintroduce them; name sections in
+prose instead. Four user-facing hints referred to "group 4" and were already stale from the
+previous renumber.
+
+**Spelling is American throughout the UI and docs** (2026-08-25, user's call). The two exceptions
+are OFX spec identifiers — `kOfxImageEffectPropColourManagementStyle` and
+`kOfxImageClipPropColourspace` — and the header `ofxColour.h`, because the standard is British. A
+global replace over source needs the BUILD as its check: skipping lines containing `kOfx` still
+broke that `#include`.
+
 ## Rules earned the hard way on Magic Grade (2026-08-18..24) — read before touching the solve
 
 **1. LOOK AT THE RENDER. The bench writes graded PNGs so they can be opened.** Two "fixes" were
