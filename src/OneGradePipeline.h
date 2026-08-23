@@ -119,7 +119,7 @@ static inline void XYZ_to_709(const float v[3], float o[3])
 }
 
 // ---------- RAW-style white balance (mirrors the Camera RAW tab's Temp control) ----------
-// Correlated colour temperature (Kelvin) -> CIE xy on the Planckian locus (Kim et al. 2002).
+// Correlated color temperature (Kelvin) -> CIE xy on the Planckian locus (Kim et al. 2002).
 static inline void cct_to_xy(float T, float& x, float& y)
 {
     float t1 = 1.0f/T, t2 = t1*t1, t3 = t2*t1;
@@ -331,7 +331,7 @@ static inline void apply_trim(float postExp, float postCon, float& r, float& g, 
 // no change to how the three kernels mirror it. Anything that needed neighbouring pixels -- real
 // local tone mapping, a spatial blur on the mask -- would not.
 //
-// Matches Resolve's Luminance qualifier, on its 0..100 scale, so the four numbers a colourist
+// Matches Resolve's Luminance qualifier, on its 0..100 scale, so the four numbers a colorist
 // reads off that panel can be typed straight in: Low / High with L.Soft / H.Soft widening the
 // ramp either side. Returns 1 inside the window and 0 outside.
 //

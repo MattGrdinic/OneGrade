@@ -98,7 +98,7 @@ Validated three ways:
 | log stills vs their graded output | strongly distinct | **0.85 → DISTINCT** ✓ |
 
 If real looks come back **overlapping on every axis**, that is an argument for more *axes* — the
-colour/separation triple, or a different print stock per look — not for more stills.
+color/separation triple, or a different print stock per look — not for more stills.
 
 ## A still only counts where the plugin would have graded to it
 
@@ -172,7 +172,7 @@ films each estimated from ~30 frames rather than 30 lone frames. It reuses every
 the fetcher changes. Cost is real — roughly 300–900 requests per look — so rate limits matter.
 
 If that still overlaps, the conclusion is that a look is not a tone target and is carried by the
-print stock / colour transform instead, which is a different feature.
+print stock / color transform instead, which is a different feature.
 
 ### What the pass DID produce
 
@@ -226,9 +226,9 @@ is a picture of ordinary output rather than of bias sweeps:
 Every chroma effect collapses. `hiRel` vanishes entirely. The mechanism is in the coverage row:
 film puts **12.7%** of the frame inside the 0.02-0.10 luma band against OneGrade's **4.2%**. The
 percentile measure was reading *a film frame's darkest tenth is much darker* -- a tone difference
--- and reporting it as colour.
+-- and reporting it as color.
 
-**So the shadow-colour hypothesis is dead**, killed in an hour rather than after building a colour
+**So the shadow-color hypothesis is dead**, killed in an hour rather than after building a color
 feature on it. What survives is tonal and untested: film commits ~3x more of the frame to deep
 shadow and uses less of the range (`spread` 0.431 vs 0.578, effect 0.30).
 
@@ -254,8 +254,8 @@ Two readings remain open and they want different responses:
    ordinary use is the blocker on this whole line.**
 2. **`loC` has a confound that would change the fix.** Film frames crush to `frameFloor 0.000`
    almost universally, and a pixel at zero has no chroma to measure. So low `loC` may be reporting
-   *film crushes its blacks* rather than *film neutralises shadow colour*. Those are different
-   claims: the first is a tone control, the second is a colour one. Distinguishing them means
+   *film crushes its blacks* rather than *film neutralises shadow color*. Those are different
+   claims: the first is a tone control, the second is a color one. Distinguishing them means
    measuring chroma at matched luminance rather than at matched percentile — the same shape as the
    `hot` versus `pin` distinction, where a threshold on the wrong quantity described the filter
    instead of the footage.

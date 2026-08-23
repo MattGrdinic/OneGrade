@@ -109,7 +109,7 @@ def _decide_for(subj, rest):
     db = subj["b"] - sc["b"]
     if abs(db) < 0.5:
         # No lean to enhance. Push away from wherever the scene sits, so the frame still gains a
-        # colour relationship rather than the press doing nothing.
+        # color relationship rather than the press doing nothing.
         db = -sc["b"] if abs(sc["b"]) > 0.5 else 1.0
 
     if subj["label"] in PROTECTED:

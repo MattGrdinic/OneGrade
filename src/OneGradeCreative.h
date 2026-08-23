@@ -406,7 +406,7 @@ static inline void creative_preset(float P[analysis::kParamN])
     // thrown away one line later.
     //
     // Third instance of THIS EXACT LANDMINE: the note above solve_black_px records the same
-    // function erasing the Magic colour move, differently on each side of the plugin/bench split.
+    // function erasing the Magic color move, differently on each side of the plugin/bench split.
     // The array-wide stamp is the hazard; leaving scene-referred parameters out of it is the fix.
     // Callers wanting a full neutral start already have analysis::neutral_params().
 }
@@ -479,14 +479,14 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
 // LUT to the scalar solve only moved 46% to 42%, which is the tell that the error is chromatic
 // rather than tonal: the neutral axis simply is not where those pixels are.
 //
-// So the darkest samples are carried through in colour. Cheap because only the bottom slice
+// So the darkest samples are carried through in color. Cheap because only the bottom slice
 // matters -- a few thousand triples through a bisection, against a solve that already renders
 // 200k samples once.
 // The black point alone, on real pixels, LEAVING EVERY OTHER PARAMETER ALONE.
 //
 // Separate from solve_creative_px because that one begins with creative_preset(), which rewrites
 // the whole array -- including Gain Temp and Offset Temp. Re-solving the floor after the Magic
-// colour move therefore erased the colour move, and it did so DIFFERENTLY on each side: the bench
+// color move therefore erased the color move, and it did so DIFFERENTLY on each side: the bench
 // rendered the reset array, so its picture lost the move entirely, while the plugin copied only
 // Lift and Gain back into params that still held it. Two implementations, one bug, two different
 // wrong answers -- which is exactly why they stopped matching on one frame.
@@ -504,7 +504,7 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
 // it makes the picture worse while the number improves.
 //
 // What survives from that work and is worth keeping: solving on real pixels rather than a grey
-// scalar, so the Magic colour move is accounted for. Pre-LUT that costs nothing, since the grade
+// scalar, so the Magic color move is accounted for. Pre-LUT that costs nothing, since the grade
 // curve is per-channel and monotonic; it earns its keep only because Offset and Gain Temp move
 // the channels after the floor is placed.
 static inline void solve_black_px(const analysis::SampleSet& S, int cam, int enc,
@@ -614,7 +614,7 @@ static inline double solve_magic_base(const analysis::SampleSet& S, int cam, int
     double base = 0.0;
     if (std::fabs(grip) > 1e-4)
         base = c.sign * t.magicUnit * (double)step / std::fabs((double)grip);
-    return std::min(0.35, std::max(-0.35, base));   // a colour cast, not a transform
+    return std::min(0.35, std::max(-0.35, base));   // a color cast, not a transform
 }
 
 // ---------------------------------------------------------------------------------------
@@ -629,7 +629,7 @@ struct WhiteBalance {
     float  b0     = 0.f;   // the reference's warm/cool error before correction
     // WHICH decline, not just that it declined. "No reference" is a sunset with no neutral
     // surface in it; "not neutral" is the reference itself looking wrong; "unreachable" is a cast
-    // no sane colour temperature fixes. They call for completely different responses and a bare
+    // no sane color temperature fixes. They call for completely different responses and a bare
     // false makes them indistinguishable -- which cost an hour of looking at the wrong check.
     const char* why = "";
     bool   ok     = false;
@@ -644,7 +644,7 @@ struct WhiteBalance {
 // an image nobody was looking at. Fourth instance in one day of a number computed in one space
 // and judged in another.
 //
-// The print stock's own colour character is deliberately NOT what this corrects: it is a look and
+// The print stock's own color character is deliberately NOT what this corrects: it is a look and
 // it belongs. What it corrects is a surface that should read neutral and does not, measured where
 // the eye reads it.
 static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSrc,
@@ -707,7 +707,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
             // AGAINST THE STOCK'S OWN NEUTRAL, not against zero.
             //
             // Targeting b* = 0 post-LUT asks Scene White Balance to cancel the print stock, and
-            // the stock's colour character is the look -- it belongs. On one frame with 63% good
+            // the stock's color character is the look -- it belongs. On one frame with 63% good
             // reference no temperature between 2500 K and 15000 K could reach zero, and the
             // estimator reported "unreachable" for a shot that needed almost no correction.
             //
@@ -723,7 +723,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
             //
             // The user's call, and the better shape: start as neutral as the controls can get and
             // let Separation dial the blue back in or out deliberately. Magic Grade's asset is the
-            // subject's tone; colour is offered, not imposed.
+            // subject's tone; color is offered, not imposed.
             float r, g, b;
             shade(P, i, r, g, b);
             float L, a, bb; analysis::display_to_Lab(1, r, g, b, L, a, bb);
@@ -742,7 +742,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
     //
     // Fitted on eight frames -- city 6.4, car interior 7.5, grass-as-wall 11.7 -- so 9 separates
     // them, and the margin is thin. The failure it buys is a false negative: a genuinely neutral
-    // wall under a STRONG cast also reads as strongly coloured and gets declined, which is
+    // wall under a STRONG cast also reads as strongly colored and gets declined, which is
     // exactly the case worth correcting. That is the safe direction to fail in, since declining
     // changes nothing and the checkbox is optional, but if real interiors start being refused
     // this number is the reason.
@@ -1265,7 +1265,7 @@ static inline double tone_lo(float r, float g, float b)   { return std::min(r, s
 // dark-scene's face 16% -> BUILT 77%). The subject was correct; only its percentiles were not.
 //
 // So the region stays as the model drew it and the SUBJECT PERCENTILES are taken from the skin
-// pixels within it, tested on the rendered colour the callback already produces. Falls back to the
+// pixels within it, tested on the rendered color the callback already produces. Falls back to the
 // whole region when there is too little skin to rank -- a silhouette or a back-of-head shot has no
 // face to measure, and 32 is the same floor the subject population already uses.
 //
@@ -1562,7 +1562,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
 //
 // Every individual solve was already shared, and it was not enough. What stayed duplicated was
 // the ORDER, written out once in applyMagicGrade and once in bench.cpp, and that is what drifted:
-// the bench gained a re-solve after the colour move and the plugin did not, so the two produced
+// the bench gained a re-solve after the color move and the plugin did not, so the two produced
 // different pictures from the same still -- the one failure an offline harness exists to prevent.
 //
 // Extracting the steps fixed the arithmetic and left the choreography to be kept in step by hand.
@@ -1588,7 +1588,7 @@ struct MagicResult {
                                   0.f,0.f,0.f, 0.5f,0.5f, 0.f,0.25f,0.f, 0.40f,0.0f};
     // The grade as Creative left it, BEFORE a subject was chosen. Kept so switching subjects
     // starts from the same place every time -- re-running from the graded result would compound
-    // one subject's colour move onto the next, and the answer would depend on the order they
+    // one subject's color move onto the next, and the answer would depend on the order they
     // were tried in.
     float Pcreative[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
                                   0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f, 0.f,1.f,1.f,
@@ -1596,14 +1596,14 @@ struct MagicResult {
     analysis::MagicChoice choice;
     MagicTone     tone;
     WhiteBalance  wb;
-    double        magicBase = 0.0;   // the colour move before Separation scales it
+    double        magicBase = 0.0;   // the color move before Separation scales it
     bool          wbRan = false;
     bool          ok = false;
 };
 
 // thumbSrc: 512*512*3 camera log, top-down. S must already hold the frame's samples; its region
-// labels are filled in here. `click` cycles the subject, `sep` scales the colour move.
-// STEPS 4-7, GIVEN A SEGMENTATION THAT ALREADY EXISTS: decide, tone, colour, re-solve.
+// labels are filled in here. `click` cycles the subject, `sep` scales the color move.
+// STEPS 4-7, GIVEN A SEGMENTATION THAT ALREADY EXISTS: decide, tone, color, re-solve.
 //
 // Split out of solve_magic() so the choice of subject can be revisited for free. Segmentation is
 // the whole cost of the button (~100 ms of inference); everything here is arithmetic over a
@@ -1611,7 +1611,7 @@ struct MagicResult {
 // nothing next to offering one.
 //
 // `creativeP` is the grade as Creative left it -- BEFORE any subject was chosen. Re-running from
-// the graded result instead would compound one subject's colour move onto the next, so switching
+// the graded result instead would compound one subject's color move onto the next, so switching
 // options would depend on which order they were tried in.
 static inline MagicResult solve_magic_from_regions(analysis::SampleSet& S,
                                                    const float creativeP[analysis::kParamN],

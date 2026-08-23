@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "OneGrade.h"
-#include "ofxColour.h"   // OFX 1.5 colour management properties (read-only probe)
+#include "ofxColour.h"   // OFX 1.5 color management properties (read-only probe)
 #include "OneGradePipeline.h"
 #include "OneGradeAnalysis.h"   // CPU-only scene descriptors + control Jacobian (NOT mirrored)
 #include "OneGradeSegment.h"    // ncnn semantic segmentation for Magic Grade's regions
@@ -63,7 +63,7 @@
 //
 // *** CURRENTLY TRUE, AND MUST GO BACK TO FALSE BEFORE THIS SHIPS. ***
 // Flipped on the scene-descriptor branch because that work exists to be READ on footage: the
-// Colour / Regions / Response rows are how a colour rule for Magic Grade gets fitted, the same
+// Color / Regions / Response rows are how a color rule for Magic Grade gets fitted, the same
 // way the Gain and Rolloff rows produced their fits, and a measurement nobody can see is worth
 // nothing. Revert to false when merging into the release branch. One character, no other
 // consequence — the params are unaffected either way. See docs/AUTO-GRADE.md.
@@ -453,7 +453,7 @@ public:
     void applyAutoGrade(double p_Time);      // measure, then set the film look + Gain from key
     void applyAutoGradeClean(double p_Time); // measure, then contain the range with no LUT
     void applyBias();                   // offset the grade by Bias, relative to the anchor
-    void applyMagicGrade(double p_Time); // Creative, then one classifier-chosen colour move
+    void applyMagicGrade(double p_Time); // Creative, then one classifier-chosen color move
     void applySeparation();             // rescale the stored magic move without re-deciding
     void armBias(bool reset = false);   // store the current grade as Bias's zero point
     void armToneTargets();              // ...and the conditions it currently meets
@@ -483,7 +483,7 @@ public:
     double m_LastD99 = 0.0;
     bool   m_HaveKey = false;
     // Scene descriptors and the control Jacobian from the last analyse. Cached for the same
-    // reason the percentiles are: a colour heuristic has to ask "how much Offset Temp buys me
+    // reason the percentiles are: a color heuristic has to ask "how much Offset Temp buys me
     // 3 units of b* ON THIS SHOT", and re-measuring per question would make it unusable.
     // Instance state, so it goes inert after a project reload exactly like the Bias anchor did
     // before it was made persistent — deliberately inert rather than acting on a stale frame.
@@ -663,12 +663,12 @@ private:
     OFX::DoubleParam* m_CreativeLow;   // where Creative places its black point (pre-LUT)
     OFX::StringParam* m_ProbePeak;
     OFX::StringParam* m_ProbeApplied;
-    OFX::StringParam* m_ProbeColour;    // a*/b*/chroma/separation, at NEUTRAL
+    OFX::StringParam* m_ProbeColor;    // a*/b*/chroma/separation, at NEUTRAL
     OFX::StringParam* m_ProbeGraded;    // the same, for the grade actually on the node
-    OFX::StringParam* m_ProbeRegions;   // the two colour populations + the vertical split
+    OFX::StringParam* m_ProbeRegions;   // the two color populations + the vertical split
     OFX::StringParam* m_ProbeResponse;  // what the controls DO on this shot (Jacobian rows)
     OFX::StringParam* m_ProbeDriveB;    // which controls drove the warm/cool change
-    OFX::StringParam* m_ProbeDriveC;    // ...and the colourfulness change
+    OFX::StringParam* m_ProbeDriveC;    // ...and the colorfulness change
     OFX::StringParam* m_ProbeDriveS;    // ...and the warm/cool hue separation
     OFX::StringParam* m_ProbeSepTriple; // the separation triple, neutral -> graded
     OFX::StringParam* m_ProbeTone;      // black / mid / white / overshoot, neutral -> graded
@@ -813,7 +813,7 @@ OneGrade::OneGrade(OfxImageEffectHandle p_Handle)
     m_CreativeLow   = fetchDoubleParam("creativeLow");
     m_ProbePeak    = fetchStringParam("probePeak");
     m_ProbeApplied = fetchStringParam("probeApplied");
-    m_ProbeColour   = fetchStringParam("probeColour");
+    m_ProbeColor   = fetchStringParam("probeColor");
     m_ProbeGraded   = fetchStringParam("probeGraded");
     m_ProbeRegions  = fetchStringParam("probeRegions");
     m_ProbeResponse = fetchStringParam("probeResponse");
@@ -920,8 +920,8 @@ bool OneGrade::ensureLutLoaded()
 // a correct setup would be worse than staying quiet — the same reasoning that stopped Auto
 // Grade from guessing at white balance.
 //
-// It also reports what the host says via the OFX 1.5 colour management API (ofxColour.h,
-// vendored). These properties are read WITHOUT declaring a colour management style: hosts
+// It also reports what the host says via the OFX 1.5 color management API (ofxColor.h,
+// vendored). These properties are read WITHOUT declaring a color management style: hosts
 // that populate them anyway cost us nothing, and declaring support is what could invite
 // Resolve to start converting our input — the one thing that would break the CST. If these
 // come back "(absent)", the next experiment is to declare Basic and retest; that is a
@@ -1022,7 +1022,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
     m_ProbeShape->setValue("");
     m_ProbeSubject->setValue("");
     m_ProbePeak->setValue("");
-    m_ProbeColour->setValue("");
+    m_ProbeColor->setValue("");
     m_ProbeGraded->setValue("");
     m_ProbeRegions->setValue("");
     m_ProbeResponse->setValue("");
@@ -1137,7 +1137,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
         bool anyNonZero = false;
 
         // Scene-descriptor set (OneGradeAnalysis.h). Thinner than the percentile pass because
-        // describe() gets run 27 times to build the Jacobian and the colour statistics are
+        // describe() gets run 27 times to build the Jacobian and the color statistics are
         // means and cluster centroids, which converge far faster than a 0.1st percentile does.
         // Source values only — describe() re-renders them itself for whatever parameters it is
         // asked about, which is exactly what makes it a function of P rather than a snapshot.
@@ -1359,7 +1359,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
         m_ProbeSubject->setValue(m2);
 
         // ---- SCENE DESCRIPTORS + CONTROL JACOBIAN ----------------------------------------
-        // Everything above answers "how is this frame exposed". This answers "what colour is
+        // Everything above answers "how is this frame exposed". This answers "what color is
         // it, and what would each control do about that" — the half that was missing when the
         // user's own sunset grade reached for Offset Temp and no measurement could have asked
         // for it. Costs 27 more passes over a 40k set on top of the 200k already walked, all
@@ -1379,7 +1379,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
             snprintf(m2, sizeof m2, "a*%+.1f b*%+.1f C%.1f sep%.1f",
                      m_LastDesc.v[oga::D_A], m_LastDesc.v[oga::D_B],
                      m_LastDesc.v[oga::D_CHROMA], m_LastDesc.v[oga::D_SEP]);
-            m_ProbeColour->setValue(m2);
+            m_ProbeColor->setValue(m2);
 
             // THE SAME SAMPLES, THE SAME SPACE, THE GRADE THAT IS ACTUALLY ON THE NODE.
             //
@@ -1420,7 +1420,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
                      lutSelected() ? " pre-LUT" : "");
             m_ProbeGraded->setValue(m2);
 
-            // TONE, neutral -> graded. The colour rows above cover half a grade; the city and
+            // TONE, neutral -> graded. The color rows above cover half a grade; the city and
             // car shots were graded almost ENTIRELY on this half -- lift, gamma, gain and
             // contrast, with b* landing within 0.1 of where Creative had it -- and there was no
             // readout for any of it. The numbers were measured all along and simply never shown,
@@ -1481,7 +1481,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
 
             // The row that shows its work: per one natural nudge of each control, how far the
             // warm/cool axis actually moves ON THIS SHOT. Reading it is how the fit for a
-            // colour rule gets found, the same way the gain/rolloff rows produced theirs.
+            // color rule gets found, the same way the gain/rolloff rows produced theirs.
             snprintf(m2, sizeof m2, "b*/step oTmp%+.2f tmp%+.2f raw%+.2f C/dens%+.2f",
                      m_LastJac.at(oga::D_B, 6), m_LastJac.at(oga::D_B, 0),
                      m_LastJac.at(oga::D_B, 11), m_LastJac.at(oga::D_CHROMA, 2));
@@ -1490,7 +1490,7 @@ void OneGrade::probeAnalyze(double p_Time, bool forCreative)
             // fetchImage. Moved rather than copied — SS is dead after this point.
             m_LastSamples = std::move(SS);
         } else {
-            m_ProbeColour->setValue("too few samples for colour analysis");
+            m_ProbeColor->setValue("too few samples for color analysis");
         }
     }
     catch (std::exception& e) {
@@ -2283,7 +2283,7 @@ void OneGrade::applyBias()
     syncGradeMirrors();
 }
 
-// MAGIC GRADE — Creative Grade, then one colour move chosen from what is in the frame.
+// MAGIC GRADE — Creative Grade, then one color move chosen from what is in the frame.
 //
 // The chain is the user's: apply Creative, run the classifier, pick a subject, pick a slider
 // and a direction, render it. The Separation slider then scales that decision. Press the button
@@ -2358,7 +2358,7 @@ void OneGrade::applyMagicGrade(double p_Time)
 {
     // THE ORDER LIVES IN ONE PLACE NOW. Everything from here to the panel notes used to be
     // spelled out twice -- once here and once in the bench -- and it drifted: a re-solve after
-    // the colour move landed in one and not the other, and the two produced different pictures
+    // the color move landed in one and not the other, and the two produced different pictures
     // from the same still. og::grade::solve_magic owns the sequence; this owns the panel.
     //
     // Writing it down exposed a second live divergence: the plugin balanced BEFORE Creative and
@@ -2422,7 +2422,7 @@ void OneGrade::applyMagicGrade(double p_Time)
         tun, cycle, 1.0, wbFirst, segfn);
 
     // What the alternatives are re-run from. Creative's grade, before any subject was chosen, so
-    // switching options cannot compound one subject's colour move onto the next. Instance state:
+    // switching options cannot compound one subject's color move onto the next. Instance state:
     // it dies with the session, which is exactly as long as the segmentation behind it lives.
     for (int k = 0; k < oga::kParamN; ++k) m_MagicBaseP[k] = R.Pcreative[k];
     m_HaveMagicBase = R.ok;
@@ -2562,8 +2562,8 @@ void OneGrade::applyMagicResult(const og::grade::MagicResult& R, const char* src
 
     // RE-ARM BIAS ON THE FINAL GRADE, not the halfway one.
     //
-    // applyAutoGrade arms the anchor, and everything after it -- the tone solve, the colour move,
-    // and the re-solve that follows the colour move -- changes Lift, Gamma and Gain again. So the
+    // applyAutoGrade arms the anchor, and everything after it -- the tone solve, the color move,
+    // and the re-solve that follows the color move -- changes Lift, Gamma and Gain again. So the
     // anchor held values the node had passed THROUGH rather than the ones it ended on, and
     // applyBias's coefficient path computes lift as anchor + bias*0.06: an absolute value, not a
     // nudge. The first touch of the slider therefore snapped the picture back to the intermediate
@@ -2583,7 +2583,7 @@ void OneGrade::applyMagicResult(const og::grade::MagicResult& R, const char* src
     armToneTargets();
 
     // WHY, in the panel, in a sentence. The feature exists to surface a move an inexperienced
-    // colourist would not have considered, and a suggestion with no visible reasoning teaches
+    // colorist would not have considered, and a suggestion with no visible reasoning teaches
     // nothing. It also makes a wrong pick legible rather than mysterious, which matters more
     // here than usual: this tool is fallible by design, so it has to show its working or there
     // is no way to tell a bad guess from a bad tool.
@@ -2662,7 +2662,7 @@ static const bool kModeGroups[3][12] = {
     { true,  true,  false, false, false, true,  false, false, false, false, true,  true  },
     // Advanced: everything. The default, so a project made before this feature is unchanged.
     { true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true  },
-    // Colour Correction: the manual path. No Magic/Auto, no Range Balance, no tone map.
+    // Color Correction: the manual path. No Magic/Auto, no Range Balance, no tone map.
     { true,  false, false, true,  true,  true,  false, false, true,  true,  true,  true  },
 };
 
@@ -2850,7 +2850,7 @@ void OneGrade::setEnabledness()
     m_ProbeShape->setIsSecret(!debug);
     m_ProbeSubject->setIsSecret(!debug);
     m_ProbeStatus->setIsSecret(!debug);
-    m_ProbeColour->setIsSecret(!debug);
+    m_ProbeColor->setIsSecret(!debug);
     m_ProbeGraded->setIsSecret(!debug);
     m_ProbeRegions->setIsSecret(!debug);
     m_ProbeResponse->setIsSecret(!debug);
@@ -3399,7 +3399,7 @@ RenderConfig OneGrade::resolveConfig(double p_Time)
 //
 //   OFF-LATTICE it depends entirely on how smooth the pipeline is between lattice points,
 //   and ours is not smooth everywhere. The output encode HARD-CLIPS out-of-gamut channels
-//   to 0, which puts a discontinuity surface through the middle of the colour cube: on one
+//   to 0, which puts a discontinuity surface through the middle of the color cube: on one
 //   side blue is 0, a hair across it blue is large. Trilinear interpolation cannot follow a
 //   step. Measured on Gen 5 -> Rec.709 2.2, neutral params, 33^3:
 //       grey axis, log 0.10-0.70 .................  4 LSB
@@ -3814,10 +3814,10 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     {
         ChoiceParamDescriptor* um = p_Desc.defineChoiceParam("uiMode");
         um->setLabels("Mode", "Mode", "Mode");
-        um->setHint("How much of the panel to show. It only changes what is VISIBLE - no mode alters a value or the render, and a section that is actively changing the picture is never hidden whatever the mode says, so you cannot lose a look behind a dropdown. Simple is the button and the controls you adjust it with. Advanced is everything, and is the default. Colour Correction is the manual path - transforms, balance, exposure, LUT and trim - with the automatic and experimental stages out of the way.");
+        um->setHint("How much of the panel to show. It only changes what is VISIBLE - no mode alters a value or the render, and a section that is actively changing the picture is never hidden whatever the mode says, so you cannot lose a look behind a dropdown. Simple is the button and the controls you adjust it with. Advanced is everything, and is the default. Color Correction is the manual path - transforms, balance, exposure, LUT and trim - with the automatic and experimental stages out of the way.");
         um->appendOption("Simple");
         um->appendOption("Advanced");
-        um->appendOption("Colour Correction");
+        um->appendOption("Color Correction");
         um->setDefault(1);   // Advanced: a project saved before this feature must look unchanged
         page->addChild(*um);
 
@@ -3831,7 +3831,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     }
 
     GroupParamDescriptor* gPreset = p_Desc.defineGroupParam("gPreset");
-    gPreset->setLabels("0  Role / Preset", "0  Role / Preset", "0  Role / Preset");
+    gPreset->setLabels("Role / Preset", "Role / Preset", "Role / Preset");
     gPreset->setOpen(false);
 
     // Node Role splits the pipeline across Resolve's group grading levels. See
@@ -3878,7 +3878,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // may still change shape. Number it 0 and renumber the rest if it graduates.
     // Magic Grade gets its own section. It is a different KIND of thing from the other two --
     // Base and Creative correct and stylise the whole frame, while this one makes a single
-    // opinionated colour decision about one object in it -- and mixing them in one group made
+    // opinionated color decision about one object in it -- and mixing them in one group made
     // the panel read as four buttons of equal standing.
     GroupParamDescriptor* gMagic = p_Desc.defineGroupParam("gMagic");
     gMagic->setLabels("Magic Grade (experimental)", "Magic Grade", "Magic Grade");
@@ -3889,7 +3889,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     gMagic->setOpen(true);
     {
         // MAGIC GRADE, in its own section. It IS Creative plus one step -- run Creative, then
-        // make a single colour decision from what the classifier found in the frame -- but it is
+        // make a single color decision from what the classifier found in the frame -- but it is
         // a different KIND of thing from the other two. Base and Creative correct and stylise the
         // whole picture; this makes one opinionated claim about one object in it. Grouped with
         // them, the panel read as four buttons of equal standing, which is not what they are.
@@ -3900,7 +3900,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         {
             PushButtonParamDescriptor* mg = p_Desc.definePushButtonParam("magicGrade");
             mg->setLabels("Magic Grade", "Magic Grade", "Magic Grade");
-            mg->setHint("Applies Creative Grade, then looks at what is actually in the frame - sky, water, foliage, a person - decides which of those the shot is about, and makes ONE colour move to set it off against the rest. The move is chosen, not calculated to a target: which slider depends on whether the subject is the bright or the dark part of the frame, and which direction depends on the way it already leans. It does the looking ONCE: the frame fetch, the measurement and the segmentation all happen on this press, and the other subjects it found are listed in Subject below, where switching between them is instant. Pressing again simply redoes the analysis on the current frame. Some shots have nothing to separate - a flat aerial, a macro of leaves - and on those it simply leaves you with Creative Grade and says so.");
+            mg->setHint("Applies Creative Grade, then looks at what is actually in the frame - sky, water, foliage, a person - decides which of those the shot is about, and makes ONE color move to set it off against the rest. The move is chosen, not calculated to a target: which slider depends on whether the subject is the bright or the dark part of the frame, and which direction depends on the way it already leans. It does the looking ONCE: the frame fetch, the measurement and the segmentation all happen on this press, and the other subjects it found are listed in Subject below, where switching between them is instant. Pressing again simply redoes the analysis on the current frame. Some shots have nothing to separate - a flat aerial, a macro of leaves - and on those it simply leaves you with Creative Grade and says so.");
             mg->setParent(*gMagic);
             page->addChild(*mg);
 
@@ -3921,13 +3921,13 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
             BooleanParamDescriptor* wb = p_Desc.defineBooleanParam("wbFirst");
             wb->setLabels("White Balance First", "White Balance First", "White Balance First");
-            wb->setHint("Neutralise the frame's colour cast before Magic Grade looks at it. Magic Grade decides by comparing the subject against the rest of the scene, so a cast the camera introduced gets read as something in the room and pushed further -- balancing first means every difference it acts on is really there. It balances on surfaces that ought to be neutral, walls and floors and pavement, and deliberately ignores sky, water and foliage, which are coloured on purpose; a sunset over water has no neutral surface in it, so on those it leaves the balance alone and says so. Writes an ordinary Scene White Balance value you can drag afterwards.");
+            wb->setHint("Neutralise the frame's color cast before Magic Grade looks at it. Magic Grade decides by comparing the subject against the rest of the scene, so a cast the camera introduced gets read as something in the room and pushed further -- balancing first means every difference it acts on is really there. It balances on surfaces that ought to be neutral, walls and floors and pavement, and deliberately ignores sky, water and foliage, which are colored on purpose; a sunset over water has no neutral surface in it, so on those it leaves the balance alone and says so. Writes an ordinary Scene White Balance value you can drag afterwards.");
             wb->setDefault(false);
             wb->setParent(*gMagic);
             page->addChild(*wb);
 
             page->addChild(*defineSlider(p_Desc, "separation", "Separation",
-                "How far to push the colour move Magic Grade chose. 1.0 is the move as decided, 0 removes it entirely, and past 1 exaggerates it. It rescales the SAME decision rather than making a new one, so dragging it feels like one control getting stronger rather than like pressing the button again. Negative reverses the move, which is occasionally what you want when the automatic direction reads backwards on a particular shot.",
+                "How far to push the color move Magic Grade chose. 1.0 is the move as decided, 0 removes it entirely, and past 1 exaggerates it. It rescales the SAME decision rather than making a new one, so dragging it feels like one control getting stronger rather than like pressing the button again. Negative reverses the move, which is occasionally what you want when the automatic direction reads backwards on a particular shot.",
                 1.0, -2.0, 3.0, 0.01, gMagic));
 
             StringParamDescriptor* mn = p_Desc.defineStringParam("magicNote");
@@ -3967,14 +3967,14 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
             // A SECOND BIAS SLIDER, MIRRORING THE FIRST. OFX has no way to show one parameter
             // in two groups, so the choice is a duplicate that is kept in step or sending the
             // user back up the panel mid-thought. Magic Grade's output is a Creative grade with
-            // one colour move on top, and the first thing anyone reaches for after looking at it
+            // one color move on top, and the first thing anyone reaches for after looking at it
             // is the tonal lean -- so it belongs here as well.
             //
             // Kept in step in changedParam: each writes the other with setValue, which arrives
             // as eChangePluginEdit rather than eChangeUserEdit, so the handlers ignore it and
             // there is no loop. Same value, two places, one source of truth.
             page->addChild(*defineSlider(p_Desc, "autoBiasMirror", "Bias",
-                "The same Bias slider as the one under Base and Creative Grade - the two always hold the same value, and moving either moves both. It is repeated here because Magic Grade produces a Creative grade with a colour move on top, and the tonal lean is the next thing you will want after looking at the result.",
+                "The same Bias slider as the one under Base and Creative Grade - the two always hold the same value, and moving either moves both. It is repeated here because Magic Grade produces a Creative grade with a color move on top, and the tonal lean is the next thing you will want after looking at the result.",
                 0.0, -2.0, 2.0, 0.01, gMagic));
 
             // LABEL ONLY -- the param stays "toneSep", so no saved project notices. Same rule as
@@ -4195,16 +4195,16 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
                   "The same exposure question asked of skin-toned pixels only, plus what share of the frame matched. Frame-median exposure is subject-blind: a dark interior drags the median down and asks for a push that would blow the windows. Where the two keys disagree, the frame median is the wrong one. Note the mask cannot tell skin from sand - a high coverage % on a landscape means it matched the scene, not a face.");
         probeLine("probeApplied", "Applied",
                   "What the Auto Grade button last wrote, and the measurement it came from. Blank until you press it. Analyze Frame never changes anything; only Auto Grade does.");
-        probeLine("probeColour", "Colour",
-                  "The frame's colour, in CIELAB over the mid-tones: a* is green-to-magenta, b* is cool-to-warm, C is overall colourfulness. 'sep' is how far apart the two dominant colour populations sit - a low number on a frame that visibly has two subjects (sky over water, say) means they are sharing a colour and would separate if pushed apart. Lab rather than HSV because b* lines up one-for-one with the Temp controls and a* with the Tint ones, which is what makes the Response row below readable.");
+        probeLine("probeColor", "Color",
+                  "The frame's color, in CIELAB over the mid-tones: a* is green-to-magenta, b* is cool-to-warm, C is overall colorfulness. 'sep' is how far apart the two dominant color populations sit - a low number on a frame that visibly has two subjects (sky over water, say) means they are sharing a color and would separate if pushed apart. Lab rather than HSV because b* lines up one-for-one with the Temp controls and a* with the Tint ones, which is what makes the Response row below readable.");
         probeLine("probeGraded", "Graded",
-                  "The same colour measurements as the row above, but for the grade currently on this node instead of a neutral one - so the two lines together say what your grade DID. Every other row here deliberately measures the ungraded footage, which makes them identical no matter what you set; this is the one that moves. Camera and Output Encode are held the same as the neutral row so the only difference is the sliders. It is measured before the LUT, so with a film stock selected this is the grade underneath the stock rather than the picture on screen - the row says 'pre-LUT' when that is the case.");
+                  "The same color measurements as the row above, but for the grade currently on this node instead of a neutral one - so the two lines together say what your grade DID. Every other row here deliberately measures the ungraded footage, which makes them identical no matter what you set; this is the one that moves. Camera and Output Encode are held the same as the neutral row so the only difference is the sliders. It is measured before the LUT, so with a film stock selected this is the grade underneath the stock rather than the picture on screen - the row says 'pre-LUT' when that is the case.");
         probeLine("probeTone", "Tone",
-                  "The tonal shape of the picture, neutral > graded: the black point (0.1st percentile per channel), the midtone, the white point (99th percentile per channel), and how far the channels run past display white on average. Per channel rather than luma because a channel is what actually clips - on a saturated highlight the three spread far apart while a luma number says everything is fine. This is the half of a grade the colour rows cannot see, and on some shots it is the whole grade.");
+                  "The tonal shape of the picture, neutral > graded: the black point (0.1st percentile per channel), the midtone, the white point (99th percentile per channel), and how far the channels run past display white on average. Per channel rather than luma because a channel is what actually clips - on a saturated highlight the three spread far apart while a luma number says everything is fine. This is the half of a grade the color rows cannot see, and on some shots it is the whole grade.");
         probeLine("probeRegions", "Regions",
-                  "The two dominant colour populations found by clustering the frame, cooler one first: what share of the frame each holds and its hue angle in degrees. Then 'db*', how much warmer the top third of the frame is than the bottom third - a large positive number is the signature of a warm sky over a cooler foreground. Membership is decided once, from the ungraded picture, so these describe the footage rather than the grade currently on it.");
+                  "The two dominant color populations found by clustering the frame, cooler one first: what share of the frame each holds and its hue angle in degrees. Then 'db*', how much warmer the top third of the frame is than the bottom third - a large positive number is the signature of a warm sky over a cooler foreground. Membership is decided once, from the ungraded picture, so these describe the footage rather than the grade currently on it.");
         probeLine("probeDriveB", "Drives b*",
-                  "Which controls actually produced the warm/cool change between a neutral node and the grade currently on it, biggest contributor first. 'act' is the measured change, 'lin' is what the measured response predicted, and the gap between them says how far outside the linear range your grade sits - a big gap means the sliders are being pushed hard enough that their effect is tailing off. This row exists because naming the obvious control by eye does not work: on a real grade colourfulness rose while Density had actually been LOWERED, with Lift, Gain and Offset Temp pushing it up between them.");
+                  "Which controls actually produced the warm/cool change between a neutral node and the grade currently on it, biggest contributor first. 'act' is the measured change, 'lin' is what the measured response predicted, and the gap between them says how far outside the linear range your grade sits - a big gap means the sliders are being pushed hard enough that their effect is tailing off. This row exists because naming the obvious control by eye does not work: on a real grade colorfulness rose while Density had actually been LOWERED, with Lift, Gain and Offset Temp pushing it up between them.");
         probeLine("probeDriveC", "Drives dL*",
                   "Which controls pushed the frame's two regions apart in LIGHTNESS, and which flattened them together. Tone separation is half of what makes a frame read as dynamic - the other half is hue, on the row below - and it was the axis missing from the first version of this measurement entirely.");
         probeLine("probeDriveS", "Drives db*",
@@ -4212,7 +4212,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         probeLine("probeSepTriple", "Separation",
                   "The separation between the frame's two regions - currently its top and bottom third - as three signed numbers, shown as neutral > graded so you can see what your grade did to each. dL* is TONE separation, da* and db* are HUE separation on the green-magenta and cool-warm axes. Three signed components rather than one distance, because a distance cannot be solved against: it is built from squares, so it cannot express one axis opening while another closes, and on real footage it predicted the wrong direction outright.");
         probeLine("probeResponse", "Response",
-                  "What the controls actually DO on this shot, measured rather than assumed: how far b* (cool-to-warm) moves per nudge of each balance control, and how far colourfulness moves per nudge of Density. This is the plugin working out for itself that negative Offset Temp is what adds blue. It is shot-dependent - the same slider does something different to a saturated sunset than to a snowfield - which is why it is measured on every analyse instead of written down once.");
+                  "What the controls actually DO on this shot, measured rather than assumed: how far b* (cool-to-warm) moves per nudge of each balance control, and how far colorfulness moves per nudge of Density. This is the plugin working out for itself that negative Offset Temp is what adds blue. It is shot-dependent - the same slider does something different to a saturated sunset than to a snowfield - which is why it is measured on every analyse instead of written down once.");
 
 
     }
@@ -4223,7 +4223,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // about the maths, not about the work. Both are exposure and balance decisions, so they sit
     // with the other ones below and this group answers a single question: what shot this.
     GroupParamDescriptor* gInput = p_Desc.defineGroupParam("gInput");
-    gInput->setLabels("1  Input Transform", "1  Input Transform", "1  Input Transform");
+    gInput->setLabels("Input Transform", "Input Transform", "Input Transform");
     gInput->setOpen(true);
     ChoiceParamDescriptor* cam = p_Desc.defineChoiceParam("camera");
     cam->setLabels("Camera", "Camera", "Camera");
@@ -4260,7 +4260,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     // ---- 2. Balance ----  (white balance in linear; watch the vectorscope while adjusting)
     GroupParamDescriptor* gBal = p_Desc.defineGroupParam("gBalance");
-    gBal->setLabels("2  Balance & Density", "2  Balance & Density", "2  Balance & Density");
+    gBal->setLabels("Balance & Density", "Balance & Density", "Balance & Density");
     gBal->setOpen(true);
     defineBypass(p_Desc, page, "bypassBalance",
                  "Mute this stage at render without losing its values. Gain and Offset balance are held neutral; the sliders grey out but keep their numbers, so switching back restores the grade exactly.", gBal);
@@ -4289,12 +4289,12 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     //
     // WHAT THE SHOT IS EXPOSED AND BALANCED TO, in one place, regardless of where in the pipeline
     // each control acts. Scene Exposure and Scene White Balance run right after the camera decode
-    // and Lift/Gamma/Gain runs in the display curve, with the LUT in between -- but a colourist
+    // and Lift/Gamma/Gain runs in the display curve, with the LUT in between -- but a colorist
     // reaching for "this is too dark" or "this is too green" does not care which side of the LUT
     // the fix lands on. Highlight Rolloff joins them for the same reason: it is the top end of the
     // exposure decision, and it was in Trim only because it happens last.
     GroupParamDescriptor* gExp = p_Desc.defineGroupParam("gExposure");
-    gExp->setLabels("3  Exposure and White Balance", "3  Exposure", "3  Exposure");
+    gExp->setLabels("Exposure and White Balance", "Exposure", "Exposure");
     gExp->setOpen(true);
     defineBypass(p_Desc, page, "bypassExposure",
                  "Mute this stage at render without losing its values. Lift/Gamma/Gain are held neutral (0/1/1); the sliders grey out but keep their numbers. Note Auto Grade drives Gain, so bypassing this also mutes the auto exposure.", gExp);
@@ -4315,7 +4315,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // qualifier, an invert and a second node; here it is a latch and three sliders, which is the
     // whole reason the plugin exists.
     GroupParamDescriptor* gRange = p_Desc.defineGroupParam("gRange");
-    gRange->setLabels("4  Range Balance", "4  Range Balance", "4  Range Balance");
+    gRange->setLabels("Range Balance", "Range Balance", "Range Balance");
     gRange->setOpen(false);
 
     page->addChild(*defineSlider(p_Desc, "rangeLatch", "Latch",
@@ -4393,7 +4393,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- the shape: WHERE Range Balance acts, as opposed to on what ----
     //
     // A luminance qualifier cannot tell a silk specular from a mountain -- measured on the bedroom
-    // frame, they are the same brightness AND the same colour (b* +1.52 against +1.49), so neither
+    // frame, they are the same brightness AND the same color (b* +1.52 against +1.49), so neither
     // a higher latch nor a chroma gate separates them. What does is that they are in different
     // PLACES. The shape multiplies the luminance mask, so the held region is "bright AND inside
     // the shape", which is a qualifier plus a power window.
@@ -4486,7 +4486,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // -- up to 47.8% of channels -- while the SOURCE was pinned essentially nowhere. The footage
     // had the range and the plugin threw it away.
     GroupParamDescriptor* gTone = p_Desc.defineGroupParam("gTone");
-    gTone->setLabels("5  Highlight Tone Map", "5  Highlight Tone Map", "5  Highlight Tone Map");
+    gTone->setLabels("Highlight Tone Map", "Highlight Tone Map", "Highlight Tone Map");
     gTone->setOpen(false);
 
     {
@@ -4531,7 +4531,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // ---- 6. Look / Film LUT ----
     scanLuts();
     GroupParamDescriptor* gLut = p_Desc.defineGroupParam("gLut");
-    gLut->setLabels("6  Look / Film LUT", "6  Look / Film LUT", "6  Look / Film LUT");
+    gLut->setLabels("Look / Film LUT", "Look / Film LUT", "Look / Film LUT");
     gLut->setOpen(true);
     defineBypass(p_Desc, page, "bypassLut",
                  "Mute the LUT at render without losing the selection. This also hands Output Encode back to you: a selected LUT normally pins the encode to the curve it was authored for, so a bypass that left the encode pinned would still be changing the picture. The 'In effect' line under Output Encode says so while this is on.", gLut);
@@ -4580,7 +4580,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     // ---- 7. Trim (after LUT) ----  final display-space trims on top of the look/LUT
     GroupParamDescriptor* gTrim = p_Desc.defineGroupParam("gTrim");
-    gTrim->setLabels("7  Trim (after LUT)", "7  Trim (after LUT)", "7  Trim (after LUT)");
+    gTrim->setLabels("Trim (after LUT)", "Trim (after LUT)", "Trim (after LUT)");
     gTrim->setOpen(true);
     defineBypass(p_Desc, page, "bypassTrim",
                  "Mute this stage at render without losing its values. Exposure Trim, Contrast and Highlight Rolloff are held neutral; the sliders grey out but keep their numbers.", gTrim);
@@ -4589,7 +4589,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         tip->setLabels("Tip", "Tip", "Tip");
         tip->setStringType(eStringTypeLabel);
         tip->setDefault("Finishing touches. Most grades need nothing here.");
-        tip->setHint("This group runs after the LUT, on the finished picture. It is for small final adjustments, not for grading: set exposure and contrast with the Lift/Gamma/Gain wheels in group 4, which work in the grade curve where they belong. If you find yourself pulling these a long way, the grade above wants changing instead.");
+        tip->setHint("This group runs after the LUT, on the finished picture. It is for small final adjustments, not for grading: set exposure and contrast with the Lift/Gamma/Gain wheels in Exposure and White Balance, which work in the grade curve where they belong. If you find yourself pulling these a long way, the grade above wants changing instead.");
         tip->setEnabled(false);
         tip->setParent(*gTrim);
         page->addChild(*tip);
@@ -4605,7 +4605,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // stock crushes it. Narrow what the slider shows, never what a project can hold.
     {
         DoubleParamDescriptor* pe = defineSlider(p_Desc, "postExp", "Exposure Trim",
-            "A small brightness nudge on the finished picture, in stops - typically to bring level back after a film-emulation LUT has crushed it. This is NOT the exposure control: set exposure with Gain in group 4, which works in the grade curve. The slider spans +/-1 stop because that is the intended range; larger values can still be typed in and older grades keep whatever they were saved with.",
+            "A small brightness nudge on the finished picture, in stops - typically to bring level back after a film-emulation LUT has crushed it. This is NOT the exposure control: set exposure with Gain in Exposure and White Balance, which works in the grade curve. The slider spans +/-1 stop because that is the intended range; larger values can still be typed in and older grades keep whatever they were saved with.",
             0.0, -3.0, 3.0, 0.01, gTrim);
         pe->setDisplayRange(-1.0, 1.0);
         page->addChild(*pe);
@@ -4614,7 +4614,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     // ---- 8. Output ----
     GroupParamDescriptor* gOut = p_Desc.defineGroupParam("gOutput");
-    gOut->setLabels("8  Output", "8  Output", "8  Output");
+    gOut->setLabels("Output", "Output", "Output");
     gOut->setOpen(true);
     ChoiceParamDescriptor* enc = p_Desc.defineChoiceParam("outEncode");
     enc->setLabels("Output Encode", "Output Encode", "Output Encode");
@@ -4665,7 +4665,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
         ChoiceParamDescriptor* es = p_Desc.defineChoiceParam("lutExportSize");
         es->setLabels("Size", "Size", "Size");
-        es->setHint("Lattice resolution. 65 is the default here rather than the more usual 33, because this pipeline hard-clips out-of-gamut channels and a coarse lattice interpolates across that step badly on bright saturated colour - 65 roughly halves the error for a file that is still small. Drop to 33 if a tool you are handing it to expects that size. 17 is for quick checks only.");
+        es->setHint("Lattice resolution. 65 is the default here rather than the more usual 33, because this pipeline hard-clips out-of-gamut channels and a coarse lattice interpolates across that step badly on bright saturated color - 65 roughly halves the error for a file that is still small. Drop to 33 if a tool you are handing it to expects that size. 17 is for quick checks only.");
         es->appendOption("17 (draft)");
         es->appendOption("33 (standard)");
         es->appendOption("65 (high)");
@@ -4691,7 +4691,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
 
     // ---- 9. Setup / Help ----
     GroupParamDescriptor* gHelp = p_Desc.defineGroupParam("gHelp");
-    gHelp->setLabels("9  Setup / Help", "9  Setup / Help", "9  Setup / Help");
+    gHelp->setLabels("Setup / Help", "Setup / Help", "Setup / Help");
     gHelp->setOpen(false);
     // The panel truncates these strings, so `text` must stay short enough to read at the
     // default OpenFX panel width (~45 chars) and carry the instruction on its own; the
@@ -4752,7 +4752,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         };
         srow("setupStatus", "Input", "The verdict. 'OK' means the frame has the lifted floor and rolled-off top that camera log has. 'WARNING' means it uses the full 0-1 range the way display-referred material does, which usually means something transformed it before this node. 'Inconclusive' means it sits between the two and you should read the numbers yourself.");
         srow("setupStats",  "Levels", "1st, 50th and 99th percentile of the incoming code values. Camera log sits well inside 0-1 - Blackmagic log peaks around 0.75 on real footage. A p1 near 0.00 together with a p99 near 1.00 is the signature of an already-transformed image.");
-        srow("setupHost",   "Host", "What Resolve reports through the OFX 1.5 colour management API. '(absent)' means the host does not provide it, which is expected and harmless - the pixel check above is the one that matters. Read-only: OneGrade does not declare a colour management style, because doing so is what would let the host start converting the input and override the plugin's own camera transform.");
+        srow("setupHost",   "Host", "What Resolve reports through the OFX 1.5 color management API. '(absent)' means the host does not provide it, which is expected and harmless - the pixel check above is the one that matters. Read-only: OneGrade does not declare a color management style, because doing so is what would let the host start converting the input and override the plugin's own camera transform.");
     }
 
     helpLine("help8", "Monitor", "Calibrate; check on a second screen",

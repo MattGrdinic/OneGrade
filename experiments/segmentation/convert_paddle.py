@@ -6,7 +6,7 @@ WHY THIS MODEL
 
     The shipping blocker was licensing, not quality. NVIDIA's SegFormer licence restricts use to
     "research or evaluation purposes only" and that restriction lands on the END USER, not the
-    distributor -- a colourist on a paid job is neither, so no amount of relicensing OneGrade
+    distributor -- a colorist on a paid job is neither, so no amount of relicensing OneGrade
     would have helped.
 
     PP-MobileSeg-Base is Apache-2.0 with no commercial restriction, 5.62M params, and 41.57%

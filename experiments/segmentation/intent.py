@@ -8,7 +8,7 @@ nothing further. Turning targets into slider values is already solved: solve_int
 src/OneGradeAnalysis.h measures how each control moves each descriptor on this shot and inverts.
 
 WHY IT IS A TABLE AND NOT A MODEL
-    There is one shot of ground truth for colour separation. A table of per-label directions can
+    There is one shot of ground truth for color separation. A table of per-label directions can
     be read, argued with, and corrected one line at a time; a fitted model cannot, and there is
     nothing like enough data to fit one anyway. Every constant here is a starting point expected
     to move once it has been looked at on footage -- which is how every working number in this
@@ -20,7 +20,7 @@ THE CONTROLS ARE GLOBAL, AND THAT IS THE WHOLE PROBLEM
     additive, so on a dark region it is a large relative shift and on a bright one it is small.
     That is why the user's own beach grade reached for Offset Temp, and why the damped solve can
     honour a per-region target set it cannot possibly satisfy exactly. It finds the best
-    compromise, which is what a colourist does by eye.
+    compromise, which is what a colorist does by eye.
 
 NOT EVERY SHOT HAS SEPARATION AVAILABLE
     The downward city view comes back as one undifferentiated region, and the user's own grade
@@ -49,7 +49,7 @@ from regions import ORDER, segment, srgb_to_lab
 #   headroom  how far this region can be pushed before it stops reading as itself. Water
 #             tolerates a great deal of exaggeration; skin tolerates almost none.
 #
-# Directions are memory colours, not measurements: what a viewer accepts a thing looking like.
+# Directions are memory colors, not measurements: what a viewer accepts a thing looking like.
 # That is exactly the knowledge no amount of pixel statistics recovers, and the reason this
 # needs a classifier at all.
 INTENT = {
@@ -60,9 +60,9 @@ INTENT = {
     "SKY":        dict(push=(+0.0, +0.0), protect=0.2, headroom=0.5,
                        why="usually already extreme (sunset warm or daylight cool) and usually "
                            "the thing everything else separates FROM, so hold it and move the rest"),
-    # Memory colours of their own. Vegetation goes green, not cyan.
+    # Memory colors of their own. Vegetation goes green, not cyan.
     "VEGETATION": dict(push=(-1.0, +0.2), protect=0.2, headroom=0.7,
-                       why="foliage pushes toward green; cyan foliage reads as a colour cast"),
+                       why="foliage pushes toward green; cyan foliage reads as a color cast"),
     # The one that must not move. A cyan-shadow move also cyans skin in shadow, which is the
     # most visible way to wreck a frame. The plugin's chromaticity mask could not find skin on
     # a beach (46% coverage = sand); a semantic mask reads 0.7% there, which is the actual people.
@@ -78,7 +78,7 @@ MIN_COVER = 8.0     # below this a region is scenery, not something a grade shou
 DOMINANT  = 88.0    # above this one region IS the frame, and there is nothing to separate from
 
 
-MIN_GAP   = 3.0     # below this the two regions are the same colour and there is no axis to widen
+MIN_GAP   = 3.0     # below this the two regions are the same color and there is no axis to widen
 AXIS_FULL = 20.0    # gap at which the axis direction is trusted completely
 
 
@@ -90,13 +90,13 @@ def targets(rows, strength):
     — water cool, foliage green — and everything else was "reference", meaning zero. Run on
     eight frames it produced a move on two of them. It vetoed the sky-over-mountain shot, which
     is the single clearest case for having a classifier at all: two regions three L* apart in
-    tone and fourteen b* apart in colour, which nothing but a mask can separate. A table of
+    tone and fourteen b* apart in color, which nothing but a mask can separate. A table of
     absolute directions can only ever act on labels somebody thought to write a direction for.
 
     What the frame actually offers is a PAIR and an axis between them. So the move is: push the
     two dominant regions apart along the axis they ALREADY differ on, and let the table decide
     only how far each of them is allowed to travel. Skin has zero headroom and therefore never
-    moves — the whole push goes to whatever it is sitting against, which is also how a colourist
+    moves — the whole push goes to whatever it is sitting against, which is also how a colorist
     separates a face: cool the surround and let the skin come forward.
     """
     big = [r for r in rows if r["cover"] >= MIN_COVER]
@@ -111,9 +111,9 @@ def targets(rows, strength):
     # THE AXIS IS (L*, a*, b*) — TONE COUNTS AS SEPARATION, NOT JUST COLOUR.
     #
     # The user's framing: "more apparent separation in color and brightness, one or the other."
-    # A colour-only axis missed exactly the frames where brightness was the whole story: a face
-    # against a bright car window is 26.6 L* apart and 4.1 in colour, and a boy against a sunset
-    # sky is 46.5 apart in tone and 3.3 in colour. Both were being scored as near-noise and
+    # A color-only axis missed exactly the frames where brightness was the whole story: a face
+    # against a bright car window is 26.6 L* apart and 4.1 in color, and a boy against a sunset
+    # sky is 46.5 apart in tone and 3.3 in color. Both were being scored as near-noise and
     # damped to a fifth strength, when both are strongly separable — just not on the axis being
     # looked at.
     #
@@ -155,13 +155,13 @@ def targets(rows, strength):
                         protect=INTENT[r["label"]]["protect"]))
 
     # NO MEMORY-COLOUR CHECK. An earlier version warned when a region was pushed against its
-    # expected colour -- foliage driven magenta, water driven warm -- on the assumption that a
+    # expected color -- foliage driven magenta, water driven warm -- on the assumption that a
     # widened axis was not worth a thing looking wrong. The user's call, and it settles the
     # design: "the push of the cactus into magenta is totally fine, we just want to say this
     # element has some tonal balance against its surroundings such that the image appears more
     # three dimensional."
     #
-    # The goal is APPARENT SEPARATION, not colorimetric plausibility. Memory colour is a
+    # The goal is APPARENT SEPARATION, not colorimetric plausibility. Memory color is a
     # constraint on realism and this feature is not trying to be realistic -- which is also why
     # film emulation is popular. Protection still exists, but it is spent entirely on skin.
     return out, None

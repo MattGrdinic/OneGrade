@@ -23,7 +23,7 @@ pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed) ·
 what is deliberately not set, the traps found on the way, and §9 the scene descriptors +
 control Jacobian). ·
 `ROADMAP.md` (deferred work with the reasoning kept: Match Clip and why adjacent
-clips aren't reachable, gamut compression for exact LUT export, declaring OFX 1.5 colour
+clips aren't reachable, gamut compression for exact LUT export, declaring OFX 1.5 color
 management).
 
 ## The golden rule
@@ -390,7 +390,7 @@ host, which is the point to stop reading the code and start reading the log.
 - **Validated in Resolve:** Metal + CPU on the user's M3 Max, Rec.709 (Scene) / DaVinci YRGB project.
   Node Role group split (Pre-Clip + Post-Clip) validated 2026-08-02, incl. no float clamp
   between group levels — see the Node Role section above.
-  CUDA perf on the user's Windows box (Ryzen + RTX 5090, 2026-07-16) — real-time; colour
+  CUDA perf on the user's Windows box (Ryzen + RTX 5090, 2026-07-16) — real-time; color
   output not yet A/B'd against the Metal path.
 - **OpenCL:** kernel checked against `og::process` on real HW (2026-07-16) on both an
   RTX 5090 and an AMD gfx1036 iGPU, all 12 cameras x 6 encodes: worst deviation
@@ -445,7 +445,7 @@ host, which is the point to stop reading the code and start reading the log.
   the skipped adaptation isn't an identity and 1 K off default jumps neutral grey by a* +2.06
   (visible green cast from nowhere). Looks like a plain defect; the fix is to adapt to
   blackbody(6500) rather than D65, which makes "identity at 6500" true by construction — but
-  it's a **4-file colour-math edit** and it moves every saved grade with RAW Temp ≠ 6500, so
+  it's a **4-file color-math edit** and it moves every saved grade with RAW Temp ≠ 6500, so
   it's the user's call, not a drive-by.
 - **Camera matrices** other than Blackmagic are published/approx — flagged for on-footage validation.
 - **Resolve's LUT folder is per-platform** (`filmLutDir()`): Windows adds a `Support` level
@@ -983,7 +983,7 @@ not yet as smooth as the "Blackmagic Gen 5 Film to Video" LUT, which is the stat
 for the default Gen 5 path (Cinematic Film preset). Candidates: tune softclip knee/curve,
 or a scene-linear shoulder before encode instead of (or blended with) the display-space clip.
 
-**CUDA colour A/B (opened 2026-07-16):** the CUDA path is now live and fast on the user's
+**CUDA color A/B (opened 2026-07-16):** the CUDA path is now live and fast on the user's
 5090, but only *perf* was checked — its output has never been compared against the
 validated Metal/CPU result. `CudaKernel.cu` was written blind and had never even been
 compiled before this. Worth a same-frame A/B (mac vs Windows) — still open at v1.0.3.

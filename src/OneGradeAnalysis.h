@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // THIS FILE IS NOT PART OF THE GOLDEN RULE. OneGradePipeline.h is the single source of truth
-// for colour math and the three GPU kernels mirror it exactly; NOTHING here is mirrored, and
+// for color math and the three GPU kernels mirror it exactly; NOTHING here is mirrored, and
 // nothing here may ever be called from a kernel. It runs once per button press, on the CPU,
 // over a few thousand samples, and it produces PARAMETER VALUES rather than pixels. Separate
 // header and separate namespace so that boundary is structural instead of a comment someone
@@ -19,7 +19,7 @@
 // of thing:
 //
 //   1. DESCRIPTORS — a small vector that says what the frame currently looks like, including
-//      where its dominant colour populations sit and how far apart they are. `Desc` below.
+//      where its dominant color populations sit and how far apart they are. `Desc` below.
 //
 //   2. THE JACOBIAN — how each control moves each descriptor, ON THIS FOOTAGE. This is the
 //      part that replaces writing down what the sliders mean. We do not tell the system that
@@ -32,7 +32,7 @@
 // ---------------------------------------------------------------------------------------
 // THE ONE RULE THAT MAKES THE NUMBERS MEAN ANYTHING: MEMBERSHIP IS FIXED AT NEUTRAL.
 //
-// Every mask here — the mid-tone window, the skin mask, which of the two colour populations
+// Every mask here — the mid-tone window, the skin mask, which of the two color populations
 // a pixel belongs to — is decided ONCE, from the neutral render, by classify(). describe()
 // then only ever recomputes STATISTICS over those fixed memberships.
 //
@@ -76,7 +76,7 @@ static const int kParamN = 34;   // matches P[] in OneGradePipeline.h
 // skin texture, hair, sensor noise -- rather than the picture.
 //
 // Measured on one frame at two sizes: SKIN coverage 12% at 1228x511 against 24% at 6144x2556, the
-// colour move reversing sign (+0.161 to -0.127), a different solve branch, crushed 2.14% -> 11.23%
+// color move reversing sign (+0.161 to -0.127), a different solve branch, crushed 2.14% -> 11.23%
 // and blown 13.28% -> 3.38%. The frame MEASUREMENT was stable across both (key -0.58, src99 0.617
 // vs 0.618) -- it is only what the model sees that moves, and everything downstream follows it.
 //
@@ -173,7 +173,7 @@ static inline void neutral_params(float* P)
 }
 
 // ---------------------------------------------------------------------------------------
-// CIELAB, for the colour half of the descriptor set.
+// CIELAB, for the color half of the descriptor set.
 //
 // HSV (what the pipeline uses for Density) is the wrong space to MEASURE a cast in: its hue
 // is an angle on a hexagon, its saturation is scale-dependent, and neither has a warm-cool
@@ -241,7 +241,7 @@ static inline void render_sample(int cam, int enc, const float* P,
 // ---------------------------------------------------------------------------------------
 // THE DESCRIPTOR VECTOR — what the frame looks like, in twelve numbers.
 //
-// Chosen so that (a) each is something a colourist would actually name, and (b) each is a
+// Chosen so that (a) each is something a colorist would actually name, and (b) each is a
 // SMOOTH function of the parameters, so a finite-difference Jacobian is meaningful. That
 // second constraint is why D_OVER is mean overshoot rather than the `hot` percentage the
 // panel reports: a share-above-threshold is a step function, so its derivative is counting
@@ -268,7 +268,7 @@ static inline void render_sample(int cam, int enc, const float* P,
 // between the frame's two regions: dL* is tone separation, da*/db* are hue separation.
 //
 // REGIONS ARE THE TOP AND BOTTOM THIRD, and that is a stand-in. It works on this footage —
-// db* came back +43 and cleanly found sky-over-water where colour clustering returned two
+// db* came back +43 and cleanly found sky-over-water where color clustering returned two
 // populations both at orange (h29 and h44) — because a landscape separates its objects by
 // height. It fails the moment they do not: two people side by side, a car against a wall, a
 // face against a window. THIS IS THE SEAM WHERE SEGMENTATION PLUGS IN — supplying real region
@@ -294,8 +294,8 @@ enum {
     D_SKINL,    // luma median over the skin mask (0 when coverage is too low to trust)
     D_SKINB,    // b* over the skin mask (0 when coverage is too low to trust)
     // --- report-only below: measured honestly, but NOT steerable. See the note above. ---
-    D_CHROMA,   // mean C* over mid-tones — overall colourfulness, what Density acts on
-    D_SEP,      // ab distance between the two dominant colour populations
+    D_CHROMA,   // mean C* over mid-tones — overall colorfulness, what Density acts on
+    D_SEP,      // ab distance between the two dominant color populations
     kDescN
 };
 
@@ -517,7 +517,7 @@ static inline Extras classify(SampleSet& S, int cam, int enc)
     // TWO-MEANS IN (a*, b*), SEEDED BY PCA so it is deterministic — no random init, so the
     // same frame always yields the same two populations and a Jacobian taken around it is
     // reproducible. Seeds go at +/- one standard deviation along the principal axis, which is
-    // by construction the direction the frame's colour actually spreads in.
+    // by construction the direction the frame's color actually spreads in.
     double ma = 0, mb = 0;
     for (uint32_t i : pool) { ma += la[i]; mb += lb[i]; }
     ma /= (double)pool.size(); mb /= (double)pool.size();
@@ -601,7 +601,7 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
     double gA[2] = {0,0}, gB[2] = {0,0}; long long gN[2] = {0,0};
     // Band means in LAB, not in display luma. L* puts tone on the same perceptual footing as
     // a*/b*, so the separation triple is one coherent Lab difference between two regions
-    // rather than a tone number and two colour numbers that cannot be compared with each other.
+    // rather than a tone number and two color numbers that cannot be compared with each other.
     double bandL[3] = {0,0,0}, bandA[3] = {0,0,0}, bandB[3] = {0,0,0}; long long bandN[3] = {0,0,0};
     // Subject and surround, as the same Lab means over two populations that partition the frame.
     // Index 0 is the surround and 1 the subject, so the difference below reads the same way round
@@ -754,7 +754,7 @@ static inline bool assign_regions(SampleSet& S, const std::vector<uint8_t>& mask
     return true;
 }
 
-// Per-region colour, for a given parameter vector. Same fixed-membership rule as everything
+// Per-region color, for a given parameter vector. Same fixed-membership rule as everything
 // else here: regions are decided once from the neutral render and only the STATISTICS move.
 static inline void region_stats(const SampleSet& S, int cam, int enc, const float* P,
                                 RegionStat* out)
@@ -815,7 +815,7 @@ struct MagicChoice {
     // THE NUMBERS THE DECISION WAS MADE FROM, carried out so the panel can explain itself.
     //
     // This is not diagnostics. The feature's stated job is to surface a move an inexperienced
-    // colourist would not have considered -- "there is water in this shot, cool it and see" --
+    // colorist would not have considered -- "there is water in this shot, cool it and see" --
     // and a suggestion nobody can see the reasoning behind teaches nothing and cannot be argued
     // with. It also makes a WRONG pick legible instead of mysterious, which matters more here
     // than usual: the tool is admittedly fallible by design, so every call it makes has to show
@@ -827,7 +827,7 @@ struct MagicChoice {
 
 static const int kMagicMinCover = 6;     // below this a region is scenery, not a subject
 // Above this, one region IS the frame and the rest is a sliver -- a macro of leaves comes back
-// 98% wall against 2% foliage, and pushing those apart is a colour cast justified by speckle.
+// 98% wall against 2% foliage, and pushing those apart is a color cast justified by speckle.
 //
 // DERIVED FROM THE FLOOR RATHER THAN PICKED. The two were independent numbers, 6 and 88, and
 // they disagreed: a downward city view measured 92.9% structure against 7.1% roofs and streets,
@@ -978,7 +978,7 @@ static inline const float* param_steps()
 //        T = 6499  ->  rgb 0.54311 0.55807 0.54535   (a* -2.064)
 //        T = 6500  ->  rgb 0.55397 0.55397 0.55397   (a* -0.002, forced neutral)
 //        T = 6501  ->  rgb 0.54315 0.55806 0.54528   (a* -2.063)
-//   A visible green cast appears out of nowhere on the first nudge. Fixing it is a colour-math
+//   A visible green cast appears out of nowhere on the first nudge. Fixing it is a color-math
 //   change and therefore a golden-rule four-file edit — adapt to blackbody(6500) instead of to
 //   D65 and the stated contract becomes true by construction, with no early-out needed.
 //
@@ -1063,7 +1063,7 @@ static inline void jac_predict(const Jac& J, const float* dpNorm, float* ddOut)
 // underdetermined — twelve descriptors, thirteen controls, several of which overlap almost
 // exactly (Gain and Post Exposure both raise the midtone) — so an undamped solve would find
 // some enormous cancelling pair that is correct to first order and absurd on the picture.
-// lambda buys the SMALLEST move that gets close, which is also the one a colourist would make.
+// lambda buys the SMALLEST move that gets close, which is also the one a colorist would make.
 //
 // `allow` restricts which controls may move, so a caller can say "fix this with Balance only"
 // and get an answer in the controls it is willing to spend.

@@ -210,7 +210,7 @@ int main(int argc, char** argv)
     const bool  sepReport = argf(argc, argv, "--sep-report");
     // The rdL*/rdb* rows of the descriptor Jacobian, to choose the slider's controls by measurement.
     const bool  sepJac    = argf(argc, argv, "--sep-jac");
-    // HIGHLIGHT MASK PROTOTYPE. Numbers are on Resolve's 0..100 qualifier scale so a colourist's
+    // HIGHLIGHT MASK PROTOTYPE. Numbers are on Resolve's 0..100 qualifier scale so a colorist's
     // own settings can be typed straight in and the two compared on one frame.
     const bool   hlOn    = argf(argc, argv, "--hl");
     const double hlLow   = argd(argc, argv, "--hl-low",   -1.0);   // -1 = derive it from the frame
@@ -314,8 +314,8 @@ int main(int argc, char** argv)
         og::grade::Measurements m = measure(f, cam, enc, S);
 
         // THE WHOLE SEQUENCE COMES FROM ONE PLACE. This used to spell out the order -- creative,
-        // segment, decide, tone, colour, re-solve -- and so did applyMagicGrade, and they drifted:
-        // the re-solve after the colour move landed here and not there, and the two produced
+        // segment, decide, tone, color, re-solve -- and so did applyMagicGrade, and they drifted:
+        // the re-solve after the color move landed here and not there, and the two produced
         // different pictures from the same still. Only the segmentation is supplied locally,
         // because the model belongs to the caller.
         // The SAME builder the plugin uses. It was a hand-written point sample here and a

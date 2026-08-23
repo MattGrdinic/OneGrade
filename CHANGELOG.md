@@ -47,7 +47,7 @@ restore the detail that flattens, then *Rest: Midtones* up to open the room.
 - **Shape** (ellipse or rectangle) — restricts Range Balance to part of the frame. What gets held
   is whatever is both above the Latch and inside the shape. Use it when something elsewhere in the
   picture is the same brightness as your subject — a bright pillow across a room from a window,
-  which no threshold can separate because it is the same brightness *and* the same colour.
+  which no threshold can separate because it is the same brightness *and* the same color.
   **Fit To Frame** puts the shape around whatever the Latch is already holding.
 - **Bypass** mutes the stage without losing your values.
 
@@ -77,6 +77,15 @@ Trim, Output, Setup.
 - Highlight Rolloff moved to Exposure, beside the other exposure controls.
 - Highlight Tone Map has its own section, placed where it actually runs — after Range Balance
   and before the LUT, so a Custom Look sees the shouldered picture.
+- **Section numbers are gone.** They implied an order to work in that stopped being true once the
+  panel was reorganised around the button, and the new **Mode** selector makes the list shorter
+  anyway.
+- **New: a Mode selector at the top.** *Simple* shows the button and the controls used to adjust
+  its result; *Advanced* shows everything and is the default; *Color Correction* shows the manual
+  path with the automatic stages out of the way. It only changes what is visible — no mode alters
+  a value, and **a section that is actively changing the picture is never hidden**, so a look
+  cannot be lost behind a dropdown. The line under it says how many sections were hidden and how
+  many were kept because they are in use.
 - Sections start open except Role / Preset, Range Balance, Highlight Tone Map, Export LUT and
   Setup / Help.
 - Magic Grade carries its own Lift, Gamma and Gain, alongside the Bias and Scene Exposure copies
@@ -103,7 +112,7 @@ did in v1.4.3 on some footage.
 ### Fixes
 
 - **White Balance First now actually balances.** The checkbox has been in Magic Grade since
-  v1.4.0 and never changed a pixel. It measured the shot's colour cast correctly and reported the
+  v1.4.0 and never changed a pixel. It measured the shot's color cast correctly and reported the
   temperature it had chosen, then the value was overwritten before it reached the render — so
   every frame graded at 6500 K no matter what the estimator found. Across the test footage it had
   been finding real corrections between 5445 K and 9500 K and discarding all of them. Tick it and
@@ -220,7 +229,7 @@ One button that reads the frame, finds what the shot is *of*, and grades for tha
 
 ### Fixes
 
-- **Creative Grade no longer crushes the blacks.** The black point was solved in one colour
+- **Creative Grade no longer crushes the blacks.** The black point was solved in one color
   space and rendered in another, so it hit its target exactly while the picture on screen
   went to zero. Shadow separation on a test frame went from 0.024 to 0.070.
 - **The first press is now the right one.** Magic Grade used to read the node's state before
@@ -296,7 +305,7 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
 - **Trim > "Exposure" is now "Exposure Trim"**, and its slider spans **±1 stop** instead of
   ±3. It was being read as a second, competing exposure control — two places to set
   brightness, one of them after the LUT — which is a workflow trap rather than a feature.
-  Exposure belongs to **Gain** in group 4, where it acts in the grade curve.
+  Exposure belongs to **Gain** in Exposure and White Balance, where it acts in the grade curve.
 - The **hard** range stays ±3 on purpose. `setRange` is a clamp the host applies to saved
   values, so narrowing it would quietly rewrite existing grades — and the film emulation
   presets legitimately sit at +0.55, bringing level back after a print stock crushes it.
@@ -333,9 +342,9 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
 - **Accuracy, measured rather than assumed.** The bake is **exact on lattice points**
   (worst 1.5e-08). Off-lattice it is as good as the pipeline is smooth, and ours is not
   smooth everywhere: the output encode **hard-clips out-of-gamut channels to zero**, which
-  puts a step through the colour cube that no lattice can follow. On Gen 5 → Rec.709 2.2 at
+  puts a step through the color cube that no lattice can follow. On Gen 5 → Rec.709 2.2 at
   33³ the grey axis is within ~4/255, the median over the whole cube is 0, but mildly
-  tinted bright colour can reach ~150/255. 65³ roughly halves that and cannot remove it,
+  tinted bright color can reach ~150/255. 65³ roughly halves that and cannot remove it,
   because the limit is the discontinuity and not the sampling.
 - So: **an excellent archival stand-in, not a bit-exact one.** It matches the node through
   the normal tonal range and can differ on blown, saturated highlights. The hint and the
@@ -423,8 +432,8 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   or the other, reports "inconclusive" otherwise, and always prints the percentiles it
   judged on. A false alarm on a correct setup would be worse than staying quiet — the same
   reasoning that stopped Auto Grade guessing at white balance.
-- It also reports whatever Resolve volunteers through the **OFX 1.5 colour management API**
-  (`ofxColour.h`). These are read **without declaring a colour management style**, on
+- It also reports whatever Resolve volunteers through the **OFX 1.5 color management API**
+  (`ofxColor.h`). These are read **without declaring a color management style**, on
   purpose: declaring support is exactly what could invite the host to start converting our
   input and override the plugin's own camera transform. If it reports "(absent)", the next
   experiment is a deliberate one, not a speculative switch.

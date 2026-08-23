@@ -38,7 +38,7 @@
 // between two looks' medians measured in units of their own within-look spread. Under about 2 the
 // two looks are inside each other's noise and cycling between them would not read as anything.
 //
-// If they do not separate on these four numbers, the answer is more AXES (the colour/separation
+// If they do not separate on these four numbers, the answer is more AXES (the color/separation
 // triple, the print stock) rather than more stills.
 //
 // USAGE
@@ -567,8 +567,8 @@ int main(int argc, char** argv)
 
                 // BY MATCHED LUMINANCE -- the confound fix. A pixel at zero has no chroma to
                 // measure, and film frames crush to a frame floor of 0.000 almost universally, so
-                // the percentile version cannot tell "film neutralises its shadow colour" from
-                // "film puts more of the picture at black". Those want different fixes -- a colour
+                // the percentile version cannot tell "film neutralises its shadow color" from
+                // "film puts more of the picture at black". Those want different fixes -- a color
                 // control versus a tone control -- so the bands are absolute and the shadow band
                 // starts ABOVE zero. Same shape as hot versus pin: a threshold on the wrong
                 // quantity describes the filter rather than the footage.
@@ -699,7 +699,7 @@ int main(int argc, char** argv)
     printf("\n\n================ FRAME CHARACTER  (median, MAD in brackets) ================\n");
     printf("Two readings of the same thing. @L is measured in ABSOLUTE luminance bands\n"
            "(shadow %.2f-%.2f, mid %.2f-%.2f, high %.2f-%.2f) rather than by percentile,\n"
-           "so a picture that simply sits darker cannot masquerade as one with less colour.\n"
+           "so a picture that simply sits darker cannot masquerade as one with less color.\n"
            "cov%% is how much of the frame occupies each band; a thin band is not evidence.\n\n",
            shadowLo, shadowHi, midLo, midHi, highLo, highHi);
     for (size_t l = 0; l < lookName.size(); ++l) {
@@ -770,7 +770,7 @@ int main(int argc, char** argv)
                "ratio explodes. A go/no-go number that says yes to noise is worse than none.\n");
         // SEVEN AXES, not four. The tone quadruple alone came back overlapping on every pair of looks
         // (max effect 0.51 against a 0.60 bar), which is the answer the README predicted would mean
-        // "more axes, not more stills" -- and the colour triple was already being measured per row
+        // "more axes, not more stills" -- and the color triple was already being measured per row
         // and simply never tested. Signed components only: a distance cannot be solved against and
         // predicted the wrong sign outright when it was tried (docs/AUTO-GRADE.md 9).
         const char* axis[7] = { "subjFloor", "subjMid", "frameCeiling", "frameFloor",
@@ -825,7 +825,7 @@ int main(int argc, char** argv)
                 }
         }
         printf("\nOverlapping on every axis means the tone quadruple alone cannot carry these\n"
-               "looks apart. That is an argument for more AXES -- the colour/separation triple,\n"
+               "looks apart. That is an argument for more AXES -- the color/separation triple,\n"
                "or a different print stock per look -- not for more stills.\n");
     }
     return 0;

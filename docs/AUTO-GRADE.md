@@ -317,7 +317,7 @@ measurement rows and the **Applied** readout — is hidden behind a compile-time
 static const bool kAnalysisDebugUI = false;   // -> true, rebuild
 ```
 
-> **On the `feat/scene-descriptors` branch this is currently `true`**, because the Colour /
+> **On the `feat/scene-descriptors` branch this is currently `true`**, because the Color /
 > Regions / Response rows exist to be read on footage. It must go back to `false` before the
 > branch merges into a release.
 
@@ -339,9 +339,9 @@ them.
 | **Peak** | p99.9 and how far it runs past p99. |
 | **Shape** | `hot` (above display white), `pin %@ceiling` (clipped at source), mid-tone saturation. |
 | **Subject** | skin coverage %, skin-masked key, skin `R/G` and `B/G`. High coverage means the mask matched the scene, not a face. |
-| **Colour** | mid-tone `a*` / `b*` / `C` / `sep`, at NEUTRAL — describes the footage, not the grade on it. |
+| **Color** | mid-tone `a*` / `b*` / `C` / `sep`, at NEUTRAL — describes the footage, not the grade on it. |
 | **Graded** | the same, for the grade actually on the node. The one that moves. Measured pre-LUT. |
-| **Regions** | the two colour populations (share + hue, cooler first) and `db*`. |
+| **Regions** | the two color populations (share + hue, cooler first) and `db*`. |
 | **Separation** | the triple, neutral → graded: `dL*` tone, `da*` / `db*` hue. |
 | **Drives b\*** · **Drives dL\*** · **Drives db\*** | which controls produced each change: measured, linear-predicted, and the top three contributors. A large act/lin gap means the grade sits outside the linear range. |
 | **Response** | measured Jacobian rows: how far `b*` moves per nudge of each balance control on *this* shot. |
@@ -355,7 +355,7 @@ Grade** writes values.
 ## 9. Scene descriptors and the control Jacobian
 
 Everything above answers *how is this frame exposed*. `src/OneGradeAnalysis.h` answers **what
-colour is it, and what would each control do about that** — the half that was missing when a
+color is it, and what would each control do about that** — the half that was missing when a
 sunset-over-ocean grade reached for **Offset Temp** to separate water from sky and no measured
 number could have asked for it.
 
@@ -431,7 +431,7 @@ is testable, and it is shot-dependent for free.
 descriptors against thirteen controls, several nearly redundant (Gain and Post Exposure both
 raise the midtone), so an undamped solve finds an enormous cancelling pair that is correct to
 first order and absurd on the picture. Damping buys the *smallest* move that gets close —
-which is also the one a colourist would make.
+which is also the one a colorist would make.
 
 Verified in `test/pipeline_test.cpp` (tests 15–21): the error falls ~4× per halving of the
 move, which is the signature of a real derivative rather than a plausible-looking table.
@@ -449,7 +449,7 @@ pipeline. `steer_mask()` excludes them.
 The rolloff behaviour may well be intended — it is a soft clip *to* 1.0 by definition. The RAW
 Temp one looks like a plain defect: adapting to `blackbody(6500)` instead of to D65 would make
 the stated "identity at 6500 K" contract true by construction and remove the early-out
-entirely. **That is a colour-math change and therefore a four-file kernel edit**, and it moves
+entirely. **That is a color-math change and therefore a four-file kernel edit**, and it moves
 every saved grade with RAW Temp ≠ 6500, so it is a deliberate decision rather than a fix to
 slip in. Test 20 pins both, so if either is ever changed that test fails first and says so.
 
@@ -460,7 +460,7 @@ slip in. Test 20 pins both, so if either is ever changed that test fails first a
 Magic Grade's job, in the user's words: *"find the subject of the image and make sure its tone is
 pleasing"*, well enough that *"the user becomes scared to even move the sliders."*
 
-Before this existed, Magic Grade was Creative Grade plus a colour cast — measured at a mean
+Before this existed, Magic Grade was Creative Grade plus a color cast — measured at a mean
 difference of **7/255** on one frame. All the subject detection was being spent choosing the
 direction of a tint.
 
@@ -767,7 +767,7 @@ Measured, same shot at two sizes:
 | | 1228x511 | 6144x2556 |
 |---|---|---|
 | SKIN coverage | 12% | **24%** |
-| colour move | OffTmp +0.161 | OffTmp **−0.127** (opposite sign) |
+| color move | OffTmp +0.161 | OffTmp **−0.127** (opposite sign) |
 | branch | 0 | **2** (ceiling gave way) |
 | crushed / blown | 2.14% / 13.28% | **11.23%** / 3.38% |
 
@@ -784,7 +784,7 @@ vs +0.157, same branch, crushed 2.14% vs 2.07%.
 than preference.** The segmentation model's behaviour on this corpus was established against
 point-sampled thumbnails. Switching to 4 moves **all 19 frames**, several badly: `00093080` from
 0.90% crushed to **54.24%**, `dark-scene` losing shadow separation 0.184 -> **0.011**,
-`large-face` reversing its colour move, `00124265` losing its subject entirely. A few improve
+`large-face` reversing its color move, `00124265` losing its subject entirely. A few improve
 (`00089408` 18.43% -> 1.43%). Every validated grade needs re-checking against a render before this
 can ship — `--thumb-taps=4` on the bench is the whole switch.
 

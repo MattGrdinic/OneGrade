@@ -160,14 +160,14 @@ concluded in 2026-08-03, reached again the long way.
 
 The exported cube is exact **on lattice points** (worst 1.5e-08) but degrades between them
 wherever the pipeline isn't smooth — and the output encode **hard-clips out-of-gamut
-channels to zero**, which puts a step through the colour cube that no lattice can follow.
+channels to zero**, which puts a step through the color cube that no lattice can follow.
 Measured, Gen 5 → Rec.709 2.2 at 33³:
 
 | region | error |
 |---|---|
 | grey axis, log 0.10–0.70 | ~4/255 |
 | median over the whole cube | 0/255 |
-| mildly tinted bright colour (±15% of grey) | ~152/255 |
+| mildly tinted bright color (±15% of grey) | ~152/255 |
 
 65³ roughly halves it and cannot remove it: **the limit is the discontinuity, not the
 sampling.** Hence 65 is the export default.
@@ -180,12 +180,12 @@ deliberate release of its own, not something to smuggle in behind an export butt
 
 ---
 
-## 4. Declaring OFX 1.5 colour management
+## 4. Declaring OFX 1.5 color management
 
 **Status:** read-only probe shipped in v1.3.0; declaring support deliberately not done.
 
 `Check Input` reports `kOfxImageEffectPropColourManagementStyle` and
-`kOfxImageClipPropColourspace` **without** declaring a colour management style. If Resolve
+`kOfxImageClipPropColourspace` **without** declaring a color management style. If Resolve
 populates them anyway, that is free information.
 
 If they report `(absent)`, the next experiment is to declare
@@ -433,7 +433,7 @@ Carried from `CLAUDE.md`, kept here so there is one place to look:
 - **Rolloff smoothness on Gen 5** — the highlight softclip is not yet as smooth as
   Blackmagic's "Gen 5 Film to Video" LUT. Candidates: tune the knee, or a scene-linear
   shoulder before encode instead of (or blended with) the display-space clip.
-- **CUDA colour A/B** — the CUDA path is fast on the user's 5090 but only *performance* was
+- **CUDA color A/B** — the CUDA path is fast on the user's 5090 but only *performance* was
   ever checked; its output has never been compared against the validated Metal/CPU result.
 - **OpenCL inside Resolve on an AMD card** — the kernel agrees with the CPU on real
   hardware via a direct harness, but has never run through Resolve on an AMD GPU.
@@ -489,12 +489,12 @@ pinning it stay untouched.
 
 **The tonal half is done and validated on footage** — the user's words: *"this work has made the
 tonal look really close to what my hand-grades do."* Exposure comes from measurement, global
-colour from the Jacobian, the black point from a solve. What remains is **colour separation**,
+color from the Jacobian, the black point from a solve. What remains is **color separation**,
 and it is blocked on one thing only.
 
 ### The job is narrow
 
-Not exposure. Not colour. **Region identity** — which pixels belong to which thing, so the
+Not exposure. Not color. **Region identity** — which pixels belong to which thing, so the
 separation descriptors have real objects to attach to. `docs/AUTO-GRADE.md` §9 has the design;
 the descriptors only ever ask *region A minus region B*, so real masks drop in without changing
 anything else.
@@ -541,7 +541,7 @@ of two weeks.
 ### Open question worth answering first
 
 **Does every shot even want separation?** The city grade was purely tonal; the beach needed
-colour separation. The classifier's first useful output may be *"are there separable regions
+color separation. The classifier's first useful output may be *"are there separable regions
 here at all"* rather than *"push these two apart"*.
 
 ---
@@ -571,11 +571,11 @@ sunset — where the cast IS the content.
 
 Averaging the frame to neutral would "correct" a beach sunset to grey, which is the opposite of
 what anyone wants. The classic fixes (white-patch, neutral-pixel detection) all fail the same
-way: they cannot tell a colour that is a mistake from a colour that is the point.
+way: they cannot tell a color that is a mistake from a color that is the point.
 
 **The classifier already answers that.** Balance on the regions with a defensible neutral
 expectation — BUILT, GROUND, TERRAIN, the man-made and underfoot surfaces — and ignore the ones
-that are legitimately coloured: SKY, WATER, VEGETATION. SKIN is a strong secondary reference,
+that are legitimately colored: SKY, WATER, VEGETATION. SKIN is a strong secondary reference,
 since skin chromaticity is far more consistent across people than intuition suggests.
 
 On a frame with no trustworthy neutral reference, decline and say so, exactly like the rest of
@@ -649,7 +649,7 @@ with the bench (ongoing) → consider a learned score once there is something to
 
 ---
 
-## The colour reasoning is done pre-LUT, on a picture the user never sees
+## The color reasoning is done pre-LUT, on a picture the user never sees
 
 Noticed 2026-08-07 while chasing an over-cool Magic result. `OneGradeAnalysis.h` contains no
 reference to `apply_lut` at all: every region L\*/a\*/b\*, the Magic warm/cool decision, the
@@ -658,7 +658,7 @@ Grade always select the Kodak 2383 print stock, and a print stock is emphaticall
 hue-preserving — that is what it is for.
 
 The split is already half-right and that is what makes it easy to miss: the model is fed the
-**graded, post-LUT** thumbnail, because it was trained on photographs. Only the *colour
+**graded, post-LUT** thumbnail, because it was trained on photographs. Only the *color
 statistics* stayed pre-LUT. So the segmentation knows what it is looking at and the colorimetry
 describes a different image.
 
@@ -689,11 +689,11 @@ Jacobian probably does not.
 it works: `solve_creative`, `solve_creative_px`, `solve_magic_tone`, `solve_magic_base` and
 `solve_white_balance` are each called by both. What is still written out **twice** is the
 ORDER the steps run in — and on 2026-08-08 that is what drifted. The bench gained a re-solve
-after the colour move; the plugin did not; the two produced different pictures from the same
+after the color move; the plugin did not; the two produced different pictures from the same
 still, which is the single failure the bench exists to prevent.
 
 Extracting individual functions turned out to fix the arithmetic and leave the *choreography*
-duplicated. The sequence is: creative → tone → decide → colour → creative → tone, and every
+duplicated. The sequence is: creative → tone → decide → color → creative → tone, and every
 one of those edges is a place the two can diverge silently.
 
 **The shape:** one call taking `(SampleSet, cam, enc, lut, lutSize, Tunables, int click)` and
@@ -942,7 +942,7 @@ luma, falling back to the frame median when the subject fills the frame), `Magic
 
 ### The re-solve is fitted for a subject near the BOTTOM of the range (2026-08-14)
 
-Reported on footage: Tone Separation and the colour Separation slider both "snap to over-saturated
+Reported on footage: Tone Separation and the color Separation slider both "snap to over-saturated
 or blown out" on SKY, while both work well on SKIN. Reproduced offline, and it is not a Tone
 Separation bug — **Bias alone shows it**:
 
@@ -1103,7 +1103,7 @@ neighbourhood. Measured over the held pixels, window strip against everything el
 | not-window (pillow) | −1.45 (−6.14..−0.58) | +1.52 | 63.1 |
 
 b* is **identical to two decimal places** and the a* ranges overlap across most of their width.
-Daylight through glass and interior-lit white silk are the same colour here. An HSL qualifier buys
+Daylight through glass and interior-lit white silk are the same color here. An HSL qualifier buys
 nothing on this frame.
 
 **NEITHER DOES A THREE-CLASS SPLIT.** The frame plainly has three populations, so 2-class Otsu
