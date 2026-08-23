@@ -151,7 +151,19 @@ struct Tunables {
     // seven frames better, one a trade (13.84% -> 6.73% crushed for 0.053 of separation).
     // frameFloorMax still reads fLo and is untouched -- the two guards ask different questions,
     // "did a channel hit zero" against "did the picture go black", and want different statistics.
-    double frameFloorMin = 0.020;   // back to inert; 0.060 was fitted against the same bad render
+    // LIVE AT LAST, at 0.080. It read as inert at every value anyone swept and the value was never
+    // the problem: the ceiling-gives-way branch re-solved Lift against the subject's floor
+    // immediately afterwards and discarded it, on exactly the frames where both fire. With the
+    // ordering fixed it does the job it was written for.
+    //
+    // 0.080 was chosen because it reproduces what the USER reached for by hand. On the ETTR frame
+    // they corrected with Bias at maximum and landed on Lift +0.110 / Gain 0.452; the guard at
+    // 0.080 solves to +0.119 / 0.437 on its own. Across the corpus: total crushed share
+    // 108.9% -> 72.2%, two frames that previously declined now solve (large-face 6.04% -> 1.19%
+    // crushed with shadow separation 0.050 -> 0.084, and 00104865), 00091084 17.22% -> 0.84% with
+    // separation 0.063 -> 0.137, 00096619 35.27% -> 21.33%. dark-scene is untouched and keeps its
+    // validated +2.29 EV rescue.
+    double frameFloorMin = 0.080;
     double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
 
     // THE OTHER DIRECTION, and it was missing for the same reason frameFloorMin was: nothing in
@@ -1015,6 +1027,28 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
         gm = P0[4];
         for (int pass = 0; pass < kMagicTonePasses; ++pass) {
             lf = solve1d(-0.50, 0.50, subjFloor, [&](double v) { return render(sLo,  v, gm, gn); });
+            // ...BUT NOT THROUGH THE FRAME'S FLOOR. This line is the whole fix.
+            //
+            // The frame-floor guard above sets Lift to keep the picture's own black off zero, and
+            // then this branch re-solved Lift against the subject's floor and threw that away.
+            // Both fire together on exactly the hard frames -- `br 6` -- so the protection was
+            // silently undone every time it was needed. It is why frameFloorMin has read as inert
+            // at every value anyone has ever swept, and why re-anchoring it on a population
+            // statistic changed nothing: the anchor was never the problem, the ordering was.
+            //
+            // Measured on the ETTR frame: shadow separation 0.000 with 11.2% of the frame crushed,
+            // while the face sat exactly on its target. The subject was being placed perfectly
+            // into a picture whose shadows had been destroyed to get it there.
+            //
+            // The priority is the one already stated for the other guard: Lift is global, so when
+            // placing the subject would take the frame's black below the minimum, Lift serves the
+            // FRAME and the subject's midtone is carried by the other control -- Gain here, as it
+            // is for the rest of this branch.
+            if (frameFloorMin >= 0.0 && frameLoY(lf, gm, gn) < frameFloorMin) {
+                branch |= 4;
+                lf = solve1d(-0.50, 0.50, frameFloorMin,
+                             [&](double v) { return frameLoY(v, gm, gn); });
+            }
             gn = solve1d( 0.05,  2.00, subjMid,  [&](double v) { return render(sMid, lf, gm, v); });
             surrPass(lf, gm, gn);
         }
