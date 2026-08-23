@@ -85,7 +85,18 @@ Trim, Output, Setup.
 
 ### Magic Grade
 
-Its tone solve now adapts its highlight target per shot rather than using one fixed value, and
+**Better first results, especially on high-contrast and bright-exposed footage.** The grade that
+protects a picture's shadows was being discarded whenever the solve also had to make room for a
+bright subject — the two corrections fought and the shadow one lost, silently. On the training
+footage that change alone cuts crushed pixels by a third across the set, and shots that previously
+came back with a heavily contrasted face and a black background now land close to finished.
+
+Two kinds of shot that used to need rescuing now grade on the first press: **footage exposed to the
+right** (the Sony Cine EI habit of shooting bright to protect shadow detail), and **frames with a
+face against a much brighter or much darker surround**. Where Magic Grade previously gave up on
+those and left the Creative grade in place, it now produces a result.
+
+Its tone solve also adapts its highlight target per shot rather than using one fixed value, and
 carries targets for subjects other than skin. Magic Grade may therefore land differently than it
 did in v1.4.3 on some footage.
 

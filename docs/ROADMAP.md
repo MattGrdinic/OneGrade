@@ -360,60 +360,69 @@ and every future analysis fix hits the same cliff.**
 Shipped OFF, behind `Tunables::skinToneMask` / `--skin-tone-mask=1`; corpus verified byte-identical
 to v1.5.0 with it off.
 
-### 2026-08-24: the ETTR frame, and a branch-ordering bug that makes the floor guard pointless
+### SOLVED 2026-08-24: the ETTR frame — a branch-ordering bug, not a target problem
 
-User: Magic Grade on ETTR footage still gives extreme face contrast by default, correctable only
-by pushing **both** Bias and Face Tone Separation to their maximum — which works but leaves no
-headroom. *"I'd prefer our results of Magic Grade are nearly perfect; here the skin preset requires
-major slider moves to get right, which hurts confidence."*
+**User's verdict on the fix: "hands-down the best results we've had with the Magic Grade feature.
+The initial apply gives us a perfect starting point, where the sliders land us in the middle of the
+two directions most users would want to go."** That sentence is the acceptance bar for this feature.
 
-**What the Bias sweep says.** At bias 0 the solve is `L−0.402 G1.000 g0.961`, subject placed at
-0.123/0.278/0.450 — the targets are MET exactly. At bias +2.0, where the user ends up, the floor
-target has moved 0.125 → **0.245** and the grade becomes `L+0.110 g0.452`. So the disagreement is
-with the target, not with the solve's ability to reach it. **Below bias −0.30 Lift saturates at
-−0.500 and nothing changes for the remaining 85% of the slider's travel.**
+**The bug, in one sentence:** `branch |= 4` (the frame-floor guard) set Lift to keep the picture's
+own black off zero, and `branch |= 2` (ceiling-gives-way) then re-solved Lift against the subject's
+floor and discarded it. Both fire together on exactly the hard frames, so the shadow protection was
+silently undone every time it was needed.
 
-**Three hypotheses tested and killed, all by measurement:**
+That is why `frameFloorMin` read as **inert at every value anyone ever swept**, and why
+re-anchoring it on a population statistic changed nothing either. **The anchor was never the
+problem; the ordering was.** The fix is one conditional inside branch 2's loop: after placing the
+subject's floor, if that took the frame's floor below the minimum, Lift serves the FRAME and the
+subject's midtone stays with Gain — the priority already written down for the other guard.
 
-| tried | result |
+**The value was chosen by reproducing a hand correction, not by optimising a metric.** On the ETTR
+frame the user corrected with Bias at maximum and landed on **Lift +0.110 / Gain 0.452**;
+`frameFloorMin = 0.080` solves to **+0.119 / 0.437** from a default press. Corpus: total crushed
+share **108.9% → 72.2%**, two frames that previously declined now solve, `00091084` 17.22% → 0.84%
+crushed with separation 0.063 → 0.137, `00096619` 35.27% → 21.33%, `dark-scene` untouched. The only
+reading that moved the wrong way is `00092397`, which loses 0.016 of separation.
+
+### Dead ends from the same investigation — do not retry, and why
+
+Nine hypotheses were tested against this one class of footage. Eight were wrong, and the reasons
+are more useful than the answer.
+
+| tried | why it failed |
 |---|---|
-| the frame ceiling is forcing Gain up | **No** — `br 2` at every ceiling from 0.968 to 0.800, achieved highlight 0.687, never binding |
-| gamma is frozen in branch 2, so give it a bounded leash | **Barely** — subject spread 0.327 → 0.312 at leash 0.35, Lift unmoved at −0.41, declines at 0.5. Reverted. |
-| the frame-floor guard should stop the crushing | **Fires and does nothing** — `br 6` at floorMin 0.060–0.100, Lift still −0.402, shadow separation still 0.000 |
+| **Bidirectional exposure rescue** (pull an ETTR frame down in scene-linear) | Mechanically correct and visually terrible. Pulling down 3.07 stops leaves the solve needing Gain 1.5 to reach the ceiling again; the render comes back washed out. Reported as a fix on shadow metrics alone — `blown` went 13.28% → **69.37%** and nothing was measuring it. |
+| **Frame ceiling is forcing Gain up** | Not binding. `br 2` at every ceiling from 0.968 down to 0.800, achieved highlight 0.687. |
+| **Gamma is frozen in branch 2 — give it a bounded leash** | Worth 0.015 of subject spread (0.327 → 0.312), Lift unmoved at −0.41, and the frame declines outright at leash 0.5. The freeze is right for the case that branch was written for. |
+| **Back the exposure rescue off instead of declining** | Never fires: on those frames *zero* exposure is also rejected, so there is no feasible point to bisect toward. The blocker was upstream. |
+| **Judge blownness on p98 rather than p99.9** | Inert. Those frames are genuinely blown at 2% of frame, so the decline is honest. |
+| **Tonal spread as a mask-credibility test** | Cannot separate the cases: the bad mask reads 0.455 against 0.312–0.459 for masks that solve correctly. |
+| **Raw corpus SKIN target (0.051 / 0.158)** | Measures `person` — body, wardrobe, hair — not skin. Grades a clean face shot visibly dark and flat. |
+| **Narrow the region map to skin** | The WALLS then win subject selection on nearly every face shot (SKIN 21% → BUILT 55%). Selection wants `person`; only the percentiles want skin. |
+| **Select on `person`, measure on skin** | Right shape, and still regresses: `dark-scene` goes from its validated +2.29 EV rescue to declining outright. Kept behind `skinToneMask`, off. |
 
-**That last one is a bug, and it explains a long-standing mystery.** `branch |= 4` (the frame-floor
-guard) runs at line 986; `branch |= 2` (ceiling-gives-way) runs at line 1008 **and re-solves `lf`
-against `subjFloor`**, discarding whatever the guard just set. Whenever both fire — which is
-precisely the hard frames — the shadow protection is silently overwritten. This is why
-`frameFloorMin` has looked inert at every value anyone has ever swept, and why re-anchoring it on a
-population statistic changed nothing either: the anchor was never the problem, the ordering is.
+**The pattern across all of them:** every improvement to the *analysis* moves the subject
+percentiles, every move pushes some frame past `kFrameBlown`, and the fallback — Creative alone —
+is unusable on precisely the frames that most need grading. Three independent routes hit that same
+wall before the real bug was found somewhere else entirely. **When several unrelated fixes fail the
+same way, the shared failure is the bug.**
 
-**Next step, and it is small:** make branch 2 respect the floor guard rather than undo it — either
-re-apply the floor constraint after the ceiling fallback, or fold the guard into branch 2's 2x2 so
-Lift is solved against `max(subjFloor, floor-that-protects-the-frame)`. On the ETTR frame the
-symptom to watch is shadow separation, currently **0.000** with 11.2% of the frame crushed.
+### What is still open here
 
-### The work, in order
-
-0. **Make `highlight blown` survivable.** It is a cliff with a bad landing. Options: judge blownness
-   on a population rather than p99.9 (tried, inert -- those frames are genuinely blown at 2% of
-   frame); accept a blown ceiling when the subject is placed, per the stated priority that "the
-   ceiling gives way to the subject"; or fall back to a partial grade instead of none.
-1. ~~**Narrow `R_SKIN` to actual skin**~~ -- done, and it is `skinToneMask` above: person mask ∩ the chromatic skin window the plugin already
-   carries (`S.skin`, hue 0.01–0.11, sat 0.10–0.65). It exists and is used by the heuristic
-   classifier; the model path ignores it.
-2. **Apply the same narrowing in `experiments/looks`**, so the corpus measures the population the
-   target is applied to. Measuring one thing and grading another is how this got here.
-3. **Re-run and check the spread.** Skin's 73% relative spread is the documented reason it was
-   rejected as a corpus target; if narrowing tightens it toward SKY's 25%, a corpus face target
-   becomes defensible. If it does not, that is also an answer.
-4. **Judge on renders.** Acceptance is the user's: recoverable by slider, not a metric.
-
-`--skin-floor` / `--skin-mid` on the bench set the target directly; `--subj-floor`/`--subj-mid` are
-the legacy scalars and do NOT reach the per-region table.
-
-**Note on `looks.cpp`**: its `subject_viable()` hardcodes `cover > 35.0`, which was SKIN's maxCover
-before it was raised to 0.60. The comment claims it mirrors the plugin's tests; it no longer does.
+0. **Make `highlight blown` survivable — the standing blocker.** It is a cliff with a bad landing:
+   the fallback is Creative alone, which is unusable on the frames that most need grading. Three
+   independent analysis improvements were abandoned because they pushed a frame past it. Options
+   not yet tried: accept a blown ceiling when the subject is placed (the stated priority is already
+   "the ceiling gives way to the subject"), or fall back to a partial grade rather than none.
+   Judging blownness on a population instead of p99.9 was tried and is inert — see the dead ends.
+1. **Resolution independence** — `build_thumb(taps=4)` is built and correct and defaults to 1,
+   because switching it on invalidates every constant fitted against point-sampled masks. Section 6
+   carries the measurement. This is a re-derivation, not a flag.
+2. **`skinToneMask`** — selecting on `person` and measuring on skin is the right shape and the
+   corpus proves the target it implies, but it regresses `dark-scene` into a decline. Blocked on
+   item 0 like everything else here.
+3. **A corpus FACE target** is no longer needed as a fix: narrowed to skin, 411 stills land on
+   0.120 / 0.273 against the shipped 0.125 / 0.278. The shipped value is confirmed, not replaced.
 
 ---
 

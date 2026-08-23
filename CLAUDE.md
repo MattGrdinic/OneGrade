@@ -911,6 +911,62 @@ subject floor (0.125) and midtone (0.278) sit below any fitted knee and are fine
 target (0.968) now means something different** and wants re-deriving. Full write-up + tables:
 `docs/ROADMAP.md`.
 
+## Rules earned the hard way on Magic Grade (2026-08-18..24) — read before touching the solve
+
+**1. LOOK AT THE RENDER. The bench writes graded PNGs so they can be opened.** Two "fixes" were
+reported in one session on metrics alone and neither was one. The worst: a change that took crushed
+pixels 2.14% -> 0.14% and shadow separation 0.000 -> 0.114 produced a washed-out, unusable frame,
+because every number on that line described the SHADOW end and `blown` was going 13.28% -> **69.37%**
+unmeasured. `%blown`/`%blownY` exist now; they are not a substitute for looking. Corollary:
+`%crushMin` is saturation-confounded — a blue-dusk frame reads 54% crushed and looks perfect —
+and `%crushY` is 0.00 on every corpus frame, so **the shadow question rests on `shadowSep`**.
+
+**2. THE ACCEPTANCE BAR IS THE USER'S, AND IT IS NOT A METRIC:** *"the initial apply gives a
+perfect starting point, where the sliders land us in the middle of the two directions most users
+would want to go."* A result that needs a slider at its maximum is a failure even when the picture
+is right, because it leaves no headroom. Their earlier verdict on a regression names the same bar
+from the other side: *"so extreme that using the sliders cannot save the image."*
+
+**3. A HAND CORRECTION IS GROUND TRUTH FOR A CONSTANT.** When the user fixes a bad auto-grade,
+read off what their slider positions do to the TARGETS and fit the default to reproduce them. The
+ETTR fix landed because `frameFloorMin = 0.080` solves to Lift +0.119 / Gain 0.437 on its own,
+against the +0.110 / 0.452 they reached by hand. That agreement chose the value; the corpus totals
+only confirmed it.
+
+**4. WHEN SEVERAL UNRELATED FIXES FAIL THE SAME WAY, THE SHARED FAILURE IS THE BUG.** Three
+independent analysis improvements were abandoned because each pushed some frame past
+`kFrameBlown`. The real defect was somewhere else entirely: `branch |= 2` re-solved Lift and threw
+away the floor guard `branch |= 4` had just set.
+
+**5. A GUARD THAT LOOKS INERT MAY BE OVERWRITTEN, NOT MIS-VALUED.** `frameFloorMin` read as inert
+at every value anyone ever swept, and was twice re-anchored on a better statistic to no effect.
+**Check what runs after it before re-tuning it.**
+
+**6. MEASURING ONE POPULATION AND GRADING ANOTHER IS A BUG.** ADE20K class 12 is `person` — body,
+wardrobe, hair — and in the model path that IS `R_SKIN`. Close up it is a lit face and the target
+works; wide it is mostly clothing. The same confound corrupted the corpus: unnarrowed, 613 stills
+say a face sits at 0.158; narrowed to skin chroma, **411 stills say 0.273 against the shipped
+0.278** — the interview-derived target, confirmed, not replaced.
+
+**7. DON'T LEAVE INERT EXPERIMENTS DEFAULTED OFF.** If the corpus is byte-identical with and
+without, revert it and write the reasoning into `docs/ROADMAP.md`. This project's worst bugs are
+all dormant code that woke later (CUDA fallback, the empty OpenCL function, the Windows LUT
+directory, this floor guard). The exception is something genuinely needed later, gated behind a
+named tunable AND a bench flag AND documented with the measurement that says why it is off —
+`skinToneMask` is the pattern.
+
+**8. VERIFY A TEST BITES.** Flip the fix back and confirm the test fails, then restore. Done for
+the `creative_preset` white-balance test and the floor-statistic test; both would otherwise have
+been assertions that pass for the wrong reason.
+
+**9. THE CORPUS DRIVES TARGETS, NEVER GRADES.** `experiments/looks` reads finished stills, reduces
+each to percentiles per region and discards the pixels; what ships is a few numbers per region.
+`training-data/**` is gitignored on purpose ("PIXELS OUT, RECIPES IN") — **the bench corpus exists
+only on the dev machine**, so any measurement quoted from it is unreproducible elsewhere.
+
+**Full write-ups with the numbers: `docs/ROADMAP.md` 6 (resolution independence) and 7 (the ETTR
+frame, plus a table of nine dead ends and why each failed).**
+
 ## Likely next tasks
 **`docs/ROADMAP.md` is now the single place for deferred work** — it carries the reasoning,
 not just the title, so each item restarts from its conclusion. Read it before re-opening any
