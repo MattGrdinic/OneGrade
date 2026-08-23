@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // THIS FILE IS NOT PART OF THE GOLDEN RULE. OneGradePipeline.h is the single source of truth
-// for colour math and the three GPU kernels mirror it exactly; NOTHING here is mirrored, and
+// for color math and the three GPU kernels mirror it exactly; NOTHING here is mirrored, and
 // nothing here may ever be called from a kernel. It runs once per button press, on the CPU,
 // over a few thousand samples, and it produces PARAMETER VALUES rather than pixels. Separate
 // header and separate namespace so that boundary is structural instead of a comment someone
@@ -19,7 +19,7 @@
 // of thing:
 //
 //   1. DESCRIPTORS — a small vector that says what the frame currently looks like, including
-//      where its dominant colour populations sit and how far apart they are. `Desc` below.
+//      where its dominant color populations sit and how far apart they are. `Desc` below.
 //
 //   2. THE JACOBIAN — how each control moves each descriptor, ON THIS FOOTAGE. This is the
 //      part that replaces writing down what the sliders mean. We do not tell the system that
@@ -32,7 +32,7 @@
 // ---------------------------------------------------------------------------------------
 // THE ONE RULE THAT MAKES THE NUMBERS MEAN ANYTHING: MEMBERSHIP IS FIXED AT NEUTRAL.
 //
-// Every mask here — the mid-tone window, the skin mask, which of the two colour populations
+// Every mask here — the mid-tone window, the skin mask, which of the two color populations
 // a pixel belongs to — is decided ONCE, from the neutral render, by classify(). describe()
 // then only ever recomputes STATISTICS over those fixed memberships.
 //
@@ -56,10 +56,124 @@
 namespace og {
 namespace analysis {
 
-static const int kParamN = 13;   // matches P[] in OneGradePipeline.h
+static const int kParamN = 34;   // matches P[] in OneGradePipeline.h
+
+// THE NEUTRAL PARAMETER SET, IN ONE PLACE. It used to be a brace-initialiser copied into a dozen
+// functions, and every one of them silently zero-filled whatever the param count had grown by
+// since it was written -- so Range Balance's softness and its three gains all read 0 instead of
+// 1 in every neutral render. Harmless only because the stage switches off at latch 0.
+//
+// The same shape, one member away, was a hard crash: m_MagicBaseP was declared `float[13]` and
+// stayed 13 while kParamN reached 21, so copying a grade into it wrote 32 bytes over the three
+// OFX parameter pointers that follow it. A default that has to be retyped in twelve places is a
+// defect waiting for the next parameter.
+// THE SEGMENTATION THUMBNAIL, box-averaged, and shared so the two callers cannot drift.
+//
+// It was nearest-neighbour point sampling in both the plugin and the bench: one source pixel per
+// 512x512 cell, everything else discarded. That is resolution-dependent by construction. At 1228
+// wide it keeps about one pixel in two; at the user's native 12K it keeps one in ~550, so the
+// model reads an aliased frame full of whatever single pixels the grid happened to land on --
+// skin texture, hair, sensor noise -- rather than the picture.
+//
+// Measured on one frame at two sizes: SKIN coverage 12% at 1228x511 against 24% at 6144x2556, the
+// color move reversing sign (+0.161 to -0.127), a different solve branch, crushed 2.14% -> 11.23%
+// and blown 13.28% -> 3.38%. The frame MEASUREMENT was stable across both (key -0.58, src99 0.617
+// vs 0.618) -- it is only what the model sees that moves, and everything downstream follows it.
+//
+// That is also why the bench and Resolve disagreed on the same shot: the bench was fed a downsized
+// export and Resolve the native clip, so the two built different thumbnails from one frame. The
+// harness cannot check the plugin while the thing it checks depends on how the file was exported.
+//
+// TAPS ARE CAPPED. A true box filter at 12K is ~550 fetches per cell and 144M for the thumbnail,
+// which is not something a button press can do. 4x4 evenly spaced taps per cell is 16 at any
+// source size, and buys almost all of the anti-aliasing -- the point is to stop reading ONE pixel,
+// not to be exact.
+//
+// Fetch is void(int sx, int sy, float& r, float& g, float& b) in TOP-DOWN source coordinates; the
+// caller owns any flip, since OFX images arrive bottom-up and PNGs do not.
+// TAPS DEFAULTS TO 1 -- the old point sample, bit for bit -- AND THAT IS NOT THE END STATE.
+//
+// Box-averaging (taps=4) is correct and is the user's stated requirement: the same shot must grade
+// the same whether it arrives as a 12K native clip or a 2K proxy. It was made the default on
+// 2026-08-23 and reverted the same day, because it made the plugin unusable rather than merely
+// different.
+//
+// The thumbnail feeds segmentation, segmentation produces the subject mask, and every tone target
+// was fitted against masks the OLD thumbnail produced. On `dark-scene00117737` the mask moved 16%
+// -> 14% by area while the subject's tonal SPREAD halved, 0.429 -> 0.226; placing a subject half as
+// wide at both a 0.125 floor and a 0.278 midtone needs a far harder curve, which blows the frame,
+// which trips the decline. The frame went from the user's validated +2.29 EV rescue to no grade at
+// all. Their verdict on the corpus as a whole: results "so extreme that using the sliders cannot
+// save the image", where before they were a workable default that Bias and Separation could tune.
+//
+// So this ships at 1 until the tone targets are re-derived against box-averaged masks --
+// `docs/ROADMAP.md` 6, which carries the measurement and the list. `--thumb-taps=4` on the bench
+// is the switch, and the acceptance criterion is not a metric: it is whether the sliders can still
+// recover the picture.
+template <class Fetch>
+static inline void build_thumb(int T, int w, int h, const Fetch& at, float* dst, int taps = 1)
+{
+    if (T <= 0 || w <= 0 || h <= 0 || !dst) return;
+    const int kMaxTap = (taps < 1) ? 1 : taps;
+    for (int ty = 0; ty < T; ++ty) {
+        const int y0 = (int)(((long long)ty * h) / T);
+        const int y1 = std::max(y0 + 1, (int)(((long long)(ty + 1) * h) / T));
+        const int ny = std::min(kMaxTap, y1 - y0);
+        for (int tx = 0; tx < T; ++tx) {
+            const int x0 = (int)(((long long)tx * w) / T);
+            const int x1 = std::max(x0 + 1, (int)(((long long)(tx + 1) * w) / T));
+            const int nx = std::min(kMaxTap, x1 - x0);
+            float ar = 0.f, ag = 0.f, ab = 0.f;
+            for (int j = 0; j < ny; ++j) {
+                const int sy = y0 + (int)(((long long)j * (y1 - y0)) / ny);
+                for (int i = 0; i < nx; ++i) {
+                    const int sx = x0 + (int)(((long long)i * (x1 - x0)) / nx);
+                    float r = 0.f, g = 0.f, b = 0.f;
+                    at(sx, sy, r, g, b);
+                    ar += r; ag += g; ab += b;
+                }
+            }
+            const float inv = 1.f / (float)(nx * ny);
+            float* o = &dst[((size_t)ty * T + tx) * 3];
+            o[0] = ar * inv; o[1] = ag * inv; o[2] = ab * inv;
+        }
+    }
+}
+
+static inline void neutral_params(float* P)
+{
+    P[0]=0.f;   P[1]=0.f;  P[2]=0.f;                 // balance temp / tint / density
+    P[3]=0.f;   P[4]=1.f;  P[5]=1.f;                 // lift / gamma / gain
+    P[6]=0.f;   P[7]=0.f;                            // offset temp / tint
+    P[8]=0.f;   P[9]=1.f;                            // post exposure / contrast
+    P[10]=0.f;  P[11]=6500.f;                        // RAW exposure / temperature
+    P[12]=0.f;                                       // rolloff
+    P[13]=0.f;  P[14]=2.6f;                          // Range Balance: latch off, softness
+    P[15]=1.f;  P[19]=1.f;                           //   held gain / gamma
+    P[16]=0.f;  P[17]=1.f;  P[20]=1.f;               //   rest lift / gamma / gain
+    P[18]=0.f;                                       //   show mask
+    // The mask's REFERENCE grade. Neutral means "no lock": the caller writes the live Lift/Gamma/
+    // Gain here and the mask reads the picture as graded, exactly as it did before the lock existed.
+    P[21]=0.f;  P[22]=1.f;  P[23]=1.f;
+    // Range Balance's SHAPE. Type 0 is "no shape", which is what makes the whole thing inert --
+    // shape_mask() returns 1.0 and the luminance mask stands alone, exactly as before it existed.
+    P[24]=0.f;                                       // shape: 0 off, 1 ellipse, 2 rectangle
+    P[25]=0.f;  P[26]=0.f;                           //   centre x / y (centre-origin, half-height units)
+    P[27]=0.5f; P[28]=0.5f;                          //   size x / y
+    P[29]=0.f;  P[30]=0.25f; P[31]=0.f;              //   rotation (deg) / softness / invert
+    // THE TONE MAP, off in the NEUTRAL set -- `white <= knee` is what tone_map() reads as identity.
+    //
+    // Off here is not the shipping default. The node measures the frame when it is applied and
+    // shapes the shoulder to it (fit_tone_map / autoFitOnApply), so a real render usually carries
+    // one. This is the ANALYSIS neutral, and it stays off for the same reason every other stage
+    // does: it is the reference the Jacobian differentiates around, and a reference that moved per
+    // frame would make the derivatives incomparable between shots.
+    P[32]=0.40f; P[33]=0.0f;                         // shoulder knee / white point (0 = off)
+    static_assert(kParamN == 34, "neutral_params() needs an entry for every parameter");
+}
 
 // ---------------------------------------------------------------------------------------
-// CIELAB, for the colour half of the descriptor set.
+// CIELAB, for the color half of the descriptor set.
 //
 // HSV (what the pipeline uses for Density) is the wrong space to MEASURE a cast in: its hue
 // is an angle on a hexagon, its saturation is scale-dependent, and neither has a warm-cool
@@ -127,7 +241,7 @@ static inline void render_sample(int cam, int enc, const float* P,
 // ---------------------------------------------------------------------------------------
 // THE DESCRIPTOR VECTOR — what the frame looks like, in twelve numbers.
 //
-// Chosen so that (a) each is something a colourist would actually name, and (b) each is a
+// Chosen so that (a) each is something a colorist would actually name, and (b) each is a
 // SMOOTH function of the parameters, so a finite-difference Jacobian is meaningful. That
 // second constraint is why D_OVER is mean overshoot rather than the `hot` percentage the
 // panel reports: a share-above-threshold is a step function, so its derivative is counting
@@ -154,7 +268,7 @@ static inline void render_sample(int cam, int enc, const float* P,
 // between the frame's two regions: dL* is tone separation, da*/db* are hue separation.
 //
 // REGIONS ARE THE TOP AND BOTTOM THIRD, and that is a stand-in. It works on this footage —
-// db* came back +43 and cleanly found sky-over-water where colour clustering returned two
+// db* came back +43 and cleanly found sky-over-water where color clustering returned two
 // populations both at orange (h29 and h44) — because a landscape separates its objects by
 // height. It fails the moment they do not: two people side by side, a car against a wall, a
 // face against a window. THIS IS THE SEAM WHERE SEGMENTATION PLUGS IN — supplying real region
@@ -170,11 +284,18 @@ enum {
     D_DL,       // TONE separation: region A minus region B in L*
     D_DA,       // HUE separation, green/magenta axis
     D_DB,       // HUE separation, warm/cool axis
+    // The same triple asked of the SUBJECT against everything else, once a segmentation has
+    // said which region the subject is. Separate descriptors rather than a redefinition of the
+    // three above, so the band version and everything fitted against it stay exactly as they
+    // were and the two can be compared on the same frame. Zero when there is no subject.
+    D_RDL,      // TONE separation: subject minus surround in L*
+    D_RDA,      // HUE separation, green/magenta axis
+    D_RDB,      // HUE separation, warm/cool axis
     D_SKINL,    // luma median over the skin mask (0 when coverage is too low to trust)
     D_SKINB,    // b* over the skin mask (0 when coverage is too low to trust)
     // --- report-only below: measured honestly, but NOT steerable. See the note above. ---
-    D_CHROMA,   // mean C* over mid-tones — overall colourfulness, what Density acts on
-    D_SEP,      // ab distance between the two dominant colour populations
+    D_CHROMA,   // mean C* over mid-tones — overall colorfulness, what Density acts on
+    D_SEP,      // ab distance between the two dominant color populations
     kDescN
 };
 
@@ -185,7 +306,8 @@ static const int kSteerableDescN = D_SKINB + 1;
 static inline const char* desc_name(int i)
 {
     static const char* n[kDescN] = { "black","mid","white","over","a*","b*",
-                                     "dL*","da*","db*","skinL","skinb*","chroma","sep" };
+                                     "dL*","da*","db*", "rdL*","rda*","rdb*",
+                                     "skinL","skinb*","chroma","sep" };
     return (i >= 0 && i < kDescN) ? n[i] : "?";
 }
 
@@ -217,6 +339,12 @@ struct SampleSet {
     // location. The flip is the whole reason these are stored rather than recomputed: getting
     // it wrong turns sky into ground silently, and the numbers would all still look plausible.
     std::vector<float> u, v;
+    // WHICH REGION IS THE SUBJECT, once something has decided -- -1 until then. Carried on the
+    // sample set rather than passed to describe() so the Jacobian, which calls describe() a
+    // couple of dozen times, cannot take its derivative around a different subject than the
+    // operating point was measured with. Same reasoning as decimate() copying memberships
+    // instead of re-deriving them.
+    int subject = -1;
     size_t size() const { return band.size(); }
 };
 
@@ -253,6 +381,43 @@ static inline float region_salience(int r)
 // is the most visible way to wreck a frame, so when skin is the subject the SURROUND moves
 // instead. See magic_decide().
 static inline bool region_protected(int r) { return r == R_SKIN; }
+
+// THE CHROMATIC SKIN WINDOW, in one place. It was written out inline in classify() and nowhere
+// else, which was fine while only the heuristic classifier used it.
+static inline bool skin_chroma(float r, float g, float b)
+{
+    float h, s, v; og::rgb2hsv(r, g, b, h, s, v);
+    return (h >= 0.01f && h <= 0.11f && s >= 0.10f && s <= 0.65f && v >= 0.03f && v <= 1.05f);
+}
+
+// NARROW THE MODEL'S `person` LABEL TO ACTUAL SKIN.
+//
+// ADE20K class 12 is "person" -- whole body, wardrobe and hair -- and in the model path that IS
+// R_SKIN, the region the face tone target is applied to. Those are different populations and the
+// difference is not small: on a close-up, person is essentially a lit face, which is why a target
+// measured on one hand-graded interview works there; on a wide shot the region is mostly dark
+// clothing, and driving ITS shadows and midtone to a face's floor and midtone is the "too bright,
+// oversaturated" failure reported on 2026-08-23.
+//
+// The same confound corrupted the corpus measurement, which is the tell that it is one bug and not
+// two: over 1064 stills SKIN measured floor 0.051 / mid 0.158 against a shipped 0.125 / 0.278,
+// because 613 of those regions were mostly clothes. Measuring one population and grading another.
+//
+// Demoted to R_OTHER rather than dropped, because "not skin" is not "not there" -- the pixels
+// still belong to the frame and still count against coverage. R_OTHER has no tone target, so
+// nothing is guessed about them.
+//
+// Runs on the DISPLAY-referred thumbnail, which is what the window was fitted on and what the
+// segmentation itself is handed.
+static inline void refine_skin(unsigned char* regions, const unsigned char* rgb8, size_t n)
+{
+    if (!regions || !rgb8) return;
+    for (size_t i = 0; i < n; ++i) {
+        if (regions[i] != (unsigned char)R_SKIN) continue;
+        if (!skin_chroma(rgb8[i*3+0] / 255.f, rgb8[i*3+1] / 255.f, rgb8[i*3+2] / 255.f))
+            regions[i] = (unsigned char)R_OTHER;
+    }
+}
 
 struct RegionStat { float cover = 0.f, L = 0.f, a = 0.f, b = 0.f; };
 
@@ -299,6 +464,11 @@ static inline SampleSet decimate(const SampleSet& S, size_t target)
         D.region.push_back(S.region.empty() ? (uint8_t)R_OTHER : S.region[i]);
         if (!S.u.empty()) { D.u.push_back(S.u[i]); D.v.push_back(S.v[i]); }
     }
+    // Which region is the subject is a membership like any other, and the same argument applies:
+    // dropping it would leave the Jacobian's describe() calls with no subject while the operating
+    // point had one, so the separation triple would read a derivative of zero against a non-zero
+    // value -- the "runs, reports, and does nothing" shape the region copy above was added for.
+    D.subject = S.subject;
     return D;
 }
 
@@ -311,7 +481,7 @@ static inline Extras classify(SampleSet& S, int cam, int enc)
     S.group.assign(n, 2); S.mid.assign(n, 0); S.skin.assign(n, 0);
     if (n == 0) return ex;
 
-    float P[kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float P[kParamN]; neutral_params(P);
     std::vector<float> la(n), lb(n);
     std::vector<uint32_t> pool; pool.reserve(n);
     long long hot = 0, skinN = 0;
@@ -332,10 +502,7 @@ static inline Extras classify(SampleSet& S, int cam, int enc)
         // Skin mask: the existing chromaticity-only window from probeAnalyze, unchanged.
         // It still cannot tell skin from sand — Extras::skinPct is the tell, and the two
         // skin descriptors are zeroed below when coverage is too low to mean anything.
-        float h, s, v; og::rgb2hsv(r, g, b, h, s, v);
-        if (h >= 0.01f && h <= 0.11f && s >= 0.10f && s <= 0.65f && v >= 0.03f && v <= 1.05f) {
-            S.skin[i] = 1; ++skinN;
-        }
+        if (skin_chroma(r, g, b)) { S.skin[i] = 1; ++skinN; }
 
         // Clustering pool: everything except crushed blacks and blown whites, where a
         // chromaticity carries no information.
@@ -350,7 +517,7 @@ static inline Extras classify(SampleSet& S, int cam, int enc)
     // TWO-MEANS IN (a*, b*), SEEDED BY PCA so it is deterministic — no random init, so the
     // same frame always yields the same two populations and a Jacobian taken around it is
     // reproducible. Seeds go at +/- one standard deviation along the principal axis, which is
-    // by construction the direction the frame's colour actually spreads in.
+    // by construction the direction the frame's color actually spreads in.
     double ma = 0, mb = 0;
     for (uint32_t i : pool) { ma += la[i]; mb += lb[i]; }
     ma /= (double)pool.size(); mb /= (double)pool.size();
@@ -434,8 +601,13 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
     double gA[2] = {0,0}, gB[2] = {0,0}; long long gN[2] = {0,0};
     // Band means in LAB, not in display luma. L* puts tone on the same perceptual footing as
     // a*/b*, so the separation triple is one coherent Lab difference between two regions
-    // rather than a tone number and two colour numbers that cannot be compared with each other.
+    // rather than a tone number and two color numbers that cannot be compared with each other.
     double bandL[3] = {0,0,0}, bandA[3] = {0,0,0}, bandB[3] = {0,0,0}; long long bandN[3] = {0,0,0};
+    // Subject and surround, as the same Lab means over two populations that partition the frame.
+    // Index 0 is the surround and 1 the subject, so the difference below reads the same way round
+    // as the band triple: the thing of interest minus the thing it has to stand out from.
+    double regL[2] = {0,0}, regA[2] = {0,0}, regB[2] = {0,0}; long long regN[2] = {0,0};
+    const bool haveSubject = (S.subject >= 0 && S.subject < kRegionN && S.region.size() == n);
     double skB = 0; long long skN = 0;
 
     for (size_t i = 0; i < n; ++i) {
@@ -456,6 +628,10 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
         if (gp < 2) { gA[gp] += a; gB[gp] += bb; ++gN[gp]; }
         const uint8_t bd = S.band[i];
         if (bd < 3) { bandL[bd] += L; bandA[bd] += a; bandB[bd] += bb; ++bandN[bd]; }
+        if (haveSubject) {
+            const int k = ((int)S.region[i] == S.subject) ? 1 : 0;
+            regL[k] += L; regA[k] += a; regB[k] += bb; ++regN[k];
+        }
         if (S.skin[i]) { skinLum.push_back(Y); skB += bb; ++skN; }
     }
 
@@ -480,6 +656,16 @@ static inline Desc describe(const SampleSet& S, int cam, int enc, const float* P
         d.v[D_DL] = (float)(bandL[2]/bandN[2] - bandL[0]/bandN[0]);
         d.v[D_DA] = (float)(bandA[2]/bandN[2] - bandA[0]/bandN[0]);
         d.v[D_DB] = (float)(bandB[2]/bandN[2] - bandB[0]/bandN[0]);
+    }
+    // THE SAME TRIPLE OVER REAL REGIONS. Gated on BOTH populations, with the same minimum, because
+    // the two sides are symmetric here in a way the skin mask's bounds are not: a subject at 1% of
+    // frame and a subject at 99% both leave one mean built from noise, and neither difference means
+    // anything. Reusing skin_trustworthy()'s upper bound would be wrong -- that 25% says "this
+    // stopped being a face", which is a statement about the label, not about the arithmetic.
+    if (regN[0] >= 200 && regN[1] >= 200) {
+        d.v[D_RDL] = (float)(regL[1]/regN[1] - regL[0]/regN[0]);
+        d.v[D_RDA] = (float)(regA[1]/regN[1] - regA[0]/regN[0]);
+        d.v[D_RDB] = (float)(regB[1]/regN[1] - regB[0]/regN[0]);
     }
     // Zeroed rather than reported unless the mask is believable — too few pixels is noise, too
     // many means it matched the scene rather than a face. Same gate classify() reports through
@@ -516,7 +702,7 @@ static inline void stub_regions(SampleSet& S, int cam, int enc)
     S.region.assign(n, (uint8_t)R_OTHER);
     if (n == 0) return;
 
-    float P[kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float P[kParamN]; neutral_params(P);
     std::vector<float> vL(n), va(n), vb(n);
     double sumL = 0.0;
     for (size_t i = 0; i < n; ++i) {
@@ -568,7 +754,7 @@ static inline bool assign_regions(SampleSet& S, const std::vector<uint8_t>& mask
     return true;
 }
 
-// Per-region colour, for a given parameter vector. Same fixed-membership rule as everything
+// Per-region color, for a given parameter vector. Same fixed-membership rule as everything
 // else here: regions are decided once from the neutral render and only the STATISTICS move.
 static inline void region_stats(const SampleSet& S, int cam, int enc, const float* P,
                                 RegionStat* out)
@@ -629,7 +815,7 @@ struct MagicChoice {
     // THE NUMBERS THE DECISION WAS MADE FROM, carried out so the panel can explain itself.
     //
     // This is not diagnostics. The feature's stated job is to surface a move an inexperienced
-    // colourist would not have considered -- "there is water in this shot, cool it and see" --
+    // colorist would not have considered -- "there is water in this shot, cool it and see" --
     // and a suggestion nobody can see the reasoning behind teaches nothing and cannot be argued
     // with. It also makes a WRONG pick legible instead of mysterious, which matters more here
     // than usual: the tool is admittedly fallible by design, so every call it makes has to show
@@ -641,7 +827,7 @@ struct MagicChoice {
 
 static const int kMagicMinCover = 6;     // below this a region is scenery, not a subject
 // Above this, one region IS the frame and the rest is a sliver -- a macro of leaves comes back
-// 98% wall against 2% foliage, and pushing those apart is a colour cast justified by speckle.
+// 98% wall against 2% foliage, and pushing those apart is a color cast justified by speckle.
 //
 // DERIVED FROM THE FLOOR RATHER THAN PICKED. The two were independent numbers, 6 and 88, and
 // they disagreed: a downward city view measured 92.9% structure against 7.1% roofs and streets,
@@ -760,7 +946,12 @@ static inline MagicChoice magic_decide(const RegionStat* st, int click)
 static inline const float* param_steps()
 {
     //                temp  tint  dens  lift  gamma gain  oTmp  oTnt  pExp  pCon  rExp  rTemp  roll
-    static const float s[kParamN] = { 0.05f,0.05f,0.05f,0.02f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,250.f,0.05f };
+    //                then range balance: latch  soft  high  rbLift rbGamma
+    static const float s[kParamN] = { 0.05f,0.05f,0.05f,0.02f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,0.05f,250.f,0.05f,
+                                      2.0f, 0.5f, 0.05f, 0.02f, 0.05f, 0.f, 0.05f, 0.05f,
+                                      0.f, 0.f, 0.f,
+                                      0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f,
+                                      0.f, 0.f };
     return s;
 }
 
@@ -787,7 +978,7 @@ static inline const float* param_steps()
 //        T = 6499  ->  rgb 0.54311 0.55807 0.54535   (a* -2.064)
 //        T = 6500  ->  rgb 0.55397 0.55397 0.55397   (a* -0.002, forced neutral)
 //        T = 6501  ->  rgb 0.54315 0.55806 0.54528   (a* -2.063)
-//   A visible green cast appears out of nowhere on the first nudge. Fixing it is a colour-math
+//   A visible green cast appears out of nowhere on the first nudge. Fixing it is a color-math
 //   change and therefore a golden-rule four-file edit — adapt to blackbody(6500) instead of to
 //   D65 and the stated contract becomes true by construction, with no early-out needed.
 //
@@ -800,6 +991,15 @@ static inline void steer_mask(const float* P0, bool* allow)
     allow[12] = false;                                        // rolloff: step at 0, and the
                                                               // pin fit already owns it
     if (std::fabs(P0[11] - 6500.0f) < 2.0f) allow[11] = false; // rawTemp: sitting in the dead band
+    // Range Balance's Show Mask and the mask's three reference-grade slots are not controls a
+    // solver may reach for: the first replaces the picture with a matte, and the other three
+    // define WHERE THE MASK IS rather than what the grade does. Their steps are 0, so they would
+    // contribute a zero row anyway -- excluding them here just saves two describe() passes each.
+    allow[18] = false;
+    allow[21] = allow[22] = allow[23] = false;
+    for (int i = 24; i < 32; ++i) allow[i] = false;   // ...and the shape: geometry, not grade
+    allow[32] = allow[33] = false;                   // ...and the tone map: the display transform,
+                                                     // not something a look solve may reach for
 }
 
 struct Jac {
@@ -810,7 +1010,11 @@ struct Jac {
 static inline const char* param_name(int p)
 {
     static const char* n[kParamN] = { "tmp","tnt","dns","lft","gam","gan",
-                                      "oTm","oTn","pEx","pCn","rEx","rTm","rol" };
+                                      "oTm","oTn","pEx","pCn","rEx","rTm","rol",
+                                      "rbL","rbS","rbH","rbF","rbG","rbW","rbHg","rbLg",
+                                      "rfF","rfG","rfN",
+                                      "shT","shX","shY","shW","shH","shR","shS","shI",
+                                      "tmK","tmW" };
     return (p >= 0 && p < kParamN) ? n[p] : "?";
 }
 
@@ -859,7 +1063,7 @@ static inline void jac_predict(const Jac& J, const float* dpNorm, float* ddOut)
 // underdetermined — twelve descriptors, thirteen controls, several of which overlap almost
 // exactly (Gain and Post Exposure both raise the midtone) — so an undamped solve would find
 // some enormous cancelling pair that is correct to first order and absurd on the picture.
-// lambda buys the SMALLEST move that gets close, which is also the one a colourist would make.
+// lambda buys the SMALLEST move that gets close, which is also the one a colorist would make.
 //
 // `allow` restricts which controls may move, so a caller can say "fix this with Balance only"
 // and get an answer in the controls it is willing to spend.
@@ -918,8 +1122,24 @@ static inline void solve_intent(const Jac& J, const float* dd, const float* w,
 // Step-normalised move -> real parameter values, with the ranges the panel enforces.
 static inline void apply_move(const float* P0, const float* dpNorm, float* Pout)
 {
-    static const float lo[kParamN] = { -1.f,-1.f,-1.f, -0.5f, 0.20f, 0.20f, -1.f,-1.f, -3.f, 0.20f, -5.f, 2000.f, 0.f };
-    static const float hi[kParamN] = {  1.f, 1.f, 1.f,  0.5f, 3.00f, 3.00f,  1.f, 1.f,  3.f, 3.00f,  5.f,20000.f, 0.8f };
+    // THREE TABLES ARE SIZED BY kParamN AND INITIALISED BY HAND, and C++ zero-fills any it is
+    // short of rather than refusing to compile. Adding Range Balance silently gave the new
+    // controls a step of 0 (a derivative of "does nothing"), a null name, and -- worst -- a
+    // clamp range of [0,0] here, which wiped them to zero on every solve. Caught by one test;
+    // the other two would have surfaced as a feature that quietly could not be steered.
+    // If a param is added, all three grow with it.
+    //                              temp  tint  dens   lift   gamma  gain  oTmp oTnt  pExp  pCon  rExp   rTemp  roll
+    //                              then range balance: latch  soft  high  rbLift rbGamma
+    static const float lo[kParamN] = { -1.f,-1.f,-1.f, -0.5f, 0.20f, 0.20f, -1.f,-1.f, -3.f, 0.20f, -5.f, 2000.f, 0.f,
+                                       0.f,  0.f, 0.05f, -0.5f, 0.20f, 0.f, 0.20f, 0.20f,
+                                      -0.5f, 0.20f, 0.20f,
+                                       0.f, -2.f, -2.f, 0.01f, 0.01f, -180.f, 0.f, 0.f,
+                                       0.f, 0.f };
+    static const float hi[kParamN] = {  1.f, 1.f, 1.f,  0.5f, 3.00f, 3.00f,  1.f, 1.f,  3.f, 3.00f,  5.f,20000.f, 0.8f,
+                                     100.f, 25.f, 2.00f,  0.5f, 3.00f, 1.f, 3.00f, 3.00f,
+                                       0.5f, 3.00f, 3.00f,
+                                       2.f,  2.f,  2.f,  4.00f, 4.00f, 180.f, 1.f, 1.f,
+                                       0.95f, 20.f };
     const float* st = param_steps();
     for (int i = 0; i < kParamN; ++i) {
         float v = P0[i] + dpNorm[i]*st[i];

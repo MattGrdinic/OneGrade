@@ -45,9 +45,11 @@ namespace oga = og::analysis;
 // to a header, this should call it instead.
 static inline void full_chain(int cam, int enc, const float* P,
                               const float* lut, int lutSize, float lutMix,
-                              float ri, float gi, float bi, float& ro, float& go, float& bo)
+                              float ri, float gi, float bi, float& ro, float& go, float& bo,
+                              float shapeM = 1.f)
 {
-    og::process(cam, enc, P, ri, gi, bi, ro, go, bo);
+    og::process(cam, enc, P, ri, gi, bi, ro, go, bo, shapeM);
+    if (P[18] > 0.5f && P[13] > 0.f) return;   // matte: no LUT, no trim (mirrors og_full_chain)
     const bool lutOn = (lut && lutSize >= 2 && lutMix > 0.f);
     if (lutOn) og::apply_lut(lut, lutSize, lutMix, ro, go, bo);
     og::apply_trim(P[8], P[9], ro, go, bo);
@@ -87,7 +89,7 @@ static og::grade::Measurements measure(const Frame& f, int cam, int enc, oga::Sa
 {
     og::grade::Measurements m;
     const int step = std::max(1, (int)(std::sqrt((double)(f.w * f.h) / 200000.0) + 0.5));
-    float N[oga::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float N[oga::kParamN]; oga::neutral_params(N);
 
     // TWO ENCODES, mirroring probeAnalyze(). `hot` is a threshold chosen in display space, so it
     // needs a display-referred encode; d01/d99 get pushed through og_lgg by the solve, so they
@@ -171,14 +173,32 @@ int main(int argc, char** argv)
     tun.subjFloor    = argd(argc, argv, "--subj-floor",    tun.subjFloor);
     tun.subjMid      = argd(argc, argv, "--subj-mid",      tun.subjMid);
     tun.rawExpMax    = argd(argc, argv, "--raw-exp-max",   tun.rawExpMax);
+    tun.rawExpMin    = argd(argc, argv, "--raw-exp-min",   tun.rawExpMin);
+    tun.skinToneMask = argd(argc, argv, "--skin-tone-mask", 0.0) != 0.0;
     tun.subjNeutralMid = argd(argc, argv, "--subj-neutral-mid", tun.subjNeutralMid);
+    // The SKIN credibility ceiling, so the guard can be walked rather than argued about. It is a
+    // proxy for an infeasible mask and the only way to see what it is refusing is to lift it.
+    tun.region[og::analysis::R_SKIN].maxCover =
+        argd(argc, argv, "--skin-max-cover", tun.region[og::analysis::R_SKIN].maxCover);
+    // The SKIN tone target itself. subjFloor/subjMid are the legacy scalars; the solve reads the
+    // per-region table, so testing a corpus-derived face target needs these.
+    tun.region[og::analysis::R_SKIN].floor =
+        argd(argc, argv, "--skin-floor", tun.region[og::analysis::R_SKIN].floor);
+    tun.region[og::analysis::R_SKIN].mid =
+        argd(argc, argv, "--skin-mid",   tun.region[og::analysis::R_SKIN].mid);
     tun.frameCeiling = argd(argc, argv, "--frame-ceiling", tun.frameCeiling);
+    tun.frameCeilingLow = argd(argc, argv, "--frame-ceiling-low", tun.frameCeilingLow);
+    tun.frameFloorMin= argd(argc, argv, "--frame-floor-min", tun.frameFloorMin);
+    tun.frameFloorMax= argd(argc, argv, "--frame-floor-max", tun.frameFloorMax);
     tun.magicUnit  = argd(argc, argv, "--unit",         tun.magicUnit);
     const int   cam = (int)argd(argc, argv, "--camera", og::grade::kCreativeCamera);
     const int   enc = (int)argd(argc, argv, "--encode", og::grade::kCreativeEncode);
     const double sep = argd(argc, argv, "--sep", 1.0);
     const bool  wb  = argf(argc, argv, "--wb");
     const bool  noTone = argf(argc, argv, "--no-tone");
+    // 1 = the shipped point sample; 4 = box-averaged, which makes the thumbnail
+    // resolution-independent and moves every frame. See build_thumb.
+    const int   thumbTaps = (int)argd(argc, argv, "--thumb-taps", 1.0);
     // Which press. Magic Grade offers a different subject each time it is pressed, and until
     // now the bench could only ever see press one -- so a grade the user reached on press two
     // could not be reproduced here at all.
@@ -186,6 +206,39 @@ int main(int argc, char** argv)
     // BIAS, swept. The slider re-solves the tone targets rather than nudging sliders, and that
     // re-solve is shared code -- so the bench can walk it and show where it stops converging,
     // which is the only way to see a discontinuity without dragging a slider in Resolve.
+    // Both separation triples per frame -- the band stand-in and the region version beside it.
+    const bool  sepReport = argf(argc, argv, "--sep-report");
+    // The rdL*/rdb* rows of the descriptor Jacobian, to choose the slider's controls by measurement.
+    const bool  sepJac    = argf(argc, argv, "--sep-jac");
+    // HIGHLIGHT MASK PROTOTYPE. Numbers are on Resolve's 0..100 qualifier scale so a colorist's
+    // own settings can be typed straight in and the two compared on one frame.
+    const bool   hlOn    = argf(argc, argv, "--hl");
+    const double hlLow   = argd(argc, argv, "--hl-low",   -1.0);   // -1 = derive it from the frame
+    const double hlSoft  = argd(argc, argv, "--hl-soft",    2.6);
+    const double hlLift  = argd(argc, argv, "--hl-lift",    0.0);
+    const double hlGamma = argd(argc, argv, "--hl-gamma",   1.0);
+    const double hlGain  = argd(argc, argv, "--hl-gain",    1.0);
+    const double hlHiGain= argd(argc, argv, "--hl-hi-gain", 1.0);   // pull the HELD area down
+    const double hlHiGamma=argd(argc, argv, "--hl-hi-gamma",1.0);   // ...and put its detail back
+    const bool   hlShow  = argf(argc, argv, "--hl-show");           // write the mask itself
+    // Lock the mask against the grade: the reference grade the mask reads is captured BEFORE the
+    // exposure move under test, so the selection stops following it. Pass the grade to lock at.
+    // The SHAPE: where Range Balance may act. Centre-origin, half-height units on both axes.
+    const double shType  = argd(argc, argv, "--shape",    0.0);   // 0 off, 1 ellipse, 2 rect
+    const double shX     = argd(argc, argv, "--shape-x",  0.0);
+    const double shY     = argd(argc, argv, "--shape-y",  0.0);
+    const double shW     = argd(argc, argv, "--shape-w",  0.5);
+    const double shH     = argd(argc, argv, "--shape-h",  0.5);
+    const double shR     = argd(argc, argv, "--shape-rot",0.0);
+    const double shS     = argd(argc, argv, "--shape-soft",0.25);
+    const bool   shInv   = argf(argc, argv, "--shape-invert");
+    const bool   hlLock  = argf(argc, argv, "--hl-lock");
+    const double hlLockL = argd(argc, argv, "--hl-lock-lift",  0.0);
+    const double hlLockG = argd(argc, argv, "--hl-lock-gamma", 1.0);
+    const double hlLockN = argd(argc, argv, "--hl-lock-gain",  1.0);
+    // The Tone Separation slider: walk it, and vary how far one unit moves the subject's midtone.
+    const bool  toneSepSweep = argf(argc, argv, "--tone-sep-sweep");
+    const double toneSepPer  = argd(argc, argv, "--tone-sep-per", og::grade::kToneSepMidPer);
     const bool  biasSweep = argf(argc, argv, "--bias-sweep");
     // How often the sweep writes a frame. 0 prints the table and writes nothing.
     const double biasStep = argd(argc, argv, "--bias-step", 0.5);
@@ -261,17 +314,21 @@ int main(int argc, char** argv)
         og::grade::Measurements m = measure(f, cam, enc, S);
 
         // THE WHOLE SEQUENCE COMES FROM ONE PLACE. This used to spell out the order -- creative,
-        // segment, decide, tone, colour, re-solve -- and so did applyMagicGrade, and they drifted:
-        // the re-solve after the colour move landed here and not there, and the two produced
+        // segment, decide, tone, color, re-solve -- and so did applyMagicGrade, and they drifted:
+        // the re-solve after the color move landed here and not there, and the two produced
         // different pictures from the same still. Only the segmentation is supplied locally,
         // because the model belongs to the caller.
+        // The SAME builder the plugin uses. It was a hand-written point sample here and a
+        // hand-written point sample there, which is two implementations of one thing -- and they
+        // were fed different resolutions, so they produced different thumbnails from one shot and
+        // the harness could not check the plugin. PNGs are already top-down, so no flip.
         std::vector<float> tsrc((size_t)512 * 512 * 3);
-        for (int y = 0; y < 512; ++y)
-            for (int x = 0; x < 512; ++x) {
-                const float* q = &f.px[(((size_t)(y * f.h / 512) * f.w) + (x * f.w / 512)) * 3];
-                const size_t o = ((size_t)y * 512 + x) * 3;
-                tsrc[o] = q[0]; tsrc[o+1] = q[1]; tsrc[o+2] = q[2];
-            }
+        oga::build_thumb(512, f.w, f.h,
+            [&](int sx, int sy, float& r, float& g, float& b) {
+                const float* q = &f.px[((size_t)sy * f.w + sx) * 3];
+                r = q[0]; g = q[1]; b = q[2];
+            },
+            tsrc.data(), thumbTaps);
         og::grade::SegmentFn segfn = [&](const unsigned char* rgb, int w, int h,
                                          std::vector<unsigned char>& regions) {
             if (!seg.ready()) return false;
@@ -291,10 +348,13 @@ int main(int argc, char** argv)
         if (noTone) { P[3] = 0.11f; P[4] = 1.f; P[10] = 0.f; }
 
         oga::classify(S, cam, enc <= 2 ? enc : 1);
+        // The subject is chosen inside solve_magic, so it is stamped on afterwards -- which is
+        // also what the plugin will do. Without it the region separation triple reads zero.
+        if (R.choice.ok) S.subject = R.choice.subject;
         oga::Desc d = oga::describe(S, cam, enc <= 2 ? enc : 1, P);
 
         std::string decision = seg.ready() ? "no move" : "no model";
-        char wbNote[80] = "", toneNote[128] = "";
+        char wbNote[128] = "", toneNote[256] = "";
         if (R.choice.ok) {
             char buf[96];
             snprintf(buf, sizeof buf, "%d/%d %s %.0f%% -> %s %+.3f", R.choice.option + 1,
@@ -303,20 +363,29 @@ int main(int argc, char** argv)
             decision = buf;
         }
         if (R.wbRan) {
-            if (R.wb.ok) snprintf(wbNote, sizeof wbNote, " WB %.0fK (%.0f%% ref, b0 %+.1f)",
-                                  R.wb.kelvin, R.wb.cover, R.wb.b0);
+            // P[11] alongside the solved kelvin, because the two are not the same claim: one is
+            // what the estimator decided, the other is what survived into the render.
+            if (R.wb.ok) snprintf(wbNote, sizeof wbNote, " WB %.0fK -> P11 %.0fK (%.0f%% ref, b0 %+.1f)",
+                                  R.wb.kelvin, R.P[11], R.wb.cover, R.wb.b0);
             else         snprintf(wbNote, sizeof wbNote, " WB declined: %s (%.0f%% ref)",
                                   R.wb.why, R.wb.cover);
         }
         if (!noTone) {
             if (R.tone.ok)
                 snprintf(toneNote, sizeof toneNote,
-                         " tone L%+.3f G%.3f g%.3f x%.2fEV -> subj %.3f/%.3f/%.3f spread %.3f  hi %.3f",
+                         " tone L%+.3f G%.3f g%.3f x%.2fEV -> subj %.3f/%.3f/%.3f spread %.3f"
+                         "  hi %.3f (want %.3f, br %d) nmid %.3f flo %.3f",
                          R.tone.lift, R.tone.gamma, R.tone.gain, R.tone.rawExp, R.tone.subjLo,
-                         R.tone.mid, R.tone.subjHi, R.tone.subjHi - R.tone.subjLo, R.tone.frameHi);
+                         R.tone.mid, R.tone.subjHi, R.tone.subjHi - R.tone.subjLo, R.tone.frameHi,
+                         R.tone.ceil, R.tone.branch, R.tone.sMidNeutral, R.tone.frameLo);
             else if (R.tone.why[0])
-                snprintf(toneNote, sizeof toneNote, " tone declined: %s (neutral subj mid %.3f, %.2fEV)",
-                         R.tone.why, R.tone.sMidNeutral, R.tone.rawExp);
+                snprintf(toneNote, sizeof toneNote,
+                         " tone declined: %s (neutral subj mid %.3f, %.2fEV,"
+                         " neutral subj %.3f/%.3f/%.3f spread %.3f,"
+                         " got mid %.3f hi %.3f)",
+                         R.tone.why, R.tone.sMidNeutral, R.tone.rawExp,
+                         R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.sHi - R.tone.sLo,
+                         R.tone.mid, R.tone.frameHi);
         }
 
         const char* nm = strrchr(argv[i], '/'); nm = nm ? nm + 1 : argv[i];
@@ -349,6 +418,44 @@ int main(int argc, char** argv)
                     std::fabs(back.gamma - Ph[4]) < 0.02 &&
                     std::fabs(back.gain - Ph[5]) < 0.01) ? "<- PRESERVED" : "<- LOST");
             for (int k = 0; k < oga::kParamN; ++k) P[k] = Ph[k];   // sweep from the edited grade
+        }
+
+        // TONE SEPARATION, walked the way a hand walks it, with the ACHIEVED rdL* beside the
+        // parameters. The parameters alone cannot answer the only question that matters -- whether
+        // the subject actually ended up further from its surround -- and a slider that moves Gamma
+        // convincingly while separation stays put is exactly the kind of plausible-but-wrong result
+        // this bench exists to catch.
+        if (toneSepSweep && R.tone.ok) {
+            const double dir = og::grade::tone_sep_dir(d.v[oga::D_RDL]);
+            printf("    surround: neutral %.3f -> rendered %.3f (contrast pivots at 0.500)\n",
+                   R.tone.sSur, R.tone.surr);
+            printf("    tone separation: rdL* %+.2f -> direction %+.0f%s\n",
+                   d.v[oga::D_RDL], dir,
+                   dir == 0.0 ? "  (INERT: subject and surround are at the same lightness)" : "");
+            // THE CONDITIONS THE GRADE ACTUALLY MEETS, exactly as applyBias() supplies them.
+            // Passing a default ToneTargets here made sep 0 return a different grade than the one
+            // on screen -- the fitted ceiling is 0.968 and this frame was solved at 0.890, so the
+            // solve was asked to reproduce a grade it had never made.
+            const og::grade::ToneTargets sepBase = og::grade::tone_targets_of(
+                R.tone.sLo, R.tone.sMid, R.tone.fHi, R.tone.fLo, P, lutData, lutSize);
+            printf("    sep      lift   gamma    gain   contr    rdL*   d(rdL*)\n");
+            double prevR = d.v[oga::D_RDL], prevL = R.tone.lift;
+            for (double s = -1.0; s <= 1.0001; s += biasInc) {
+                const og::grade::MagicTone t = og::grade::solve_magic_tone_bias(
+                    R.tone.sLo, R.tone.sMid, R.tone.sHi, R.tone.fHi, P,
+                    lutData, lutSize, tun, R.tone.fLo, 0.0, sepBase,
+                    s, dir, toneSepPer);
+                if (!t.ok) { printf("   %+5.3f   DECLINED: %s\n", s, t.why); continue; }
+                float Ps[oga::kParamN];
+                for (int k = 0; k < oga::kParamN; ++k) Ps[k] = P[k];
+                Ps[3] = t.lift; Ps[4] = t.gamma; Ps[5] = t.gain; Ps[9] = t.con;
+                const oga::Desc ds = oga::describe(S, cam, enc <= 2 ? enc : 1, Ps);
+                printf("   %+5.3f  %+7.3f %7.3f %7.3f %7.3f %+7.2f  %+7.2f%s\n",
+                       s, t.lift, t.gamma, t.gain, t.con, ds.v[oga::D_RDL],
+                       ds.v[oga::D_RDL] - prevR,
+                       std::fabs(t.lift - prevL) > 0.02 ? "   <-- JUMP" : "");
+                prevR = ds.v[oga::D_RDL]; prevL = t.lift;
+            }
         }
 
         if (biasAt > -998.0 && R.tone.ok) {
@@ -481,14 +588,117 @@ int main(int argc, char** argv)
         // complaint that "the blacks are crushed" is.
         std::vector<unsigned char> out((size_t)f.w * f.h * 3);
         std::vector<float> outCh; outCh.reserve((size_t)f.w * f.h * 3 / 64 + 8);
-        long long crushed = 0, total = 0;
+        // TWO CRUSH MEASURES, because the first one lies on saturated footage.
+        //
+        // `crushed` is per-pixel MIN CHANNEL at or under 1/255, and on a deep blue sky the min
+        // channel is red essentially everywhere -- near zero because that is the COLOUR, not
+        // because detail was lost. It reported 43.8% on a desert landscape the user confirmed
+        // looks correct, with the waveform showing red pinned flat across the full width and the
+        // picture holding texture throughout.
+        //
+        // `crushedY` asks the question that was meant: is the LUMINANCE at the floor, which is
+        // when detail is actually gone. Same shape as hot versus pin -- a threshold on the wrong
+        // quantity describes the filter rather than the footage.
+        // THE MASK READS THE PICTURE AFTER THE GRADE CURVE, before Range Balance's own moves --
+        // which is what a Resolve qualifier dropped on the node sees, and the distinction the
+        // first version got wrong. Pre-grade the picture is flat, so a bright pillow and a window
+        // sit within a few points of each other and NO threshold separates them; the user could
+        // not match Resolve's window selection at any latch for exactly that reason.
+        //
+        // Only Range Balance's OWN moves could make the mask chase itself, so only those are
+        // switched off here. Lift/Gamma/Gain run once and are not driven by the mask.
+        //
+        // Read in a DISPLAY-REFERRED encode, mirroring the plugin: a film LUT forces Cineon, and
+        // a threshold in Cineon means something else entirely.
+        float Pmask[oga::kParamN];
+        for (int k = 0; k < oga::kParamN; ++k) Pmask[k] = P[k];
+        Pmask[13] = 0.f;                                  // Range Balance off: this IS its input
+        Pmask[18] = 0.f;                                  // never the matte
+        const int maskEnc = (enc <= 2) ? enc : 1;
+
+        double hlLowUse = hlLow;
+        if (hlOn) {
+            // DERIVE THE THRESHOLD RATHER THAN TYPE IT, which is what makes this a slider.
+            // og::grade::range_latch() is the plugin's own Set From Frame -- called, not
+            // paraphrased, so the bench cannot report a latch the button would not produce.
+            std::vector<float> ymask;
+            for (size_t k = 0; k < (size_t)f.w * f.h; k += 64) {
+                float r, g, b;
+                og::process(cam, maskEnc, Pmask, f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+                ymask.push_back(0.2126f*r + 0.7152f*g + 0.0722f*b);
+            }
+            const og::grade::RangeLatch RL = og::grade::range_latch(ymask);
+            if (ymask.size() > 8) {
+                auto q = [&](double t) {
+                    size_t i = (size_t)(t * (ymask.size() - 1));
+                    std::nth_element(ymask.begin(), ymask.begin() + i, ymask.end());
+                    return (double)ymask[i];
+                };
+                printf("    highlight mask: mask luma p50 %.1f p90 %.1f p98 %.1f p99.9 %.1f"
+                       " | split %.1f (%.2f%% of frame) gap %.1f%s\n",
+                       100.0*q(0.50), 100.0*q(0.90), 100.0*q(0.98), 100.0*q(0.999),
+                       RL.latch, RL.cover, RL.gap, RL.ok ? "" : "  DECLINED");
+            }
+            if (hlLow < 0.0 && RL.ok) hlLowUse = RL.latch;
+            // AND THEN LET THE PIPELINE DO IT. Range Balance lives inside og::process(), before
+            // the encode and the LUT, so the bench sets the parameters and renders -- it does not
+            // re-implement the partition next to full_chain(). The version that did drifted the
+            // moment the plugin's mask moved after the grade curve, which is the paraphrase-class
+            // bug this whole shared-header arrangement exists to prevent.
+            P[13] = (float)hlLowUse;  P[14] = (float)hlSoft;   P[15] = (float)hlHiGain;
+            P[16] = (float)hlLift;    P[17] = (float)hlGamma;   P[18] = hlShow ? 1.f : 0.f;
+            P[19] = (float)hlHiGamma; P[20] = (float)hlGain;
+            // The mask's reference grade -- the live grade unless locked, mirroring resolveConfig().
+            P[21] = hlLock ? (float)hlLockL : P[3];
+            P[22] = hlLock ? (float)hlLockG : P[4];
+            P[23] = hlLock ? (float)hlLockN : P[5];
+            // THE COVERAGE PROBE HAS TO READ THE REFERENCE GRADE, NOT THE LIVE ONE. Pmask renders
+            // through P[3..5], and the mask inside og::process() runs lgg_core on P[21..23] -- so
+            // the probe reproduces it only if those are the numbers it grades with. Left as the
+            // live grade it silently measured the OLD, unlockable definition and reported a locked
+            // mask drifting exactly as much as an unlocked one.
+            Pmask[3] = P[21]; Pmask[4] = P[22]; Pmask[5] = P[23];
+            P[24]=(float)shType; P[25]=(float)shX; P[26]=(float)shY;
+            P[27]=(float)shW;    P[28]=(float)shH; P[29]=(float)shR;
+            P[30]=(float)shS;    P[31]= shInv ? 1.f : 0.f;
+        }
+        long long masked = 0;
+
+        // AND THE OTHER END. There was no highlight term here at all, and it cost a whole
+        // investigation: a change that took crushed% from 2.14 to 0.14 and shadow separation from
+        // 0.000 to 0.114 was reported as a fix, while the rendered frame it produced was washed
+        // out and unusable. Every number on this line described the shadows. `blown` is the mirror
+        // of `crushed` -- per-pixel MAX at or above 254/255 -- and `blownY` its luminance form.
+        long long crushed = 0, crushedY = 0, blown = 0, blownY = 0, total = 0;
+        // Same normalisation the four render paths use: centre-origin, half-height on both axes.
+        const float shHalf = 0.5f*(float)f.h;
         for (size_t k = 0; k < (size_t)f.w * f.h; ++k) {
+            const float px = (float)(k % (size_t)f.w), py = (float)(k / (size_t)f.w);
+            // Y IS FLIPPED. A PNG row index counts DOWN from the top; OFX canonical coordinates
+            // count UP from the bottom, which is what the plugin's render loop and all three
+            // kernels use. Left unflipped the bench would mirror every shape vertically and
+            // quietly disagree with the plugin about where "above" is.
+            const float shM = og::shape_mask((px - 0.5f*f.w)/shHalf, (0.5f*f.h - py)/shHalf,
+                                             (int)(P[24]+0.5f), P[25], P[26], P[27], P[28],
+                                             P[29], P[30], P[31] > 0.5f);
             float r, g, b;
             full_chain(cam, enc, P, lutData, lutSize, 1.f,
-                       f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b);
+                       f.px[k*3], f.px[k*3+1], f.px[k*3+2], r, g, b, shM);
+            if (hlOn) {
+                // Coverage only -- the picture itself came out of full_chain() above, mask and
+                // all. Recomputed here rather than returned, because it is a diagnostic.
+                float mr, mg, mb;
+                og::process(cam, maskEnc, Pmask, f.px[k*3], f.px[k*3+1], f.px[k*3+2], mr, mg, mb);
+                const float Y = 100.f * (0.2126f*mr + 0.7152f*mg + 0.0722f*mb);
+                if (og::highlight_mask(Y, (float)hlLowUse, (float)hlSoft)*shM > 0.5f) ++masked;
+            }
             if ((k & 63) == 0) { outCh.push_back(r); outCh.push_back(g); outCh.push_back(b); }
             const float mn = std::min(r, std::min(g, b));
-            if (mn <= 0.004f) ++crushed;          // at or under 1/255: detail that is gone
+            if (mn <= 0.004f) ++crushed;          // min channel -- confounded by saturation
+            if (0.2126f*r + 0.7152f*g + 0.0722f*b <= 0.004f) ++crushedY;
+            const float mx = std::max(r, std::max(g, b));
+            if (mx >= 0.996f) ++blown;
+            if (0.2126f*r + 0.7152f*g + 0.0722f*b >= 0.996f) ++blownY;
             ++total;
             out[k*3+0] = (unsigned char)(og::clamp01(r) * 255.f + .5f);
             out[k*3+1] = (unsigned char)(og::clamp01(g) * 255.f + .5f);
@@ -515,8 +725,13 @@ int main(int argc, char** argv)
         double sep10 = 0.0;
         {
             std::vector<float> srcL; srcL.reserve((size_t)f.w * f.h / 64 + 8);
+            // ANCHOR ON LUMA, NOT MIN CHANNEL. Selecting the two anchor pixels by percentiles of
+            // per-pixel MIN picks whatever is least saturated in the frame's dominant hue -- on a
+            // blue sky that is a red-starved SKY pixel, so this measured how far apart two bits of
+            // sky ended up rather than anything about shadows. Placing sky on a target compresses
+            // exactly that, which is how a working grade read as destroyed shadow detail.
             for (size_t k = 0; k < (size_t)f.w * f.h; k += 64)
-                srcL.push_back(std::min(f.px[k*3], std::min(f.px[k*3+1], f.px[k*3+2])));
+                srcL.push_back(0.2126f*f.px[k*3] + 0.7152f*f.px[k*3+1] + 0.0722f*f.px[k*3+2]);
             if (srcL.size() > 8) {
                 auto q = [&](double t) {
                     size_t i = (size_t)(t * (srcL.size() - 1));
@@ -530,8 +745,41 @@ int main(int argc, char** argv)
                 sep10 = (double)(g1 - g0);
             }
         }
-        printf("%-24s %6s %6s %6s %6.3f %6.2f %6.3f  post-LUT blk / %% crushed / shadow sep\n",
-               "", "", "", "", postBlk, 100.0 * (double)crushed / (double)total, sep10);
+        printf("%-24s %6s %6s %6.3f %6.2f %6.2f %6.3f %6.2f %6.2f"
+               "  blk / %%crushMin / %%crushY / shadowSep / %%blown / %%blownY\n",
+               "", "", "", postBlk, 100.0 * (double)crushed / (double)total,
+               100.0 * (double)crushedY / (double)total, sep10,
+               100.0 * (double)blown / (double)total, 100.0 * (double)blownY / (double)total);
+        // BOTH SEPARATION TRIPLES, side by side, because the whole question is whether the region
+        // version says something the band version cannot. Printing only the new one would make it
+        // impossible to tell a real improvement from a differently-scaled number.
+        // WHICH CONTROLS MOVE THE SUBJECT AWAY FROM ITS SURROUND, measured rather than reasoned
+        // about. The slider has to spend controls the tone solve does not own, or it undoes the
+        // three conditions that place the subject -- and which controls those are is a property of
+        // the footage and the region, not something to argue from the pipeline order.
+        if (sepJac) {
+            const oga::Jac J = oga::jacobian(S, cam, enc <= 2 ? enc : 1, P);
+            printf("%-24s   d(rdL*)/dp:", "");
+            for (int p = 0; p < oga::kParamN; ++p)
+                printf(" %s%+.2f", oga::param_name(p), J.at(oga::D_RDL, p));
+            printf("\n%-24s   d(rdb*)/dp:", "");
+            for (int p = 0; p < oga::kParamN; ++p)
+                printf(" %s%+.2f", oga::param_name(p), J.at(oga::D_RDB, p));
+            printf("\n");
+        }
+        if (sepReport) {
+            printf("%-24s   band dL* %+7.2f da* %+7.2f db* %+7.2f | region %s dL* %+7.2f "
+                   "da* %+7.2f db* %+7.2f\n", "",
+                   d.v[oga::D_DL], d.v[oga::D_DA], d.v[oga::D_DB],
+                   R.choice.ok ? oga::region_name(R.choice.subject) : "-",
+                   d.v[oga::D_RDL], d.v[oga::D_RDA], d.v[oga::D_RDB]);
+        }
+        if (hlOn)
+            printf("    highlight mask: latch %.1f soft %.1f -> %.2f%% of frame held"
+                   " | held gain %.3f gamma %.3f | rest lift %+.3f gamma %.3f gain %.3f%s\n",
+                   hlLowUse, hlSoft, 100.0 * (double)masked / (double)total,
+                   hlHiGain, hlHiGamma, hlLift, hlGamma, hlGain,
+                   hlLock ? "  [mask LOCKED]" : "");
         std::string op = outDir + "/" + std::string(nm);
         stbi_write_png(op.c_str(), f.w, f.h, 3, out.data(), f.w * 3);
     }

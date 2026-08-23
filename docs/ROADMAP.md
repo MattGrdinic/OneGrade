@@ -133,6 +133,25 @@ on typical log footage. Footage-blind, so it helps the average clip and misses o
 it cannot crash anything and needs no measurement. The two buttons (Base Grade / Creative
 Grade) already cover the adaptive case with one click.
 
+**NEAR-MISS, 2026-08-18 — the same mistake in a different hook.** The tone map's Fit From Frame
+was wired to run automatically on apply via `changedClip`, guarded by a saved `autoFitDone` flag,
+to make containment the default. That is this section's shape exactly: pixels read from a
+lifecycle hook, guarded by a new param that does not exist in older projects. It shipped only
+because Resolve never sent the clip-changed action, so it silently never ran — the user reported
+"behaviour is same as before", which is what a dodged crash looks like from outside.
+
+Two things this section already said and the retry ignored:
+- **`changedClip` is a lifecycle hook the host calls during load**, which is precisely the
+  category ruled out. Only `changedParam` and `render` are safe.
+- **`autoFitDone` defaults to `false` in every project saved before that build**, so had the hook
+  fired it would have run on every OneGrade node at once, on open — the same blast radius as
+  `autoInitDone`, for the same reason.
+
+**Shipped instead: `toneMap` defaults ON with the fitted knee 0.40 / white 3.0.** Static, so it
+cannot crash; it contained every frame in the training corpus with 15 of 18 medians bit-identical;
+and Fit From Frame still beats it per shot with one click. Which is exactly what this section
+concluded in 2026-08-03, reached again the long way.
+
 ---
 
 ## 3. Gamut compression, to make Export LUT near-exact
@@ -141,14 +160,14 @@ Grade) already cover the adaptive case with one click.
 
 The exported cube is exact **on lattice points** (worst 1.5e-08) but degrades between them
 wherever the pipeline isn't smooth — and the output encode **hard-clips out-of-gamut
-channels to zero**, which puts a step through the colour cube that no lattice can follow.
+channels to zero**, which puts a step through the color cube that no lattice can follow.
 Measured, Gen 5 → Rec.709 2.2 at 33³:
 
 | region | error |
 |---|---|
 | grey axis, log 0.10–0.70 | ~4/255 |
 | median over the whole cube | 0/255 |
-| mildly tinted bright colour (±15% of grey) | ~152/255 |
+| mildly tinted bright color (±15% of grey) | ~152/255 |
 
 65³ roughly halves it and cannot remove it: **the limit is the discontinuity, not the
 sampling.** Hence 65 is the export default.
@@ -161,12 +180,12 @@ deliberate release of its own, not something to smuggle in behind an export butt
 
 ---
 
-## 4. Declaring OFX 1.5 colour management
+## 4. Declaring OFX 1.5 color management
 
 **Status:** read-only probe shipped in v1.3.0; declaring support deliberately not done.
 
 `Check Input` reports `kOfxImageEffectPropColourManagementStyle` and
-`kOfxImageClipPropColourspace` **without** declaring a colour management style. If Resolve
+`kOfxImageClipPropColourspace` **without** declaring a color management style. If Resolve
 populates them anyway, that is free information.
 
 If they report `(absent)`, the next experiment is to declare
@@ -177,14 +196,244 @@ breaks the whole design, so it does not get switched on speculatively.
 
 ---
 
-## 5. Standing items
+## 5. A more pleasing grade from the first press of Magic Grade
+
+**User's framing, 2026-08-18, and it sets the bar deliberately low for now:** the immediate
+result does not have to be finished, because the point of the panel is that *sliders* take it the
+rest of the way. "So long as the sliders can create good looks with minimal effort, that's good
+enough for now." What is wanted next is that the landing point itself be more pleasing, so fewer
+of those slider moves are corrections rather than taste.
+
+**This is a different item from [2] above.** That one is about the picture a node produces when it
+is merely dropped on a clip, with no button pressed, and its answer is static defaults. This one is
+about the picture after Magic Grade has measured the frame and solved — where there is a
+measurement to reason from, and the question is whether the targets it solves to are the right
+ones.
+
+**Start here, because it is already measured and already costing real frames:**
+
+- **The solve models a shoulder-less render** (see the tone map section below). `MagicResult` seeds
+  `P[33] = 0` while the shipped node has the shoulder on, so the solve reasons about a top end the
+  viewer never sees. On `large-face00102120` this is the whole difference between a clean solve at
+  `hi 0.890` and a decline. Switching it on is a **refit, not a flag flip** — measured, 12 of 19
+  corpus frames move, 4 clearly worse — and that refit is most of this roadmap item.
+- **Every tone target still comes from ONE hand-graded interview** (subject floor 0.125, midtone
+  0.278, frame ceiling 0.968/0.890). They are placeholders with the right shape. More ground truth
+  is the only thing that improves them, and the shape of that work is the same as it was for the
+  first fit: hand-grade shots, read the constants back out.
+- **What "pleasing" means is not yet written down for anything but a face.** The region table has
+  measured targets for SKY and SKIN only; everything else declines. Extending it is a data
+  question, and the 851-film corpus already in `training-data/` is the obvious place to ask it.
+
+**The trap to avoid is the one this feature keeps falling into:** a nicer landing point that is
+nicer on the frames it was fitted on. Any change here is judged across the whole bench corpus, on
+crush percentage and shadow separation as well as on how the frame looks, because three of the four
+regressions found on 2026-08-18 were invisible in the graded thumbnail and obvious in the numbers.
+
+---
+
+## 6. Resolution independence — the refit it actually requires
+
+**The requirement is right and it is not one change.** A Magic Grade must not depend on whether the
+shot arrives as a 12K native clip or a 2K proxy (user, 2026-08-23). The mechanism is built and
+works: `og::analysis::build_thumb()` box-averages the 512x512 the segmentation model reads, shared
+by the plugin and the bench, `--thumb-taps=4` on the bench, **defaulted to 1 (the old point sample)
+because switching it on today made the plugin unusable.**
+
+**Why it is a refit and not a flag.** The thumbnail feeds segmentation, segmentation produces the
+subject mask, and the tone targets were fitted against the masks the OLD thumbnail produced.
+Measured on `dark-scene00117737`:
+
+| | subject | result | **subject tonal spread** |
+|---|---|---|---|
+| `taps=1` | SKIN 16% | solves, +2.29 EV, hi 0.890 | **0.429** |
+| `taps=4` | SKIN 14% | **declines, highlight blown** | **0.226** |
+
+The mask barely moved in area and its tonal spread **halved**. Placing a subject half as wide at
+both a 0.125 floor and a 0.278 midtone needs a far harder curve, which blows the frame, which trips
+the decline. Every fitted constant in the tone solve inherited the aliasing of point-sampled masks.
+
+**The user's verdict on shipping it unrefitted, and it is the bar to clear:** *"previously we would
+get a default look after applying Magic Grade that sometimes worked great, but would usually
+benefit from small adjustments to separation, bias, and for valid shots, face tone. What's happened
+now is we get a result from Magic Grade that's so extreme that using the sliders cannot save the
+image."* **Recoverable-by-slider is the acceptance criterion**, not any metric in the bench.
+
+### What the refit needs
+
+1. **Re-derive the subject tone targets against box-averaged masks.** `subjFloor` 0.125, `subjMid`
+   0.278 and the SKY pair 0.475/0.602 all came from hand-graded frames measured through the old
+   masks. They are the same kind of number as before; they need measuring again, not adjusting.
+2. **Re-check the frame ceiling** (0.890 / 0.968) and `frameFloorMax`/`frameFloorMin` on the same
+   basis.
+3. **Judge on rendered frames, not on the metric table.** See the tone-map section — a change that
+   improved every shadow number produced a washed-out picture, because there was no highlight term.
+   `%blown`/`%blownY` now exist for that reason; they are still not a substitute for looking.
+
+### Two ideas tried on 2026-08-23, both INERT on the corpus, both worth keeping in mind
+
+Neither shipped — they changed no frame at `taps=1`, and inert unvalidated code that activates
+later is exactly how the CUDA fallback and the mis-anchored floor guard happened. Recoverable from
+this branch's history.
+
+- **Back the exposure rescue off instead of declining.** When the rescue blows the highlight, bisect
+  the exposure down to the largest value that is accepted, rather than discarding the whole result.
+  The argument still holds — **declining is only safe when what it falls back to is safe**, and on a
+  2.3-stop-under frame Creative's ungraded picture is not. It did not fire because on those frames
+  *zero* exposure is also rejected, so there is no feasible point to bisect toward. That says the
+  blocker is the target set, not the exposure.
+- **Judge blownness on p98 rather than p99.9.** `kFrameBlown` tests `fHi`, the top one pixel in a
+  thousand, and through a print stock every frame with a window or specular has that at 1.000 --
+  the same `hot` versus `pin` shape a third time. p98 changed no outcome, which means those frames
+  are genuinely blown at 2% of frame and the decline is honest.
+
+---
+
+## 7. A corpus-derived FACE target — measured 2026-08-23, and why the raw number is not it
+
+**The corpus drives TARGETS, never grades.** Nothing measured here reaches a render; what ships is
+a handful of numbers per region. `experiments/looks` reads finished stills, reduces each to
+percentiles per region and discards the pixels.
+
+**Re-run over 1064 corpus stills**, the same process that produced the SKY targets:
+
+| region | corpus median (MAD) | what ships | verdict |
+|---|---|---|---|
+| **SKY** n=130 | floor 0.516 (0.201), mid **0.650** (0.165) | 0.475 / **0.602** | close — and the user reports SKY works |
+| **SKIN** n=613 | floor 0.051 (0.049), mid **0.158** (0.116) | 0.125 / **0.278** | **1.8x apart** |
+
+That gap is the best explanation yet for the user's report that SKIN produces unusable grades while
+SKY behaves, and that selecting FOLIAGE — which has no target, so declines to Creative — beats
+selecting the face on most shots. SKY's shipped target happens to match what films do; SKIN's never
+did. It came from ONE hand-graded close-up interview.
+
+**But the raw corpus figure is not the fix, and this was checked on a render rather than argued.**
+Grading a clean face shot at 0.051/0.158 drives Gamma to ~2.5 and Gain to ~0.3 and comes back
+visibly darker and flatter than the shipping target, which looks correct on that frame.
+
+**The reason is the region, not the process.** ADE20K class 12 is `person` — whole body, wardrobe
+and hair — and in the model path that IS the plugin's `R_SKIN`. On a close-up, person ≈ lit face,
+which is why the interview-derived target works there and why the corpus and the plugin agree on
+that kind of frame. On a wide shot the region is mostly dark clothing, so:
+
+- the corpus median is dragged down by clothing, giving 0.158 rather than a face's true midtone;
+- **and the live grade has the same defect** — driving a clothed body's p10/p50 to a face's floor
+  and midtone is exactly the "too bright, oversaturated" failure being reported.
+
+So one confound explains both the bad corpus number and the bad grades.
+
+### RESULT, 2026-08-23: the shipped face target is CORRECT, and the corpus now agrees
+
+Narrowing the measurement to skin chroma within the `person` region and re-running:
+
+| | n | subjFloor | subjMid |
+|---|---|---|---|
+| corpus, region = `person` | 613 | 0.051 | **0.158** |
+| corpus, region = skin within person | 411 | **0.120** | **0.273** |
+| **shipped, from ONE hand-graded interview** | 1 | **0.125** | **0.278** |
+
+**411 films land within 0.005 of a number measured off a single frame.** Relative spread tightens
+73% -> 44%. The interview target was right the whole time; the corpus could not see it because it
+was averaging wardrobe. That also retires the old note that skin is too inconsistent to have an
+absolute target -- it is not, once "skin" means skin.
+
+**So the target is not the cause of the bad grades.** What was wrong is that a correct FACE target
+was being applied to a CLOTHED-BODY population: close up, `person` is a lit face and it works; wide,
+it is mostly dark clothing, and driving its shadows and midtone to a face's is the "too bright,
+oversaturated" failure.
+
+### ...and fixing that is blocked on the decline, which is the real wall
+
+Two shapes were tried. **Narrowing the region map** is wrong: with skin-only regions the WALLS win
+subject selection on nearly every face shot (SKIN 21% -> BUILT 55%, dark-scene's face 16% -> BUILT
+77%). Selection wants `person`; only the percentiles want skin. **Selecting on `person` and
+measuring on skin** keeps every subject choice identical and is the right shape -- and still
+regresses the corpus: `dark-scene` goes from the validated +2.29 EV rescue (shadow separation
+0.184) to declining outright (0.011), and `00093080` likewise. Both trip `highlight blown`.
+
+**That is the third independent route to the same wall** after box-averaged thumbnails and the
+exposure back-off. Every improvement to the analysis moves the subject percentiles, every move
+pushes some frame past `kFrameBlown`, and the fallback -- Creative alone -- is unusable on exactly
+the frames that most need the grade. **Fix the decline first and these become shippable; leave it
+and every future analysis fix hits the same cliff.**
+
+Shipped OFF, behind `Tunables::skinToneMask` / `--skin-tone-mask=1`; corpus verified byte-identical
+to v1.5.0 with it off.
+
+### SOLVED 2026-08-24: the ETTR frame — a branch-ordering bug, not a target problem
+
+**User's verdict on the fix: "hands-down the best results we've had with the Magic Grade feature.
+The initial apply gives us a perfect starting point, where the sliders land us in the middle of the
+two directions most users would want to go."** That sentence is the acceptance bar for this feature.
+
+**The bug, in one sentence:** `branch |= 4` (the frame-floor guard) set Lift to keep the picture's
+own black off zero, and `branch |= 2` (ceiling-gives-way) then re-solved Lift against the subject's
+floor and discarded it. Both fire together on exactly the hard frames, so the shadow protection was
+silently undone every time it was needed.
+
+That is why `frameFloorMin` read as **inert at every value anyone ever swept**, and why
+re-anchoring it on a population statistic changed nothing either. **The anchor was never the
+problem; the ordering was.** The fix is one conditional inside branch 2's loop: after placing the
+subject's floor, if that took the frame's floor below the minimum, Lift serves the FRAME and the
+subject's midtone stays with Gain — the priority already written down for the other guard.
+
+**The value was chosen by reproducing a hand correction, not by optimising a metric.** On the ETTR
+frame the user corrected with Bias at maximum and landed on **Lift +0.110 / Gain 0.452**;
+`frameFloorMin = 0.080` solves to **+0.119 / 0.437** from a default press. Corpus: total crushed
+share **108.9% → 72.2%**, two frames that previously declined now solve, `00091084` 17.22% → 0.84%
+crushed with separation 0.063 → 0.137, `00096619` 35.27% → 21.33%, `dark-scene` untouched. The only
+reading that moved the wrong way is `00092397`, which loses 0.016 of separation.
+
+### Dead ends from the same investigation — do not retry, and why
+
+Nine hypotheses were tested against this one class of footage. Eight were wrong, and the reasons
+are more useful than the answer.
+
+| tried | why it failed |
+|---|---|
+| **Bidirectional exposure rescue** (pull an ETTR frame down in scene-linear) | Mechanically correct and visually terrible. Pulling down 3.07 stops leaves the solve needing Gain 1.5 to reach the ceiling again; the render comes back washed out. Reported as a fix on shadow metrics alone — `blown` went 13.28% → **69.37%** and nothing was measuring it. |
+| **Frame ceiling is forcing Gain up** | Not binding. `br 2` at every ceiling from 0.968 down to 0.800, achieved highlight 0.687. |
+| **Gamma is frozen in branch 2 — give it a bounded leash** | Worth 0.015 of subject spread (0.327 → 0.312), Lift unmoved at −0.41, and the frame declines outright at leash 0.5. The freeze is right for the case that branch was written for. |
+| **Back the exposure rescue off instead of declining** | Never fires: on those frames *zero* exposure is also rejected, so there is no feasible point to bisect toward. The blocker was upstream. |
+| **Judge blownness on p98 rather than p99.9** | Inert. Those frames are genuinely blown at 2% of frame, so the decline is honest. |
+| **Tonal spread as a mask-credibility test** | Cannot separate the cases: the bad mask reads 0.455 against 0.312–0.459 for masks that solve correctly. |
+| **Raw corpus SKIN target (0.051 / 0.158)** | Measures `person` — body, wardrobe, hair — not skin. Grades a clean face shot visibly dark and flat. |
+| **Narrow the region map to skin** | The WALLS then win subject selection on nearly every face shot (SKIN 21% → BUILT 55%). Selection wants `person`; only the percentiles want skin. |
+| **Select on `person`, measure on skin** | Right shape, and still regresses: `dark-scene` goes from its validated +2.29 EV rescue to declining outright. Kept behind `skinToneMask`, off. |
+
+**The pattern across all of them:** every improvement to the *analysis* moves the subject
+percentiles, every move pushes some frame past `kFrameBlown`, and the fallback — Creative alone —
+is unusable on precisely the frames that most need grading. Three independent routes hit that same
+wall before the real bug was found somewhere else entirely. **When several unrelated fixes fail the
+same way, the shared failure is the bug.**
+
+### What is still open here
+
+0. **Make `highlight blown` survivable — the standing blocker.** It is a cliff with a bad landing:
+   the fallback is Creative alone, which is unusable on the frames that most need grading. Three
+   independent analysis improvements were abandoned because they pushed a frame past it. Options
+   not yet tried: accept a blown ceiling when the subject is placed (the stated priority is already
+   "the ceiling gives way to the subject"), or fall back to a partial grade rather than none.
+   Judging blownness on a population instead of p99.9 was tried and is inert — see the dead ends.
+1. **Resolution independence** — `build_thumb(taps=4)` is built and correct and defaults to 1,
+   because switching it on invalidates every constant fitted against point-sampled masks. Section 6
+   carries the measurement. This is a re-derivation, not a flag.
+2. **`skinToneMask`** — selecting on `person` and measuring on skin is the right shape and the
+   corpus proves the target it implies, but it regresses `dark-scene` into a decline. Blocked on
+   item 0 like everything else here.
+3. **A corpus FACE target** is no longer needed as a fix: narrowed to skin, 411 stills land on
+   0.120 / 0.273 against the shipped 0.125 / 0.278. The shipped value is confirmed, not replaced.
+
+---
+
+## 8. Standing items
 
 Carried from `CLAUDE.md`, kept here so there is one place to look:
 
 - **Rolloff smoothness on Gen 5** — the highlight softclip is not yet as smooth as
   Blackmagic's "Gen 5 Film to Video" LUT. Candidates: tune the knee, or a scene-linear
   shoulder before encode instead of (or blended with) the display-space clip.
-- **CUDA colour A/B** — the CUDA path is fast on the user's 5090 but only *performance* was
+- **CUDA color A/B** — the CUDA path is fast on the user's 5090 but only *performance* was
   ever checked; its output has never been compared against the validated Metal/CPU result.
 - **OpenCL inside Resolve on an AMD card** — the kernel agrees with the CPU on real
   hardware via a direct harness, but has never run through Resolve on an AMD GPU.
@@ -217,11 +466,22 @@ find where it looks right, and that number becomes the constant — the same loo
 every fit in this project. There is no way to guess the right amount of separation from first
 principles, and no ground truth for it yet beyond a single hand grade.
 
-**Blocked on nothing technical.** The open question is what it should move when the regions are
-wrong — top/bottom thirds are a stand-in that only holds for landscape-shaped frames, so on a
-shot where the subjects aren't stacked vertically the slider would push apart two things that
-aren't the subjects. Either ship it with that caveat and let the panel show the regions it
-found, or wait for real region masks.
+**Blocked on one thing, and it is not what this entry used to claim.** It read "blocked on nothing
+technical", on the reasoning that it only needed real region masks. Those shipped in 1.4.x — and
+`describe()` was never rewired to use them. Checked 2026-08-14: `d.v[D_DL]` is still
+`bandL[2]/bandN[2] - bandL[0]/bandN[0]`, the top third minus the bottom third via `S.band`, while
+`S.region` sits unused a few lines away.
+
+So the stand-in this entry warned about is still what the descriptor measures, and the failure it
+predicted is the COMMON case rather than an edge one. A centred subject puts hair and background
+in the top band and clothing in the bottom, so band `dL*` reports the gap between two parts of
+**one** subject and calls it separation. Portraits are most of what has a face in them, and the
+frame that prompted this work — a centred close-up with deep contrast and no clipping — is exactly
+that shape.
+
+**The prerequisite is a region-based separation triple**, subject against everything else, added as
+NEW descriptors rather than by redefining `D_DL`, so the existing steerable set and the tests
+pinning it stay untouched.
 
 ---
 
@@ -229,12 +489,12 @@ found, or wait for real region masks.
 
 **The tonal half is done and validated on footage** — the user's words: *"this work has made the
 tonal look really close to what my hand-grades do."* Exposure comes from measurement, global
-colour from the Jacobian, the black point from a solve. What remains is **colour separation**,
+color from the Jacobian, the black point from a solve. What remains is **color separation**,
 and it is blocked on one thing only.
 
 ### The job is narrow
 
-Not exposure. Not colour. **Region identity** — which pixels belong to which thing, so the
+Not exposure. Not color. **Region identity** — which pixels belong to which thing, so the
 separation descriptors have real objects to attach to. `docs/AUTO-GRADE.md` §9 has the design;
 the descriptors only ever ask *region A minus region B*, so real masks drop in without changing
 anything else.
@@ -281,7 +541,7 @@ of two weeks.
 ### Open question worth answering first
 
 **Does every shot even want separation?** The city grade was purely tonal; the beach needed
-colour separation. The classifier's first useful output may be *"are there separable regions
+color separation. The classifier's first useful output may be *"are there separable regions
 here at all"* rather than *"push these two apart"*.
 
 ---
@@ -311,11 +571,11 @@ sunset — where the cast IS the content.
 
 Averaging the frame to neutral would "correct" a beach sunset to grey, which is the opposite of
 what anyone wants. The classic fixes (white-patch, neutral-pixel detection) all fail the same
-way: they cannot tell a colour that is a mistake from a colour that is the point.
+way: they cannot tell a color that is a mistake from a color that is the point.
 
 **The classifier already answers that.** Balance on the regions with a defensible neutral
 expectation — BUILT, GROUND, TERRAIN, the man-made and underfoot surfaces — and ignore the ones
-that are legitimately coloured: SKY, WATER, VEGETATION. SKIN is a strong secondary reference,
+that are legitimately colored: SKY, WATER, VEGETATION. SKIN is a strong secondary reference,
 since skin chromaticity is far more consistent across people than intuition suggests.
 
 On a frame with no trustworthy neutral reference, decline and say so, exactly like the rest of
@@ -389,7 +649,7 @@ with the bench (ongoing) → consider a learned score once there is something to
 
 ---
 
-## The colour reasoning is done pre-LUT, on a picture the user never sees
+## The color reasoning is done pre-LUT, on a picture the user never sees
 
 Noticed 2026-08-07 while chasing an over-cool Magic result. `OneGradeAnalysis.h` contains no
 reference to `apply_lut` at all: every region L\*/a\*/b\*, the Magic warm/cool decision, the
@@ -398,7 +658,7 @@ Grade always select the Kodak 2383 print stock, and a print stock is emphaticall
 hue-preserving — that is what it is for.
 
 The split is already half-right and that is what makes it easy to miss: the model is fed the
-**graded, post-LUT** thumbnail, because it was trained on photographs. Only the *colour
+**graded, post-LUT** thumbnail, because it was trained on photographs. Only the *color
 statistics* stayed pre-LUT. So the segmentation knows what it is looking at and the colorimetry
 describes a different image.
 
@@ -429,11 +689,11 @@ Jacobian probably does not.
 it works: `solve_creative`, `solve_creative_px`, `solve_magic_tone`, `solve_magic_base` and
 `solve_white_balance` are each called by both. What is still written out **twice** is the
 ORDER the steps run in — and on 2026-08-08 that is what drifted. The bench gained a re-solve
-after the colour move; the plugin did not; the two produced different pictures from the same
+after the color move; the plugin did not; the two produced different pictures from the same
 still, which is the single failure the bench exists to prevent.
 
 Extracting individual functions turned out to fix the arithmetic and leave the *choreography*
-duplicated. The sequence is: creative → tone → decide → colour → creative → tone, and every
+duplicated. The sequence is: creative → tone → decide → color → creative → tone, and every
 one of those edges is a place the two can diverge silently.
 
 **The shape:** one call taking `(SampleSet, cam, enc, lut, lutSize, Tunables, int click)` and
@@ -476,3 +736,577 @@ segmentation degrades exactly when the shot most needs it.
 The fix is the same ordering argument as the RAW Exposure rescue, applied one stage earlier:
 normalise exposure *before* segmenting, so the model sees a picture it can read. Contained, and
 probably the highest-value item left on this feature.
+
+---
+
+## Region masks in the RENDER, not just the analysis (user's idea, 2026-08-14)
+
+> "professionals create contrast by smart use of lighting... they do so even by not crushing or
+> clipping, but by using contrast ratios wisely. Of course this is the one key thing we can't do
+> for footage — without masks we have global control over the image."
+
+That is the correct diagnosis of the ceiling on everything in `docs/AUTO-GRADE.md` §10. Lift,
+Gamma and Gain are global, so placing a subject moves the whole frame, and every guard in the tone
+solve exists to limit that damage: `frameFloorMax` stops a dark subject dragging the frame's black
+up, the ceiling-gives-way branch stops a bright window crushing a face, and the missing lower
+guard is the same problem from the other side. **They are all workarounds for having one control
+where the picture wants two.**
+
+### The masks already exist
+
+`og::seg::Segmenter` runs on every Magic Grade press and produces per-region labels, and
+`assign_regions()` already maps them onto samples. Nothing new is needed to KNOW where the sky is.
+What is missing is any way to act on it: `og::process()` takes one parameter vector for the whole
+frame.
+
+### Why it is a big change rather than a hook
+
+- **Golden rule, in full.** Per-region parameters mean the mask has to reach the GPU and be sampled
+  per pixel, in all four implementations (`OneGradePipeline.h`, Metal, OpenCL, CUDA). Param-count
+  and buffer changes in every one.
+- **A label mask is not a matte.** Segmentation output is nearest-neighbour class IDs at 256x256
+  against a 4K frame. Applied directly it would produce visible blocky edges on every region
+  boundary. It needs feathering, and probably guided filtering against the image, before it can
+  drive anything continuous.
+- **Temporal stability.** Analysis is a button pressed once, so a mask that differs slightly frame
+  to frame never mattered. The moment a mask drives the render it must be stable across a whole
+  clip or it will crawl — and per-frame inference in `render` is exactly what the ~1s button budget
+  was designed to avoid.
+
+### The cheap version worth trying first
+
+Resolve already has qualifiers, windows and its own magic mask. The plugin does not need to become
+a compositor to capture most of the value: **report what it found**. A read-only line naming the
+regions and their coverage, or an exported matte, would let the user put a Resolve node on the sky
+with the plugin's own segmentation informing where. That is a panel change, not a kernel change.
+
+### The ceiling: measured, tested on footage, and SHIPPED as a range (2026-08-14)
+
+**Outcome first: `frameCeilingLow = 0.890` with `frameCeiling = 0.968` as the fallback.** The
+history below is why it is a pair of validated values and not a search between them.
+
+Across 851 films the median frame ceiling is **0.890** and only **16% clip**, while OneGrade
+targets `frameCeiling` **0.968** — above where 71% of professional films sit. That looked like the
+cheapest change available: one constant, no masks, no model.
+
+**Swept on footage at 0.968 / 0.930 / 0.890 / 0.850 and rejected.** Four of the five face clips
+looked *identical* across the whole range despite Gain dropping about 20%, and the fifth got
+worse: `00095358` clips on the face at every value below 0.968. Lowering the target makes the
+ceiling harder to satisfy alongside the subject, so the solve takes the **ceiling-gives-way**
+branch, abandons the ceiling condition entirely, and lands at **0.993** — nearly blown, and worse
+than the 0.968 it started from. Lowering the ceiling to reduce clipping produced more of it.
+
+**The corpus median is not transferable.** Films sit at 0.890 because they are *lit* for it. The
+statistic describes the reference footage, not what this footage wants, and nothing in the
+measurement could have revealed that — it took the pictures.
+
+Worth keeping as a methodological note. Three constants now come from one hand-graded interview,
+and all three have been independently checked: `subjMid` and the lift target held under the
+preference test (`training-data/labeling2`), and `frameCeiling` holds here. **One shot the user
+graded by hand has out-predicted 851 films every time it has been tested.**
+
+### What shipped instead: a range, resolved per frame
+
+The user's read of the sweep is what unlocked it — *"the difference between all values was mostly
+invisible \[and] the one shot that needed 0.968 is simply not properly lit, so I don't want to
+overfit for bad footage."* That is not an argument for either constant. It is an argument for
+**asking for 0.890 and accepting 0.968 when the frame insists**, which is a different feature from
+a different number: the fallback is per-shot, so the choice has to be too.
+
+`solve_magic_tone` now solves at `frameCeilingLow` and re-solves at `frameCeiling` if the first
+attempt declines or takes the ceiling-gives-way branch. On the five face clips: four hold 0.890,
+and `00095358` walks up to 0.968 and reproduces its validated grade exactly
+(L −0.069 · G 1.809 · g 0.511, subject high 0.566). Bias is unaffected — `tone_targets_of` reads
+the ceiling a grade *achieves* off its live parameters, so it picks up whichever was used without
+being told, which is the defect-4 fix paying for itself. Zero jumps on both clips at
+`--bias-inc=0.002`.
+
+**A bisection was written first and was wrong by construction — worth keeping, because it looked
+strictly better.** Searching for the *lowest feasible* ceiling converges TO the feasibility
+boundary, so its answer is always within tolerance of infeasible. On `00095358` it settled at
+**0.9339**, and **0.9340** crosses into the ceiling-gives-way branch and blows the face from 0.566
+to **0.993**. The grade it produced was correct and sat one ten-thousandth from a cliff, where the
+next frame of the same shot or the first touch of Bias falls off it. **Fifth discontinuity at a
+boundary in this project**, after Rolloff at 0, RAW Temp at 6500, the halfway-armed anchor, and the
+ceiling target that asked for what the acceptance test forbids.
+
+The two-point form has no edge to sit on and no interpolation to justify: both endpoints are
+values someone has looked at, and everything between them is not. Pinned by test 33, which asserts
+the *shape* rather than the numbers — re-fitting an endpoint is expected, re-introducing a search
+is not.
+
+### Tone Separation: the target axis is chosen, and the first choice was wrong (2026-08-14)
+
+The slider re-solves rather than writing parameters, and that part is settled by measurement. The
+`d(rdL*)/dp` row of the descriptor Jacobian on the user's footage is dominated by `lft`, `gam`,
+`gan` and `pCn` — every control the tone solve already owns — with signs that flip between frames
+depending on which side of the contrast pivot the subject sits. Writing any of them directly would
+undo the three conditions that place the subject, which is the failure Bias was rebuilt to avoid.
+So the slider moves a target and re-solves, exactly as Bias does.
+
+**Which target is the open question, and `subjMid` is not it.** Walked across its full range on a
+face clip with the achieved `rdL*` printed beside the parameters: `rdL*` moved −18.05 → −19.96,
+about **1.9 L\* units or 10%**, while Lift went 0.001 → 0.173 and Gamma 1.914 → 0.890. A large,
+obvious change in the picture buying almost nothing in the quantity the control is named after.
+
+Structural, and predictable in hindsight: subject and surround are placed by **one curve**, so
+moving the subject's target drags the surround with it and the gap barely opens. Nothing that
+moves both together can separate them.
+
+**The design that follows: a fourth condition on a fourth control.** Three conditions currently
+place the subject and hold the frame's ceiling; separation needs one on the *surround*. Post
+contrast is the candidate — it pivots at 0.5, which sits between a subject at 0.278 and a brighter
+surround, and it carries the largest consistent `d(rdL*)/dp` in the Jacobian (roughly 20–38 L\* per
+unit against the 1.9 the whole `subjMid` slider managed). Four conditions on four controls stays
+well posed and is the existing coordinate-pass structure with one more pass.
+
+**The risk is real and is the reason this is written down rather than built.** It changes the shape
+of `solve_magic_tone`, which every validated face grade stands on: the pass ordering, the
+convergence argument, the two branch fallbacks and the two acceptance tests would all need
+re-checking against the five clips. That is a deliberate decision, not a drive-by.
+
+Scaffolding that stays either way: `D_RDL/D_RDA/D_RDB`, the `sep`/`sepDir` arguments, and the
+bias/sep line walk (both sliders travel one line from the armed anchor, so the result depends on
+where they are left rather than on the order they were touched). Bench: `--sep-report --sep-jac
+--tone-sep-sweep --tone-sep-per`.
+
+**A bench-side trap worth keeping.** The first sweep passed a default `ToneTargets`, so sep 0
+returned a different grade than the one on screen — the fitted ceiling is 0.968 and the frame had
+been solved at 0.890, so the solve was asked to reproduce a grade it had never made. `applyBias()`
+derives its base correctly; only the new bench path did not. Any caller of
+`solve_magic_tone_bias()` that does not pass `tone_targets_of()` is asking the wrong question.
+
+### SKY enabled, and the guard that was blocking it (2026-08-14)
+
+`frameFloorMin` — the guard that stops a BRIGHT subject crushing the frame's floor, the mirror of
+`frameFloorMax` — existed but was **inert**, and the value was never the problem. It read `fLo`,
+the MIN channel of the pixel ranked p0.1 by MAX channel, and those are two different pixels: a
+saturated pixel has a bright max and a min at zero, so it ranks nowhere near the bottom on the
+ranking while sitting at the bottom of the value being read. The sample the guard protected was not
+the darkest thing in the frame by any measure a viewer uses.
+
+Re-anchored on **luma**, with its own sample (`TonePick::iBotY`, the frame's p0.1 by luma) rather
+than reusing `fLo`. `fLo` deliberately keeps its min-channel reading for `frameFloorMax`, which is
+load-bearing on every validated face grade — the two guards ask different questions, "did a channel
+hit zero" and "did the picture go black", and want different statistics for it.
+
+Third instance of that defect after the black-point encode bug and hot-versus-pin, and found the
+same way: by the bench reporting a correct picture as 43.8% crushed until `crushed%` was itself
+re-anchored on luma.
+
+**Verified live and left at 0.020.** Swept 0.020 / 0.080 / 0.150 on the four sky clips: branch 4
+appears at 0.080 on three of them and at 0.150 on all four (where Lift runs to its 0.500 bound on
+two, which is over-constraining). So the guard works and simply does not fire at its default on
+this footage — and `crushY` is 0.00% on all four, so by the luma measure there is nothing for it to
+fire about. **The earlier "3 of 4 clips improve" reading came from `crushMin`**, the statistic now
+known to be measuring saturation, and it is not a reason to raise the guard.
+
+Face grades are unchanged to every printed digit, which is the regression check that matters: the
+guard was inert on them before and is inert on them now, for a different and correct reason.
+
+### The fourth condition: built, measured, and it is post contrast that is wrong (2026-08-14)
+
+Following the `subjMid` dead end above, the surround's midtone was added as a fourth condition on a
+fourth control, post contrast, chosen because it carried the largest `d(rdL*)/dp` in the Jacobian
+and pivots at 0.5. Built so it is **absent at rest** — `surrMid < 0` means no fourth pass, so a
+fresh Magic Grade stays three conditions and every validated grade is bit-identical. Confirmed: all
+nine clips print identical L/G/g/branch/ceiling with the machinery in place.
+
+**It does not work, and the reason is exact.** The surround's midtone renders at **0.552** and
+**0.540** on the two face clips — essentially *on* the contrast pivot of 0.500. Contrast is
+`(v − 0.5)·con + 0.5`, so its leverage on the surround is `0.052` per unit: moving the surround by
+0.05 demands a full unit of contrast. Measured, contrast ran to its 2.0 bound by sep +0.25 and
+`rdL*` went the **wrong way**, −18.80 → −16.61, with Lift dragged 0.055 → 0.323 and Gamma
+1.381 → 0.926 compensating.
+
+**The Jacobian was read wrong, not measured wrong.** `pCn` really does carry the largest
+`d(rdL*)/dp` — because contrast moves the SUBJECT, which sits at 0.278 and far from the pivot. The
+subject is pinned by two of its own conditions, so the solve spends the whole move undoing it.
+Attributing a separation derivative to the surround when it belongs to the subject is the same
+class of error as `hot` versus `pin`: the number was real and described something else.
+
+**The structural finding, which outlives the attempt.** Subject floor, subject midtone and frame
+ceiling pin the tone curve at three points. The surround's position is then a CONSEQUENCE of those
+three, not a free variable, and no fourth control can move it without a control whose leverage is
+independent of all three — which post contrast is not, since it overlaps Gamma almost exactly.
+
+**Where a third attempt should start: relax one of the three, do not add a fourth.** The code's own
+reasoning already says legibility lives in the midtone and the floor is what gives ground first —
+that is exactly what the `frameFloorMax` branch does. So Tone Separation should SWAP which
+condition Lift serves, trading the subject's floor against the surround's position, reusing the
+branch-swap pattern that already exists twice rather than inventing a fourth condition. Untested.
+
+Kept in the tree because it is inert and any future law needs it: `TonePick::iSur` (surround p50 by
+luma, falling back to the frame median when the subject fills the frame), `MagicTone::sSur/surr/con`,
+`ToneTargets::surr`, and the fourth coordinate pass behind its sentinel.
+
+### The re-solve is fitted for a subject near the BOTTOM of the range (2026-08-14)
+
+Reported on footage: Tone Separation and the color Separation slider both "snap to over-saturated
+or blown out" on SKY, while both work well on SKIN. Reproduced offline, and it is not a Tone
+Separation bug — **Bias alone shows it**:
+
+```
+armed:   L-0.044  G1.367  g0.656
+bias 0:  L-0.500  G1.367  g0.885     <- Lift pinned at its bound
+bias -0.5 .. -2.0:  flat, held there
+```
+
+Bias 0 is required to be the identity and is not: it steps 0.456 of Lift the instant the slider is
+touched. Everything that re-solves inherits it.
+
+**Cause.** Lift is `lift*(1 - min(v,1))`, so its authority falls off toward white. The three
+conditions were fitted to a face whose floor sits at **0.125**, where Lift has full leverage; a
+sky's floor sits at **0.486**, where it has barely half. The solve runs Lift to its −0.500 bound,
+the subject then misses its midtone, the ceiling-gives-way branch fires, and Gain is allowed past
+Creative's clamp — which is the blown, over-saturated picture.
+
+**Grading once is unaffected**, and that is the whole reason the sky grades looked good: that path
+solves from neutral, where Lift still has room. Only the re-solve, starting from an already-bright
+grade, has nowhere to go.
+
+**Shipped: the anchors are not armed for a subject the re-solve is not fitted for.** That is the
+existing mechanism for "the tone solve declined", so Bias drops to its OFFSET law — which predates
+all of this and works on any subject — and Tone Separation goes inert. Sky keeps a working Bias
+rather than losing one, and no grade changes. Bad cases impossible rather than rare, the same bar
+as the non-face gate on the tone solve itself.
+
+**What a real fix needs: a control assignment that follows the subject's position.** Lift/Gamma/Gain
+for a subject near black is a fitted choice, not a law — for a subject near white the natural
+assignment is different (Gain has the leverage there that Lift has at the bottom). That is the same
+"swap which condition each control serves" pattern as the two existing branches, applied to the
+subject's height in the frame rather than to a guard being crossed. Untested, and it wants the sky
+grades hand-graded first the way the interview was: the targets exist but nothing says what a sky
+grade should do as it is LEANED.
+
+Third design in a row on this feature to fail on structure rather than on tuning, and all three
+found by the bench rather than by reasoning.
+
+## Range Balance: the latch, and the two things that were measured wrong (2026-08-16)
+
+Both shipped. Kept here because each was a plausible-looking number that described the wrong
+thing, which is the failure mode this project keeps meeting.
+
+**The latch was a percentile, and a percentile assumes the highlight is a fixed share of frame.**
+p98 on a bedroom interior put the edge above the window entirely; on a landscape whose top half is
+cloud it selected 1.97%. `og::grade::range_latch()` splits the histogram in two (Otsu) instead —
+reading its shape rather than a position in it. Same rule, both frames: **58.2 → the window at
+7.5%**, **46.9 → the sky at 52.5%**.
+
+**Otsu always answers, and that is its one trap.** It returns the best of all possible splits even
+when there is only one population: a corpus frame spanning 27.9 to 35.3 got a latch holding 87% of
+itself. The decline test needed is **the absolute gap between the class means**, not Otsu's own
+separability — which was tried first and is scale-invariant by construction:
+
+| frame | Otsu η | class gap | what it is |
+|---|---|---|---|
+| bedroom + window | 0.77 | **56.9** | the window, 7.5% |
+| beach sky | 0.82 | **42.8** | the sky, 52.5% |
+| flat interior (27.9–35.3) | 0.65 | **10.1** | nothing — held 87% |
+| flat exterior (53–71) | 0.80 | **29.0** | a real sky, 82% |
+
+η cannot see that one frame's two "populations" are seven code values apart. The gap can. Over the
+17-frame corpus the declines top out at **16.9** and the accepts start at **21.5**, so
+`kRangeGapMin = 20.0` sits inside a real gap in the data rather than on a guess. Third instance of
+this shape after `hot` vs `pin` and `crushed%` vs `crushedY`: **a number compared against a
+constant has to be the number that matters.**
+
+**The mask had an upper edge, which put the brightest pixels back outside it.** Measured: 8.08% of
+the bedroom held with the ceiling open against 5.92% at 100, and the 27% it dropped was the blown
+middle of the window — the exact thing "hold the highlights" is about. Resolve gets away with the
+same shape because its qualifier axis stops at 100; ours is float and a practical at 121 is
+highlight by any definition. `highlight_mask()` now rises once and stays up, so there is no High
+control and none is wanted.
+
+**The latch re-measures itself when the grade under it changes.** The mask reads the picture after
+the grade curve, so Magic Grade, Auto Grade, the Subject dropdown and presets all leave a latch
+describing a picture that no longer exists — the manual answer was "press Set From Frame again",
+which is a step nobody should have to know about. Two deliberate limits: it only fires when a
+latch is **already set** (a stage you are not using must not have values stamped into it), and
+only on the **buttons that replace the whole grade**, never on slider edits or Bias. Re-measuring
+under the hand would make the latch move while you worked, which is what made this a button rather
+than an automatic reading in the first place; Bias additionally re-solves live during a drag,
+where a frame measurement per tick is not real time. The refresh reuses the samples the grade just
+took (no image fetch), leaves the viewer alone rather than switching the matte on, and says
+"Re-latched" so a number that moved on its own names what moved it.
+
+**Still open:** spatial feathering. The softness is in luminance, not in space, so where the
+threshold lands on a steep edge (a window frame) the mask is stable, and where it lands inside
+noise the mask shimmers frame to frame. A per-pixel kernel cannot have a neighbourhood; this is
+the blur architecture, and it is the next thing this feature needs.
+
+## A mode selector for the panel (user's idea, 2026-08-17)
+
+Twelve groups and growing. `setOpen()` per group (2026-08-17) decides what a colorist sees on
+drop, and that is a stopgap: one static answer for every kind of work. The user's plan is a **mode
+selector that switches the control surface by work type** — a "just make it look right" mode
+showing the two buttons and a look, a shot-matching mode, a delivery mode, a full manual mode.
+
+Groups are already the unit this would switch, and `setEnabledness()` already runs every param's
+visibility from one place on load and on change, so the mechanism is mostly present: a mode choice
+param plus `setIsSecret()` per group instead of a fixed `setOpen()`. **What needs deciding is not
+the plumbing but the modes** — which controls belong to which kind of work — and that is a
+question about how the plugin is used, not about the code. Worth doing after the panel stops
+changing shape every release.
+
+## Range Balance: locking the mask against the grade under it (2026-08-17)
+
+Shipped as **Lock Mask**. The mask reads the picture AFTER the grade curve, which is what lets it
+tell a window from a bright pillow — and is also what makes it slide when exposure moves. Measured
+on the bedroom frame with the latch pinned at 58.2, as the solved Gain rises:
+
+| solved gain | unlocked | locked |
+|---|---|---|
+| low  | 7.45% held | 7.96% |
+| mid  | 8.56% | 7.89% |
+| high | **19.39%** | 7.89% |
+
+The held region nearly triples under a control that was supposed to be adjusting it, so "pull the
+window down" quietly becomes "change what the window is".
+
+**The fix is a reference grade, not a branch.** `P[21..23]` carry the Lift/Gamma/Gain the mask is
+evaluated against; `resolveConfig()` writes the live grade there when unlocked and the captured
+grade when locked. The four render paths see three floats and have no idea a lock exists — a
+branch out there would be a second definition of the mask with nothing to say which one a frame
+used. Cost is two extra `lgg_core` calls per pixel, because `d` is already in hand.
+
+**It locks against the grade curve only.** RAW Exposure and Density sit upstream of `d`, so
+anchoring them would mean running the whole chain a second time per pixel. They still move the
+mask, the hint says so, and they are not what a mask gets nudged by while you dial it.
+
+**A locked mask is never auto-refreshed** — `refreshRangeLatch()` returns early. Lock means the
+selection holds while the grade moves, and Magic Grade is the largest instance of the grade
+moving; re-measuring would also not preserve it, since Otsu re-run on the new grade can land on a
+different population.
+
+**What this does NOT solve, and the user named it in the same breath:** a window contains content
+as dark as things in the room, and a luminance qualifier cannot tell those apart at any latch,
+locked or not. Lowering the latch to include the dark parts of the window also grabs the room.
+Locking makes that workflow *possible* — you can now drop the latch and push hard without the
+selection running away — but separating "dark, and outside the window" from "dark, and in the
+room" is spatial, and lands with the blur architecture.
+
+### The silk pillow, and two cheap fixes that were measured and do not work (2026-08-17)
+
+The bedroom frame is the useful one precisely because the window holds unblown mountain detail —
+and at the measured latch of 58.2 the mask also takes the **silk pillow**. Two per-pixel ideas were
+tried against the frame before reaching for anything spatial. Both fail, and knowing why saves
+building either.
+
+**A CHROMA GATE DOES NOT SEPARATE THEM.** Resolve's qualifier is HSL and ours is only the L, so the
+obvious cheap move is to add a hue/saturation window — still per-pixel, still kernel-shaped, no
+neighbourhood. Measured over the held pixels, window strip against everything else:
+
+| | a* | b* | Y |
+|---|---|---|---|
+| window | −5.05 (p10..p90 −7.64..+1.79) | +1.49 | 91.8 |
+| not-window (pillow) | −1.45 (−6.14..−0.58) | +1.52 | 63.1 |
+
+b* is **identical to two decimal places** and the a* ranges overlap across most of their width.
+Daylight through glass and interior-lit white silk are the same color here. An HSL qualifier buys
+nothing on this frame.
+
+**NEITHER DOES A THREE-CLASS SPLIT.** The frame plainly has three populations, so 2-class Otsu
+putting its edge in the lower gap looked like the whole story. Multi-level Otsu gives lower 30.3 /
+**upper 62.6**, with class means at 23.2 (room) / 35.8 (bedding) / 87.8 (window) — barely above the
+shipping 58.2, and coverage 7.56% against 8.01%. The reason is in that middle mean: **the held
+pillow pixels are SPECULARS**, the bright tail of the bedding class, not a class of their own. A
+silk specular is genuinely as bright as a mountain, so no threshold on brightness will ever
+separate them. The user's instinct — that this wants a shape, not a level — is correct.
+
+**The one lever that does help is the slider already there.** Raising the latch 58.2 → 65 drops
+**62%** of the non-window held pixels (69,040 → 26,299) for **1.5%** of the window (597,383 →
+588,718). Past 65 it turns bad fast: 75 costs the window 17%. So the measured latch is a starting
+point that is worth a nudge up on frames with speculars, which is what the Latch slider is for —
+but it is a trade, not a fix.
+
+**RESOLVED 2026-08-17 by a SHAPE, and the earlier conclusion below was half wrong.** "Spatial" was
+filed as one thing and it is two. **A blur needs a pixel's NEIGHBOURS**, which a per-pixel kernel
+does not have. **A shape needs only the pixel's OWN coordinate**, which every backend already has
+— `get_global_id` in OpenCL, `thread_position_in_grid` in Metal, `blockIdx/threadIdx` in CUDA, and
+the loop indices in the CPU processor. So a shape mask is an ordinary per-pixel function and much
+cheaper than the blur it was lumped in with. Shipped as the Shape controls: ellipse or rectangle,
+centre/size/rotation/softness/invert, multiplying the luminance mask. On the bedroom frame a
+rectangle over the window takes coverage 8.08% → 6.51% and **removes the pillow completely** while
+the latch still separates the panes from the window frame and the mullion.
+
+The geometry is centre-origin and normalised by **half-height on both axes**, so a circle stays
+round on a 16:9 frame and Size means the same distance in any direction; x therefore runs past 1
+at the sides. Softness feathers **symmetrically** about the boundary so that softening an edge does
+not shrink the selection.
+
+`og::process()` takes the shape as a defaulted trailing `shapeM` scalar rather than coordinates,
+because only the caller knows where a pixel is and fifty-odd analysis call sites have no geometry
+at all. **The bench needed a Y flip**: a PNG row counts down from the top and OFX canonical
+coordinates count up from the bottom, so without it every shape would have been mirrored
+vertically and the bench would have disagreed with the plugin about where "above" is.
+
+**THE OVERLAY SPIKE IS ANSWERED, AND THE ANSWER IS NO — measured in Resolve 2026-08-17.** Resolve
+**advertises** OFX overlay support (`kOfxImageEffectPropSupportsOverlays` is set, which is how the
+Support library decides whether to register ours at all — `ofxsImageEffect.cpp:545`), our interact
+registers cleanly, and `draw()` is then **never called** on the Color page. Not a GL failure and
+not a coordinate bug: the function does not run. So no OFX plugin gets on-screen handles there,
+and **freely-drawn polygons are off the table in Resolve** — not because point-in-polygon is hard
+(it is a per-pixel test like any other) but because there is no way to draw one.
+
+Three things had to hold for an outline to appear — the host advertising overlays, actually
+calling `draw()`, and handing over a GL context that accepts fixed-function calls — and all three
+fail silently and identically from the outside. Telling them apart needed a line on the panel for
+each. Worth remembering as a debugging shape, not just as a result.
+
+`RangeShapeInteract` is kept: it costs nothing, the render never consults it, and it works if a
+host ever draws it. One coordinate defect was fixed on the way — it framed itself from
+`getProjectSize()` where the render uses the destination image's **bounds**, so a degenerate
+project size would have collapsed the outline to a dot at the origin and looked exactly like "no
+overlay support".
+
+**What replaced it is better suited to this plugin anyway: `Fit To Frame`.** Aiming a rectangle
+with four sliders is worse than Resolve's own power window, so competing on drawing was never the
+point — what this has that a power window does not is a **measurement**. The button takes the
+samples the latch is already holding and puts the shape around them; on an interior that is the
+window, with nothing aimed by hand. **Percentiles, not a bounding box:** p2/p98 of the held
+positions, because one stray specular across the room stretches a bounding box over the whole
+frame, which is the exact failure the shape exists to prevent.
+
+**Still true, and the reason a polygon is not the next thing:**
+The user reached that themselves and gave the right reason — a shape tool diverges from "make this
+easier than the native controls", because Resolve's own power windows already do shapes well and
+better. What OneGrade can add that Resolve makes tedious is a mask that is *measured* rather than
+drawn. The nearest thing with real leverage is the blur/feather architecture already queued, which
+turns a per-pixel qualifier into a region one — a specular the size of a pillow crease survives a
+blur very differently from a window pane.
+
+## The tone map (2026-08-18) — shipped as a control, NOT yet the default
+
+**The defect, and it is old and universal.** The pipeline had no tone map. A log clip carries ~13
+stops, a display encode holds about six, and nothing bridged them. Measured at NEUTRAL parameters
+over the training corpus: **9 of 18 frames push data past 1.0**, up to **47.8%** of channels, while
+the SOURCE is pinned essentially nowhere. On the frame that started this (Insta360 Ace Pro 2)
+source max is **0.842 with 0.000% pinned** and the neutral apply peaks at **3.26**. The footage had
+the range and the plugin threw it away, on half of everything, since v0.1.0.
+
+**Why nothing caught it:** Rolloff is driven by `pin` — *source* clipping — which correctly reads
+0% when the clipping is ours. The `hot` vs `pin` distinction, turned against us.
+
+**Two rejected fixes, both measured on that frame:**
+
+| | max | median | top-decile span |
+|---|---|---|---|
+| neutral | 3.26 | 0.443 | 1.477 (clipped away) |
+| scale to fit (RAW Exp −3.75 EV) | 1.00 | **0.136** | — |
+| `softclip` 0.8 | 1.00 | 0.443 | **0.033** |
+| tone map (knee 0.40 / white 3.0) | 1.00 | 0.440 | **0.130** |
+
+Scaling to fit trades a blown sky for a dead picture. `softclip` contains everything and leaves the
+sky **flat** — it is an exponential asymptote built to stop practicals turning neon, not a scene-to-
+display map. Contained is not the same as legible.
+
+**The shape:** identity below `knee`, then a Reinhard shoulder reaching exactly 1.0 at `white`. C1
+at the knee (slope exactly 1, so no seam), and `white` means "the value that becomes white" rather
+than an asymptote nobody reaches. Fitted **knee 0.40 / white 3.0**: every corpus frame lands ≤1.00,
+10 of 18 medians are bit-identical, and the frames that do move are the ones whose median was
+already above the knee.
+
+**PLACEMENT WAS THE HARD PART, and both sides cost something.**
+- **Before the grade curve** — the solves stay exact, because they predict the render as
+  `lgg_core()` on a measured percentile and the percentile would already carry the shoulder. But a
+  shoulder starting below 1.0 **moves diffuse white off display white**, and the grade curve is
+  *defined* against those pivots: Lift is `lift*(1 − min(v,1))` and pins white, Gain pins black.
+  Test 7 ("lift pins white") fails, and every documented pivot quietly means something else.
+- **After the grade curve** (shipped) — every control keeps meaning exactly what it says, and the
+  cost lands on the solves' render model instead. `tone_render()` now applies it in the same
+  position and all five call sites pass `P[32]/P[33]`.
+
+**WHY IT IS OFF BY DEFAULT, which is staging and not preference.** Switching it on breaks six tests
+**structurally, not by a tolerance**: the Clean solve asserts `lgg_core(percentile) == render` to
+1.5e-3, and a curve after `lgg_core` makes that identity false. Every Auto/Magic constant was
+fitted against a render with no shoulder. **Turning this on is a refit against the user's
+hand-graded ground truth, not a flag flip** — and that ground truth is theirs to re-shoot judgement
+on. Ship the control, judge it on footage, then flip the default and re-fit.
+
+### Fit From Frame — the shoulder measured, not assumed (2026-08-18, user's call)
+
+The user's point, and it is the argument for doing any of this in a plugin: *we hold the pixels, so
+a fixed curve is a compromise struck once against a corpus* — too gentle for a frame peaking at 3.3,
+needless compression on one peaking at 1.1. `og::grade::fit_tone_map()` measures instead.
+
+**It fits `white` to the recoverable peak and solves `knee` from a compression ratio** — the input
+range above the knee may be at most `ratio` (4.0) times the output range it is squeezed into. That
+one number with a meaning is what makes it adaptive: a gentle frame gets knee 0.90 and is barely
+touched, a wild one gets knee 0.24 and the room it needs. Across the corpus every frame that needs
+containment lands at max 1.00, and **the median is unchanged on all but the two whose median was
+already above the knee**.
+
+**SENSOR-CLIPPED PIXELS ARE EXCLUDED FROM THE MEASUREMENT.** A pixel already pinned at the sensor
+ceiling is flat and no curve recovers it; letting it set `white` would compress everything real to
+make room for data that is not there. Third outing for `hot` vs `pin` — the same distinction that
+decides Rolloff, and the one whose absence let the whole tone-map defect exist. Pinning is tested
+against the **clip's own maximum**, never 1.0, or every Blackmagic shot reports 0%.
+
+**SPECULARS ARE ALLOWED TO CLIP, and the panel says so.** The peak is p99.95, not the true maximum:
+one corpus frame reads p99.95 = 0.85 against a true max of 4.13, and fitting white to 4.13 would
+drive the knee to its floor and compress the entire picture to protect a speck that is a light
+source rather than detail. **Reporting the SHARE above p99.95 was tried and is a tautology** — 0.05%
+on every frame by construction, the "a number compared against a constant must be the number that
+matters" trap in yet another hat. The magnitude is what distinguishes a sun from noise, so the note
+carries `speculars to 3.1 clip` / `3.0% clipped at sensor` / `nothing to contain (peak 0.48)`.
+
+**Still open — what to do about genuinely sensor-clipped scenes.** The fit reports the percentage
+and declines to pretend; deciding whether to reconstruct, flag, or leave it is the user's call and
+has no measurement behind it yet.
+
+### It runs on apply now (2026-08-18, validated on footage, user's call)
+
+Matt's verdict after testing: *"about perfect — for scenes where it's needed like the Insta360 shot
+it brings the sky into proper exposure; for talking-head shots it doesn't act on the image in any
+meaningful way, which is what I want; for shots with genuine clipped content we leave that alone
+but bring recovered content back into line."* So it became the default: **a plugin that blows the
+sky the moment it is applied reads as broken**, and every frame it did that on had the range in the
+source. Cost is one frame analysis on apply, accepted knowingly.
+
+**`changedClip` is the hook, not the constructor** — at construction the source clip is not
+connected, so there is no image to measure. The clip-connected action is the first moment pixels
+exist. **Guarded by a saved hidden flag (`autoFitDone`)** because a project reload runs the same
+actions, and without it the fit would re-measure on every open and overwrite whatever had been
+dialled since. The flag is set BEFORE the fit runs, so a fit that fails cannot leave itself armed
+to fire later and move things after the fact.
+
+**Still open — the fitted layer above it.** Auto/Magic constants were derived against shoulder-less
+renders. The exposure is smaller than it first looked: `tone_render()` now models the shoulder and
+every call site passes `P[32]/P[33]`, and `solve_creative_px` was found hand-inlining a copy of
+`tone_render` that had already drifted (the render grew a shoulder, the copy did not) and now calls
+it. The subject floor (0.125) and midtone (0.278) targets sit below any fitted knee and are
+untouched; **the frame-ceiling target (0.968) is the one that now means something different** and
+wants re-deriving against hand-graded shots.
+
+### MEASURED 2026-08-18: the solve models a shoulder-less render, and it costs a real frame
+
+`MagicResult::P` seeds `P[33] = 0` — shoulder OFF — so every Magic solve evaluates its targets
+through a render the user will not see, while the shipped node has the shoulder ON at knee 0.40 /
+white 3.0. The two disagree most exactly where the shoulder exists: at the top.
+
+`large-face00102120` is the case. The frame is a close-up with a bright doorway at the left edge.
+The solve places the subject **perfectly** — achieved midtone 0.278 against a 0.278 target — and
+is then refused by `kFrameBlown` for a frame highlight of **1.000**, a value that only exists
+because the render it was measured in has no shoulder to bring it back. Face detection is fine;
+the frame is declined for a highlight the user's actual picture does not have.
+
+**Seeding the solve with the shipping shoulder fixes that frame and is NOT the change to make.**
+Measured over the 19-frame corpus, `P[33] = 0 -> 3.0`:
+
+| | frames |
+|---|---|
+| move at all | **12 of 19** |
+| clearly better | 3 — `large-face` decline -> clean solve at `hi 0.890` branch 0; `extreme-settings` crush 4.45% -> 0.12%; `dark-scene` 1.72% -> 1.04% |
+| clearly worse | 4 — `00104865` lift +0.045 -> **−0.218**, black 0.066 -> 0.000, crush 0.00% -> 3.35%, shadow separation 0.048 -> **0.000**; `00096619` crush 35.3% -> 44.4%; `00092022` 13.8% -> 22.0%; `00091084` 17.2% -> 24.5% |
+
+Gain rises on nearly every frame (0.451 -> 0.586, 0.360 -> 0.509, 0.656 -> 0.820) because the
+shoulder buys headroom the fit was never told about, and Lift follows it down into the floor. That
+is the re-derivation this section already called for, arriving as a bill: **the constants are
+entangled with the absence of a shoulder**, so switching it on is a refit against hand-graded
+ground truth and not a flag flip. Confirmed rather than assumed, which is the point of writing it
+down.
+
+**When it is refitted, the seed must be the LIVE `P[32]/P[33]`, not a hard-coded 3.0.** `Fit From
+Frame` changes the shoulder per shot, so a constant in `MagicResult` would be the same paraphrase
+class that has produced every long-lived bug on this feature.

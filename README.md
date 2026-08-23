@@ -265,7 +265,7 @@ exclusive (they use different transforms):
 **7 · Trim (after LUT)** — *finishing touches; most grades need nothing here.*
 - **Exposure Trim / Contrast** — small final adjustments applied *after* the LUT. Film
   emulations darken the image by design; raise **Exposure Trim** to bring it back. This is
-  **not** the exposure control — set exposure with **Gain** in group 4, which works in the
+  **not** the exposure control — set exposure with **Gain** in Exposure and White Balance, which works in the
   grade curve. The slider spans ±1 stop because that is the intended range.
 - **Highlight Rolloff** — per-channel soft clip so lamps and speculars roll off to white
   instead of clipping into a flat "neon" patch. Higher = earlier, stronger shoulder.
@@ -287,7 +287,7 @@ installed to open it correctly.
 > channels to zero, and no lattice can follow a step. In practice it matches the node
 > through the normal tonal range (~4/255 on the grey axis at 33³, median error 0 across the
 > whole cube) and **can differ on blown, saturated highlights**, where mildly tinted bright
-> colour reached ~150/255 in testing. 65³ roughly halves that — it's the default here for
+> color reached ~150/255 in testing. 65³ roughly halves that — it's the default here for
 > that reason — but can't remove it. Treat it as an excellent stand-in, not a bit-exact one.
 
 ## Workflows

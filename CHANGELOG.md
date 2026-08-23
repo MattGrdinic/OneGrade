@@ -4,6 +4,129 @@ All notable changes to OneGrade. Versions follow [SemVer](https://semver.org).
 
 ---
 
+## v1.5.0 — Range Balance, and highlights that stay in range
+
+### New: Highlight Tone Map
+
+Rolls bright detail smoothly into white instead of cutting off whatever will not fit. **On by
+default** — a shot that used to arrive with a flat white sky now keeps the detail in it.
+
+Everything below the shoulder's start point is left exactly as it was, so mid-tones do not move.
+
+- **Fit From Frame** — measures the current shot and shapes the shoulder to it. Better than the
+  default on both ends: a shot that already fits gets no shoulder at all, a shot far over white
+  gets the room it needs. Worth pressing on anything you care about.
+- **Start** — where the shoulder begins. Lower gives highlights more range and compresses the
+  upper mid-tones; higher leaves more of the picture untouched.
+- **White Point** — the value that becomes white. Raise it to pack more highlight range in.
+- The status line reports what it found: `peak 2.75 contained, sensor clean`,
+  `3.0% clipped at sensor` (the camera lost that part — nothing recovers it), or
+  `nothing to contain` (this shot already fits).
+
+Untick it to render exactly as the plugin did before.
+
+### New: Range Balance — a bright window and a dark room, in one node
+
+Holds the bright part of the picture still while you open up the rest. Replaces a qualifier, an
+invert and a second node.
+
+**To use it:**
+
+1. **Set From Frame** — finds the bright region and sets the Latch to it, and turns on Show Mask.
+2. **Show Mask** — white is held, black is opened up, grey is the soft edge. Adjust **Latch** and
+   **Softness** until the matte selects what you want, then turn it off.
+3. Work the two control sets: **Held: Brightness / Midtones** on what the mask holds, and
+   **Rest: Shadows / Midtones / Brightness** on everything else.
+
+Typical window shot: pull *Held: Brightness* down to bring the view back, *Held: Midtones* up to
+restore the detail that flattens, then *Rest: Midtones* up to open the room.
+
+- **Lock Mask** — freezes the selection so it stops following the exposure underneath it. Without
+  it, pulling the highlights down changes *what* the highlights are. With it, you can pull hard and
+  the shape stays put.
+- **Shape** (ellipse or rectangle) — restricts Range Balance to part of the frame. What gets held
+  is whatever is both above the Latch and inside the shape. Use it when something elsewhere in the
+  picture is the same brightness as your subject — a bright pillow across a room from a window,
+  which no threshold can separate because it is the same brightness *and* the same color.
+  **Fit To Frame** puts the shape around whatever the Latch is already holding.
+- **Bypass** mutes the stage without losing your values.
+
+The Latch stays put while you work, and re-measures itself if Auto Grade or Magic Grade changes
+the grade underneath it. Press **Set From Frame** again on a different shot.
+
+**Note:** the mask's softness is in brightness, not in space. On a hard edge like a window frame it
+is rock solid; where the edge falls inside noise or a fine gradient it can shimmer. Spatial
+feathering is not in this release.
+
+### New: Face Tone Separation (Magic Grade)
+
+Opens or closes the distance between a face and everything around it. It re-solves the grade rather
+than nudging one control, so the face stays where Magic Grade placed it while the surround moves.
+
+Only works where the grade was solved around a face. On other shots it hides itself, and the line
+above it says why — try Magic Grade on a frame with a clearer face.
+
+### The panel follows the workflow
+
+Reordered into the order you work in: Role / Preset, Magic Grade, Auto Grade, Input Transform,
+Balance & Density, Exposure & White Balance, Range Balance, Highlight Tone Map, Look / Film LUT,
+Trim, Output, Setup.
+
+- Balance and Density are one section now.
+- Scene Exposure and Scene White Balance moved out of Input Transform to Exposure.
+- Highlight Rolloff moved to Exposure, beside the other exposure controls.
+- Highlight Tone Map has its own section, placed where it actually runs — after Range Balance
+  and before the LUT, so a Custom Look sees the shouldered picture.
+- **Section numbers are gone.** They implied an order to work in that stopped being true once the
+  panel was reorganised around the button, and the new **Mode** selector makes the list shorter
+  anyway.
+- **New: a Mode selector at the top.** *Simple* — the default — shows the button and the controls
+  used to adjust its result; *Advanced* shows everything; *Color Correction* shows the manual path
+  with the automatic stages out of the way. It only changes what is visible — no mode alters
+  a value, and **a section that is actively changing the picture is never hidden**, so a look
+  cannot be lost behind a dropdown — a grade you saved with Range Balance or a LUT in use still
+  shows the controls that produced it, even in Simple. The line under it says how many sections
+  were hidden and how many were kept because they are in use.
+- Sections start open except Role / Preset, Range Balance, Highlight Tone Map, Export LUT and
+  Setup / Help.
+- Magic Grade carries its own Lift, Gamma and Gain, alongside the Bias and Scene Exposure copies
+  already there. They are the same controls as the ones in Exposure — moving either moves both —
+  so a Magic result can be finished without leaving the section that produced it.
+
+### Magic Grade
+
+**Better first results, especially on high-contrast and bright-exposed footage.** The grade that
+protects a picture's shadows was being discarded whenever the solve also had to make room for a
+bright subject — the two corrections fought and the shadow one lost, silently. On the training
+footage that change alone cuts crushed pixels by a third across the set, and shots that previously
+came back with a heavily contrasted face and a black background now land close to finished.
+
+Two kinds of shot that used to need rescuing now grade on the first press: **footage exposed to the
+right** (the Sony Cine EI habit of shooting bright to protect shadow detail), and **frames with a
+face against a much brighter or much darker surround**. Where Magic Grade previously gave up on
+those and left the Creative grade in place, it now produces a result.
+
+Its tone solve also adapts its highlight target per shot rather than using one fixed value, and
+carries targets for subjects other than skin. Magic Grade may therefore land differently than it
+did in v1.4.3 on some footage.
+
+### Fixes
+
+- **White Balance First now actually balances.** The checkbox has been in Magic Grade since
+  v1.4.0 and never changed a pixel. It measured the shot's color cast correctly and reported the
+  temperature it had chosen, then the value was overwritten before it reached the render — so
+  every frame graded at 6500 K no matter what the estimator found. Across the test footage it had
+  been finding real corrections between 5445 K and 9500 K and discarding all of them. Tick it and
+  the picture changes now; the temperature it picks lands in **Scene White Balance**, where you
+  can adjust it like any other value.
+- **Separation greys out when there is nothing to separate.** Some frames have no subject to set
+  against their surround — a flat aerial, or one subject filling the picture — and Magic Grade
+  says so in the *Chose* line. The slider stayed active anyway, so it could be dragged and would
+  report a value while moving nothing. It is greyed in that case now. It is not permanent: park on
+  a different frame and press Magic Grade again, and it usually comes back.
+
+---
+
 ## v1.4.3 — the Bias slider behaves
 
 - **Bias is predictable now.** It could previously jump: the picture inverting partway through a
@@ -107,7 +230,7 @@ One button that reads the frame, finds what the shot is *of*, and grades for tha
 
 ### Fixes
 
-- **Creative Grade no longer crushes the blacks.** The black point was solved in one colour
+- **Creative Grade no longer crushes the blacks.** The black point was solved in one color
   space and rendered in another, so it hit its target exactly while the picture on screen
   went to zero. Shadow separation on a test frame went from 0.024 to 0.070.
 - **The first press is now the right one.** Magic Grade used to read the node's state before
@@ -183,7 +306,7 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
 - **Trim > "Exposure" is now "Exposure Trim"**, and its slider spans **±1 stop** instead of
   ±3. It was being read as a second, competing exposure control — two places to set
   brightness, one of them after the LUT — which is a workflow trap rather than a feature.
-  Exposure belongs to **Gain** in group 4, where it acts in the grade curve.
+  Exposure belongs to **Gain** in Exposure and White Balance, where it acts in the grade curve.
 - The **hard** range stays ±3 on purpose. `setRange` is a clamp the host applies to saved
   values, so narrowing it would quietly rewrite existing grades — and the film emulation
   presets legitimately sit at +0.55, bringing level back after a print stock crushes it.
@@ -220,9 +343,9 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
 - **Accuracy, measured rather than assumed.** The bake is **exact on lattice points**
   (worst 1.5e-08). Off-lattice it is as good as the pipeline is smooth, and ours is not
   smooth everywhere: the output encode **hard-clips out-of-gamut channels to zero**, which
-  puts a step through the colour cube that no lattice can follow. On Gen 5 → Rec.709 2.2 at
+  puts a step through the color cube that no lattice can follow. On Gen 5 → Rec.709 2.2 at
   33³ the grey axis is within ~4/255, the median over the whole cube is 0, but mildly
-  tinted bright colour can reach ~150/255. 65³ roughly halves that and cannot remove it,
+  tinted bright color can reach ~150/255. 65³ roughly halves that and cannot remove it,
   because the limit is the discontinuity and not the sampling.
 - So: **an excellent archival stand-in, not a bit-exact one.** It matches the node through
   the normal tonal range and can differ on blown, saturated highlights. The hint and the
@@ -310,8 +433,8 @@ which is the best possible reason to cut a release. See **Acknowledgements** bel
   or the other, reports "inconclusive" otherwise, and always prints the percentiles it
   judged on. A false alarm on a correct setup would be worse than staying quiet — the same
   reasoning that stopped Auto Grade guessing at white balance.
-- It also reports whatever Resolve volunteers through the **OFX 1.5 colour management API**
-  (`ofxColour.h`). These are read **without declaring a colour management style**, on
+- It also reports whatever Resolve volunteers through the **OFX 1.5 color management API**
+  (`ofxColor.h`). These are read **without declaring a color management style**, on
   purpose: declaring support is exactly what could invite the host to start converting our
   input and override the plugin's own camera transform. If it reports "(absent)", the next
   experiment is a deliberate one, not a speculative switch.

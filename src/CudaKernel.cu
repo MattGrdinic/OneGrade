@@ -81,7 +81,27 @@ __device__ float og_r709e(float L){ return (L<0.018f)?(4.5f*L):(1.099f*og_pow(L,
 __device__ float og_r709d(float V){ return (V<0.081f)?(V/4.5f):og_pow((V+0.099f)/1.099f,1.0f/0.45f); }
 __device__ float og_r709ge(float L, float g){ return og_pow(L,1.0f/g); }
 __device__ float og_r709gd(float V, float g){ return og_pow(V,g); }
-__device__ float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=v*gain; v=v+lift*(1.0f-fminf(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); }
+__device__ float og_lggc(float v,float gain,float lift,float gamma){ v=v*gain; v=v+lift*(1.0f-fminf(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma); return v; }
+__device__ float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=og_lggc(v,gain,lift,gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); }
+__device__ float og_sm01(float t){ t=fminf(fmaxf(t,0.0f),1.0f); return t*t*(3.0f-2.0f*t); }
+__device__ float og_hlmask(float Y,float lo,float s){ float le=fmaxf(s,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le)); }  // one rising edge
+__device__ float og_tonemap(float v,float k,float W){
+    if(v<=k) return v; float sp=1.0f-k; if(sp<=1e-4f||W<=k) return v;
+    float wx=(W-k)/sp, x=(v-k)/sp;
+    float o=k+sp*(x*(1.0f+x/(wx*wx))/(1.0f+x));
+    return (o>1.0f)?1.0f:o;
+}
+__device__ float og_shape(float u,float v,int t,float cx,float cy,float sx,float sy,float rd,float sf,bool inv){
+    if(t<=0) return 1.0f;
+    float ax=fmaxf(fabsf(sx),1e-4f), ay=fmaxf(fabsf(sy),1e-4f);
+    float du=u-cx, dv=v-cy;
+    if(rd!=0.0f){ float r=rd*0.01745329252f, cs=cosf(r), sn=sinf(r); float q=du*cs+dv*sn; dv=-du*sn+dv*cs; du=q; }
+    float nx=du/ax, ny=dv/ay;
+    float d=(t==1)?sqrtf(nx*nx+ny*ny):fmaxf(fabsf(nx),fabsf(ny));
+    float e=fmaxf(sf,1e-4f);
+    float m=1.0f-og_sm01((d-(1.0f-0.5f*e))/e);
+    return inv?(1.0f-m):m;
+}
 __device__ float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2f(x+A)+B)*C):(x*M); }
 __device__ float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2f(x/C-B)-A):(x/M); }
 
@@ -130,7 +150,24 @@ __global__ void OneGradeKernel(int W,int H,const float* P,int cam,int enc,const 
         float outc[3];
         if(enc<=3){ float x2[3]; og_DWGtoXYZ(w,x2); og_XYZto709(x2,outc); } else { outc[0]=w[0];outc[1]=w[1];outc[2]=w[2]; }  // 709 primaries for Scene/2.2/2.4/Cineon
         float dg=(enc==1)?2.2f:((enc==2)?2.4f:0.0f);                  // grade curve follows output (pure gamma vs Scene OETF)
-        for(int k=0;k<3;k++) outc[k]=og_lgg(outc[k],gain,lift,gamma,dg);  // LGG in Rec.709 display curve
+        float d[3]; for(int k=0;k<3;k++) d[k]=(dg>0.0f)?og_r709ge(outc[k],dg):og_r709e(outc[k]);
+        // Range Balance — the mask reads a REFERENCE grade (P[21..23]), not the live one, so
+        // moving exposure cannot slide the selection under you. See highlight_mask() in the header.
+        const float rbL=P[13],rbS=P[14],rbH=P[15],rbF=P[16],rbG=P[17];
+        const bool rbW=(P[18]>0.5f); const float rbHg=P[19], rbLg=P[20];
+        const bool rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f||rbHg!=1.0f||rbLg!=1.0f);
+        float v3[3],rf[3]; for(int k=0;k<3;k++){ v3[k]=og_lggc(d[k],gain,lift,gamma); rf[k]=og_lggc(d[k],P[23],P[21],P[22]); }
+        // Centre-origin, BOTH axes over half-height, so the shape stays round on a 16:9 frame.
+        const float shU=((float)x-0.5f*(float)W)/(0.5f*(float)H), shV=((float)y-0.5f*(float)H)/(0.5f*(float)H);
+        const float shM=og_shape(shU,shV,(int)(P[24]+0.5f),P[25],P[26],P[27],P[28],P[29],P[30],P[31]>0.5f);
+        const float rbM=rbOn?og_hlmask(100.0f*(0.2126f*rf[0]+0.7152f*rf[1]+0.0722f*rf[2]),rbL,rbS)*shM:0.0f;
+        for(int k=0;k<3;k++){
+            float v=v3[k];
+            if(rbOn){ float rm=og_lggc(v,rbLg,rbF,rbG), hi3=og_lggc(v,rbH,0.0f,rbHg); v=rm*(1.0f-rbM)+hi3*rbM; }
+            if(enc<=2) v=og_tonemap(v,P[32],P[33]);   // shoulder, last in the display chain
+            outc[k]=(dg>0.0f)?og_r709gd(v,dg):og_r709d(v);
+        }
+        if(rbW&&rbOn){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }  // matte: no encode/LUT/trim; needs a latch
         float e[3]={og_enc(enc,outc[0]),og_enc(enc,outc[1]),og_enc(enc,outc[2])};
         if(lutN>=2 && lutMix>0.0f){ float s[3]; og_sampleLUT(lut,lutN,e,s); for(int k=0;k<3;k++) e[k]=e[k]+(s[k]-e[k])*lutMix; }
         float ex=exp2f(P[8]); for(int k=0;k<3;k++) e[k]=(e[k]*ex-0.5f)*P[9]+0.5f;  // post-LUT trim
@@ -147,8 +184,8 @@ void RunCudaKernel(void* p_Stream, int p_Width, int p_Height, const float* p_Par
     dim3 blocks((p_Width + threads.x - 1) / threads.x, (p_Height + threads.y - 1) / threads.y, 1);
 
     float* d_params = nullptr;
-    cudaMalloc(&d_params, sizeof(float) * 13);
-    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 13, cudaMemcpyHostToDevice, stream);
+    cudaMalloc(&d_params, sizeof(float) * 34);
+    cudaMemcpyAsync(d_params, p_Params, sizeof(float) * 34, cudaMemcpyHostToDevice, stream);
 
     int lutN = (p_Lut && p_LutSize >= 2) ? p_LutSize : 0;
     float* d_lut = nullptr;

@@ -21,9 +21,11 @@ static bool close(float a, float b, float eps = 1e-3f) { return std::fabs(a - b)
 static bool finite3(float r, float g, float b) { return std::isfinite(r) && std::isfinite(g) && std::isfinite(b); }
 
 // neutral parameter vector: temp,tint,density,lift,gamma,gain,offTemp,offTint,postExp,postCon,rawExp,rawTemp
-static void neutral(float P[12]) { for (int i=0;i<12;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
-// Full 13-wide vector (adds P[12] rolloff) for tests that chain whole nodes together.
-static void neutral13(float P[13]) { for (int i=0;i<13;i++) P[i]=0.f; P[4]=1.f; P[5]=1.f; P[9]=1.f; P[11]=6500.f; }
+// Neutral for the WHOLE array, Range Balance included: latch 0 is what turns it off, and a
+// fixture that left it uninitialised would enable the stage with a garbage threshold. Defers to
+// the shipping definition so a new parameter cannot be neutral in the plugin and garbage here.
+static void neutral13(float P[og::analysis::kParamN]) { og::analysis::neutral_params(P); }
+static void neutral(float P[og::analysis::kParamN]) { neutral13(P); }
 
 // ---- synthetic frames for the scene-descriptor / Jacobian tests (OneGradeAnalysis.h) ----
 // Deterministic noise, so percentiles are non-degenerate but every run is identical.
@@ -162,7 +164,7 @@ int main() {
 
     // 5. Full pipeline is finite for every camera x encode x sample input
     {
-        float P[12]; neutral(P);
+        float P[og::analysis::kParamN]; neutral(P);
         bool ok = true;
         for (int cam = 0; cam <= 11; ++cam)
           for (int enc = 0; enc <= 5; ++enc)
@@ -175,7 +177,7 @@ int main() {
 
     // 6. Gain pivots black: a black input stays black under gain
     {
-        float P[12]; neutral(P); P[5] = 2.0f;            // gain = 2
+        float P[og::analysis::kParamN]; neutral(P); P[5] = 2.0f;            // gain = 2
         float r,g,b; og::process(1, 0, P, 0.f, 0.f, 0.f, r, g, b);
         check(close(r,0.f,2e-3f)&&close(g,0.f,2e-3f)&&close(b,0.f,2e-3f), "gain pins black");
     }
@@ -183,8 +185,8 @@ int main() {
     // 7. Lift pivots white: diffuse white (BMD/DI code ~0.5139 -> linear 1.0) unchanged by lift
     {
         const float whiteCode = og::di_encode(1.0f);     // camera code that decodes to linear 1.0
-        float P0[12]; neutral(P0);
-        float P1[12]; neutral(P1); P1[3] = -0.25f;        // lift down
+        float P0[og::analysis::kParamN]; neutral(P0);
+        float P1[og::analysis::kParamN]; neutral(P1); P1[3] = -0.25f;        // lift down
         float a0,b0,c0, a1,b1,c1;
         og::process(1, 0, P0, whiteCode, whiteCode, whiteCode, a0, b0, c0);
         og::process(1, 0, P1, whiteCode, whiteCode, whiteCode, a1, b1, c1);
@@ -193,8 +195,8 @@ int main() {
 
     // 8. Lift does not amplify superwhites (BMD/DI code 1.0 -> linear ~100)
     {
-        float P0[12]; neutral(P0);
-        float P1[12]; neutral(P1); P1[3] = -0.25f;
+        float P0[og::analysis::kParamN]; neutral(P0);
+        float P1[og::analysis::kParamN]; neutral(P1); P1[3] = -0.25f;
         float a0,b0,c0, a1,b1,c1;
         og::process(1, 5, P0, 1.0f, 1.0f, 1.0f, a0, b0, c0);   // enc=5 linear so we compare raw
         og::process(1, 5, P1, 1.0f, 1.0f, 1.0f, a1, b1, c1);
@@ -203,8 +205,8 @@ int main() {
 
     // 9. RAW exposure: +1 stop doubles scene-linear (linear output path)
     {
-        float P0[12]; neutral(P0);
-        float P1[12]; neutral(P1); P1[10] = 1.0f;    // +1 stop
+        float P0[og::analysis::kParamN]; neutral(P0);
+        float P1[og::analysis::kParamN]; neutral(P1); P1[10] = 1.0f;    // +1 stop
         float a0,b0,c0, a1,b1,c1;
         og::process(1, 5, P0, 0.5f, 0.5f, 0.5f, a0, b0, c0);   // enc=5 = linear output
         og::process(1, 5, P1, 0.5f, 0.5f, 0.5f, a1, b1, c1);
@@ -214,9 +216,9 @@ int main() {
 
     // 10. RAW temperature: neutral at 6500; warmer raises R / lowers B, cooler the reverse
     {
-        float P6[12]; neutral(P6);                    // rawTemp = 6500 (neutral)
-        float Pw[12]; neutral(Pw); Pw[11] = 9000.f;   // warmer
-        float Pc[12]; neutral(Pc); Pc[11] = 4000.f;   // cooler
+        float P6[og::analysis::kParamN]; neutral(P6);                    // rawTemp = 6500 (neutral)
+        float Pw[og::analysis::kParamN]; neutral(Pw); Pw[11] = 9000.f;   // warmer
+        float Pc[og::analysis::kParamN]; neutral(Pc); Pc[11] = 4000.f;   // cooler
         float r6,g6,b6, rw,gw,bw, rc,gc,bc;
         og::process(1, 0, P6, 0.5f, 0.5f, 0.5f, r6, g6, b6);
         og::process(1, 0, Pw, 0.5f, 0.5f, 0.5f, rw, gw, bw);
@@ -229,8 +231,8 @@ int main() {
     //     Output Transform (DWG/DI -> delivery) must reproduce a single Full Grade node.
     //     This is what lets one group share a Pre-Clip decode and a Post-Clip look.
     {
-        float Pn[13]; neutral13(Pn);
-        float Pg[13]; neutral13(Pg);                 // a real look on the output node
+        float Pn[og::analysis::kParamN]; neutral13(Pn);
+        float Pg[og::analysis::kParamN]; neutral13(Pg);                 // a real look on the output node
         Pg[2]=0.25f; Pg[3]=0.06f; Pg[4]=1.10f; Pg[5]=0.92f; Pg[6]=-0.09f;
         float worst = 0.f;
         for (int look = 0; look < 2; ++look) {
@@ -254,7 +256,7 @@ int main() {
     // 12. A neutral node must not clip out-of-gamut negatives on the scene-referred
     //     hand-off encodes — that clip is what broke the role split (safe_pow floors at 0).
     {
-        float P[13]; neutral13(P);
+        float P[og::analysis::kParamN]; neutral13(P);
         bool sawNegative = false, ok = true;
         for (int cam = 0; cam < 12 && ok; ++cam)
             for (int i = 1; i <= 40; ++i) {
@@ -286,7 +288,7 @@ int main() {
     //         LSB, median over the whole cube 0 LSB. See exportCube() for the full note.
     {
         const int N = 33;
-        float P[13]; neutral13(P);
+        float P[og::analysis::kParamN]; neutral13(P);
         P[3] = 0.08f; P[4] = 1.1f; P[5] = 0.85f; P[2] = 0.2f; P[0] = -0.15f;   // a real grade
 
         bool ok = true;
@@ -346,14 +348,14 @@ int main() {
         for (int enc : {0, 1, 2}) {                    // Scene OETF, gamma 2.2, gamma 2.4
             for (int cam : {0, 2, 11}) {
                 for (float x = 0.10f; x <= 0.90f; x += 0.08f) {
-                    float P0[13]; neutral13(P0);
+                    float P0[og::analysis::kParamN]; neutral13(P0);
                     float n_r, n_g, n_b;
                     og::process(cam, enc, P0, x, x, x, n_r, n_g, n_b);   // neutral = "measured"
 
                     for (auto lgg : { std::array<float,3>{0.05f, 1.15f, 0.80f},
                                       std::array<float,3>{-0.03f, 0.90f, 1.30f},
                                       std::array<float,3>{0.12f, 1.00f, 0.55f} }) {
-                        float P1[13]; neutral13(P1);
+                        float P1[og::analysis::kParamN]; neutral13(P1);
                         P1[3] = lgg[0]; P1[4] = lgg[1]; P1[5] = lgg[2];
                         float a_r, a_g, a_b;
                         og::process(cam, enc, P1, x, x, x, a_r, a_g, a_b);       // actual render
@@ -376,7 +378,7 @@ int main() {
     //     and nothing else would notice.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
 
         oga::SampleSet two = make_frame(0);
         oga::Extras e2 = oga::classify(two, cam, enc);
@@ -404,7 +406,7 @@ int main() {
     //     anywhere in the pipeline shows up here as a control that now means its opposite.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -429,7 +431,7 @@ int main() {
     //     while still producing numbers that look reasonable in isolation.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -439,9 +441,9 @@ int main() {
         for (int p : {2, 5, 6, 9}) {          // density, gain, offset temp, contrast
             double prev = 0.0;
             for (float mag : {0.8f, 0.4f, 0.2f}) {
-                float dp[13] = {0}; dp[p] = mag;
+                float dp[og::analysis::kParamN] = {0}; dp[p] = mag;
                 float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
-                float P1[13]; oga::apply_move(P0, dp, P1);
+                float P1[og::analysis::kParamN]; oga::apply_move(P0, dp, P1);
                 oga::Desc d1 = oga::describe(S, cam, enc, P1);
                 double e = 0.0;
                 for (int d = 0; d < oga::kDescN; ++d)
@@ -459,21 +461,21 @@ int main() {
     //     the exclusion stays honest rather than becoming a way to hide a bad column.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
         oga::Desc d0 = oga::describe(S, cam, enc, P0);
         float scale[oga::kDescN]; desc_scales(J, scale);
-        bool allow[13]; oga::steer_mask(P0, allow);
+        bool allow[og::analysis::kParamN]; oga::steer_mask(P0, allow);
 
         double worst = 0.0;
         for (int p = 0; p < 13; ++p) {
             if (!allow[p]) continue;
             for (float mag : {-0.5f, 0.5f}) {
-                float dp[13] = {0}; dp[p] = mag;
+                float dp[og::analysis::kParamN] = {0}; dp[p] = mag;
                 float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
-                float P1[13]; oga::apply_move(P0, dp, P1);
+                float P1[og::analysis::kParamN]; oga::apply_move(P0, dp, P1);
                 oga::Desc d1 = oga::describe(S, cam, enc, P1);
                 for (int d = 0; d < oga::kDescN; ++d)
                     worst = std::max(worst, (double)std::fabs(pred[d] - (d1.v[d]-d0.v[d]))
@@ -489,7 +491,7 @@ int main() {
     //     Offset Temp is the warm/cool control; it falls out of the measured Jacobian.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -498,28 +500,28 @@ int main() {
         // (a) single intent, single control
         float dd[oga::kDescN] = {0}, w[oga::kDescN] = {0};
         dd[oga::D_B] = -3.0f; w[oga::D_B] = 1.0f;
-        bool allow[13] = {false}; allow[6] = true;
-        float dp[13]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp);
-        float P1[13]; oga::apply_move(P0, dp, P1);
+        bool allow[og::analysis::kParamN] = {false}; allow[6] = true;
+        float dp[og::analysis::kParamN]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp);
+        float P1[og::analysis::kParamN]; oga::apply_move(P0, dp, P1);
         oga::Desc d1 = oga::describe(S, cam, enc, P1);
         const float got = d1.v[oga::D_B] - d0.v[oga::D_B];
 
         bool ok = (P1[6] < 0.f)                    // it reached for NEGATIVE Offset Temp
                && (std::fabs(got - (-3.0f)) < 0.3f);  // and landed within 10% of the ask
-        for (int i = 0; i < 13; ++i) if (!allow[i]) ok &= close(P1[i], P0[i], 1e-6f);
+        for (int i = 0; i < og::analysis::kParamN; ++i) if (!allow[i]) ok &= close(P1[i], P0[i], 1e-6f);
 
         // (b) two intents, two controls — the case a real Magic Grade rule would produce
         float dd2[oga::kDescN] = {0}, w2[oga::kDescN] = {0};
         dd2[oga::D_B] = -3.0f;      w2[oga::D_B] = 1.0f;
         dd2[oga::D_CHROMA] = 2.0f;  w2[oga::D_CHROMA] = 1.0f;
-        bool allow2[13] = {false}; allow2[6] = true; allow2[2] = true;
-        float dp2[13]; oga::solve_intent(J, dd2, w2, allow2, 1e-4f, dp2);
-        float P2[13]; oga::apply_move(P0, dp2, P2);
+        bool allow2[og::analysis::kParamN] = {false}; allow2[6] = true; allow2[2] = true;
+        float dp2[og::analysis::kParamN]; oga::solve_intent(J, dd2, w2, allow2, 1e-4f, dp2);
+        float P2[og::analysis::kParamN]; oga::apply_move(P0, dp2, P2);
         oga::Desc d2 = oga::describe(S, cam, enc, P2);
         ok &= std::fabs((d2.v[oga::D_B]      - d0.v[oga::D_B])      - (-3.0f)) < 0.3f;
         ok &= std::fabs((d2.v[oga::D_CHROMA] - d0.v[oga::D_CHROMA]) - ( 2.0f)) < 0.2f;
         ok &= (P2[6] < 0.f) && (P2[2] > 0.f);      // cooler balance, more density
-        for (int i = 0; i < 13; ++i) if (!allow2[i]) ok &= close(P2[i], P0[i], 1e-6f);
+        for (int i = 0; i < og::analysis::kParamN; ++i) if (!allow2[i]) ok &= close(P2[i], P0[i], 1e-6f);
 
         check(ok, "intent solve: 'bluer' resolves to negative Offset Temp and lands the target");
     }
@@ -538,7 +540,7 @@ int main() {
         // RAW Temp: white_balance() forces identity on 6499 < T < 6501, but the Planckian
         // locus at 6500 K is not D65 (dy = -0.0053), so the skipped adaptation is not an
         // identity and a neutral grey jumps when the slider leaves its default.
-        float P[13]; neutral13(P);
+        float P[og::analysis::kParamN]; neutral13(P);
         float r0,g0,b0, r1,g1,b1;
         og::process(11, 1, P, 0.45f, 0.45f, 0.45f, r0, g0, b0);
         P[11] = 6501.f;
@@ -554,7 +556,7 @@ int main() {
     //     not to weight them.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
 
         oga::SampleSet withSkin = make_frame(2);
         oga::Extras es = oga::classify(withSkin, cam, enc);
@@ -580,7 +582,7 @@ int main() {
     //     gap rather than merely pointing the right way.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -588,14 +590,14 @@ int main() {
 
         float dd[oga::kDescN] = {0}, w[oga::kDescN] = {0};
         dd[oga::D_B] = -8.0f; w[oga::D_B] = 1.0f;          // a big ask, ~3 steps of Offset Temp
-        bool allow[13] = {false}; allow[6] = true;
+        bool allow[og::analysis::kParamN] = {false}; allow[6] = true;
 
-        float dp1[13]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp1);
-        float Pone[13]; oga::apply_move(P0, dp1, Pone);
+        float dp1[og::analysis::kParamN]; oga::solve_intent(J, dd, w, allow, 1e-4f, dp1);
+        float Pone[og::analysis::kParamN]; oga::apply_move(P0, dp1, Pone);
         const float errOne = std::fabs((oga::describe(S, cam, enc, Pone).v[oga::D_B]
                                         - d0.v[oga::D_B]) - (-8.0f));
 
-        float Pit[13];
+        float Pit[og::analysis::kParamN];
         oga::solve_intent_iter(S, cam, enc, P0, dd, w, allow, 1e-4f, 3, Pit);
         const float errIt = std::fabs((oga::describe(S, cam, enc, Pit).v[oga::D_B]
                                        - d0.v[oga::D_B]) - (-8.0f));
@@ -614,14 +616,14 @@ int main() {
     //     and naming the obvious control does not work; the controls overlap too much.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
 
         // The shape of the real case: chroma pulled DOWN by density while other controls push
         // it up, so the net can move opposite to the control a human would blame.
-        float P1[13]; neutral13(P1);
+        float P1[og::analysis::kParamN]; neutral13(P1);
         P1[2] = -0.05f;    // density down
         P1[5] =  1.10f;    // gain up
         P1[6] = -0.05f;    // offset temp down
@@ -665,7 +667,7 @@ int main() {
     //     of the kind a real grade makes.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         oga::SampleSet S = make_frame(0);
         oga::classify(S, cam, enc);
         oga::Jac J = oga::jacobian(S, cam, enc, P0);
@@ -673,10 +675,10 @@ int main() {
         float scale[oga::kDescN]; desc_scales(J, scale);
 
         // Several controls at once, in the proportions a look actually uses.
-        float dp[13] = {0};
+        float dp[og::analysis::kParamN] = {0};
         dp[2] = 0.5f; dp[3] = -0.5f; dp[5] = 0.5f; dp[6] = -0.5f;
         float pred[oga::kDescN]; oga::jac_predict(J, dp, pred);
-        float P1[13]; oga::apply_move(P0, dp, P1);
+        float P1[og::analysis::kParamN]; oga::apply_move(P0, dp, P1);
         oga::Desc d1 = oga::describe(S, cam, enc, P1);
 
         double worstSigned = 0.0; int wd = 0;
@@ -703,7 +705,7 @@ int main() {
     //     targeting separation would chase noise on footage that has none.
     {
         const int cam = 11, enc = 1;
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
 
         oga::SampleSet two = make_frame(0);
         oga::classify(two, cam, enc);
@@ -851,8 +853,8 @@ int main() {
         oga::stub_regions(S, cam, enc);
         std::vector<uint8_t> before = S.region;
 
-        float P0[13]; neutral13(P0);
-        float P1[13]; neutral13(P1); P1[6] = -0.20f;      // a firm Offset Temp move
+        float P0[og::analysis::kParamN]; neutral13(P0);
+        float P1[og::analysis::kParamN]; neutral13(P1); P1[6] = -0.20f;      // a firm Offset Temp move
 
         oga::RegionStat a[oga::kRegionN], b[oga::kRegionN];
         oga::region_stats(S, cam, enc, P0, a);
@@ -901,7 +903,7 @@ int main() {
     //     Pinned as CONTINUITY rather than as specific values, because the values are taste and
     //     will move; what must never come back is a step in the middle of a drag.
     {
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         P0[8] = 0.55f;                       // Creative's post-exposure, which render() applies
         og::grade::Tunables tn;
         // A FLAT FRAME, chosen because it actually reaches the limit. The first version of this
@@ -969,7 +971,7 @@ int main() {
     //     (one frame runs Lift 0.122 -> 0.083 -> -0.019 straight through it), and holding on any
     //     branch change at all capped that frame at -0.06 -- zero jumps because nothing moved.
     {
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         P0[8] = 0.55f;
         og::grade::Tunables tn;
         // Found by searching for a configuration where bit 2 actually engages, rather than by
@@ -1012,7 +1014,7 @@ int main() {
     //     because the frame-floor cap is also a constraint and it was still the fitted value, so
     //     re-solving an untouched grade reassigned Lift. Both halves are checked here.
     {
-        float P0[13]; neutral13(P0);
+        float P0[og::analysis::kParamN]; neutral13(P0);
         P0[8] = 0.55f;
         og::grade::Tunables tn;
         const double sLo = 0.22, sMid = 0.24, sHi = 0.33, fHi = 0.42, fLo = 0.198;
@@ -1022,7 +1024,7 @@ int main() {
         bool ok = m0.ok;
 
         // The grade as armed, then asked for itself.
-        float Pm[13]; for (int k = 0; k < 13; ++k) Pm[k] = P0[k];
+        float Pm[og::analysis::kParamN]; for (int k = 0; k < og::analysis::kParamN; ++k) Pm[k] = P0[k];
         Pm[3] = m0.lift; Pm[4] = m0.gamma; Pm[5] = m0.gain;
         const og::grade::ToneTargets idt =
             og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Pm, nullptr, 0);
@@ -1035,7 +1037,7 @@ int main() {
         // Now a real edit: darker mids, which keeps the highlight where it was. An edit that
         // BLOWS the frame highlight is deliberately not preserved -- honouring it would leave
         // Bias with nowhere to go, which is the whole reason a ceiling condition exists.
-        float Ph[13]; for (int k = 0; k < 13; ++k) Ph[k] = Pm[k];
+        float Ph[og::analysis::kParamN]; for (int k = 0; k < og::analysis::kParamN; ++k) Ph[k] = Pm[k];
         Ph[4] = Pm[4] * 0.85f;
         const og::grade::ToneTargets hnd =
             og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Ph, nullptr, 0);
@@ -1051,7 +1053,7 @@ int main() {
         // grade sitting above it gets its Lift reassigned and the round trip fails. Checked with
         // a value that clears the cap (0.085) while keeping the highlight under the ceiling
         // clamp, because a blown highlight is refused for its own separate and correct reason.
-        float Pf[13]; for (int k = 0; k < 13; ++k) Pf[k] = Pm[k];
+        float Pf[og::analysis::kParamN]; for (int k = 0; k < og::analysis::kParamN; ++k) Pf[k] = Pm[k];
         Pf[3] = Pm[3] + 0.04f;
         const og::grade::ToneTargets flr =
             og::grade::tone_targets_of(sLo, sMid, fHi, fLo, Pf, nullptr, 0);
@@ -1064,6 +1066,438 @@ int main() {
                     && close(fb.gain,  Pf[5], 0.01f);
 
         check(ok, "a hand edit re-bases Bias instead of being solved away");
+    }
+
+    // 33. THE FRAME CEILING HAS TWO CANDIDATES AND NOTHING BETWEEN THEM.
+    //
+    //     Both endpoints are validated: 0.968 is the hand-graded interview, 0.890 was checked on
+    //     five clips where it was visually indistinguishable. Everything in between is a number
+    //     nobody has looked at, so the search is a choice between two, not a solve.
+    //
+    //     Written after the bisection version was tried and was wrong BY CONSTRUCTION. A bisection
+    //     converges to the feasibility boundary, so whatever it returns is within its tolerance of
+    //     infeasible: on the underexposed clip it settled at 0.9339 while 0.9340 crosses into the
+    //     ceiling-gives-way branch and blows the face from 0.566 to 0.993. The grade was correct
+    //     and balanced on a knife edge, which is the same defect as the four Bias discontinuities
+    //     -- and the reason to pin the SHAPE here rather than the two numbers, since re-fitting an
+    //     endpoint is expected and re-introducing a search is not.
+    //
+    //     Self-checking in the same style as test 31: the sweep must actually reach both endpoints,
+    //     or it would pass by never exercising the fallback at all.
+    {
+        og::grade::Tunables tn;
+        bool ok = true, sawLow = false, sawHigh = false;
+        for (int step = 0; step <= 14 && ok; ++step) {
+            // One knob: how hot the frame's top is. Low, and the subject and the ceiling can both
+            // be had at 0.890; high, and holding the ceiling starts costing the subject, which is
+            // exactly the condition the second candidate exists for.
+            const float hl = 0.50f + 0.02f * (float)step;
+            og::analysis::SampleSet S;
+            const int N = 256;
+            for (int i = 0; i < N; ++i) {
+                float v; uint8_t reg;
+                if      (i <  40) { v = 0.30f + 0.0015f * (float)i;         reg = og::analysis::R_SKIN; }
+                else if (i < 236) { v = 0.32f + 0.0012f * (float)(i - 40);  reg = og::analysis::R_VEG;  }
+                else              { v = hl;                                 reg = og::analysis::R_VEG;  }
+                S.rgb.push_back(v); S.rgb.push_back(v); S.rgb.push_back(v);
+                S.region.push_back(reg);
+            }
+            float P0[og::analysis::kParamN]; neutral13(P0);
+            P0[8] = 0.55f;
+            const og::grade::MagicTone r = og::grade::solve_magic_tone(
+                S, og::analysis::R_SKIN, 1, 1, nullptr, 0, P0, tn);
+            if (!r.ok) continue;                       // a decline is a legitimate answer
+            const bool low  = std::fabs(r.ceil - tn.frameCeilingLow) < 1e-5;
+            const bool high = std::fabs(r.ceil - tn.frameCeiling)    < 1e-5;
+            ok &= (low || high);
+            sawLow |= low; sawHigh |= high;
+        }
+        ok &= sawLow && sawHigh;
+        check(ok, "the frame ceiling picks between two validated values, never a solved-for edge");
+    }
+
+    // 34. THE SEPARATION TRIPLE OVER REAL REGIONS, alongside the band version rather than
+    //     replacing it.
+    //
+    //     The band triple splits the frame by HEIGHT, which works on a landscape and fails the
+    //     moment the subject is not above or below its surround -- two people side by side, a face
+    //     against a window. The enum note has called that a stand-in since it was written. This is
+    //     the same three signed Lab components asked of the segmentation's subject against
+    //     everything else, and it is deliberately a SECOND set of descriptors: the band version and
+    //     the fits that stand on it keep working unchanged, and the two can be read off one frame.
+    //
+    //     Checked on a frame where the two disagree by construction -- subject brighter and warmer
+    //     than its surround, but distributed so the vertical thirds cannot see it. A test where
+    //     both triples agree would pass with the region masks ignored entirely.
+    {
+        og::analysis::SampleSet S;
+        const int N = 3000;
+        for (int i = 0; i < N; ++i) {
+            // Subject samples are spread evenly down the frame, so the band split has nothing to
+            // find. The period is 5 against decimate()'s stride of 2 below on purpose: the first
+            // version used every third sample with a stride of 3, and the thinned set came out
+            // 100%% subject with an empty surround -- the gate correctly refused to report a
+            // difference against a mean of nothing, and the test caught its own construction.
+            const bool subj = (i % 5 < 2);
+            const float r = subj ? 0.62f : 0.40f;
+            const float g = subj ? 0.58f : 0.40f;
+            const float b = subj ? 0.48f : 0.44f;      // subject warmer, surround cooler
+            S.rgb.push_back(r); S.rgb.push_back(g); S.rgb.push_back(b);
+            S.region.push_back(subj ? og::analysis::R_SKIN : og::analysis::R_VEG);
+            S.band.push_back((uint8_t)((i * 3) / N));  // thirds by index, blind to the subject
+            S.group.push_back(2); S.mid.push_back(1); S.skin.push_back(0);
+        }
+        float P0[og::analysis::kParamN]; neutral13(P0);
+
+        // No subject named: the triple reads zero rather than guessing, exactly like the skin pair.
+        S.subject = -1;
+        const og::analysis::Desc none = og::analysis::describe(S, 1, 1, P0);
+        bool ok = (none.v[og::analysis::D_RDL] == 0.f)
+               && (none.v[og::analysis::D_RDA] == 0.f)
+               && (none.v[og::analysis::D_RDB] == 0.f);
+
+        S.subject = og::analysis::R_SKIN;
+        const og::analysis::Desc d = og::analysis::describe(S, 1, 1, P0);
+        ok &= (d.v[og::analysis::D_RDL] > 1.f);    // subject is lighter, in L* units
+        ok &= (d.v[og::analysis::D_RDB] > 0.5f);   // ...and warmer, b* toward yellow
+
+        // The band triple is blind to it here, which is the point of the construction.
+        ok &= (std::fabs(d.v[og::analysis::D_DL]) < 0.5f);
+
+        // decimate() has to carry the subject or the Jacobian differentiates a descriptor that
+        // reads zero on the thinned set while the operating point had a value -- the same defect
+        // the region copy beside it was added to fix.
+        const og::analysis::SampleSet D = og::analysis::decimate(S, 1500);
+        const og::analysis::Desc dd = og::analysis::describe(D, 1, 1, P0);
+        ok &= (D.subject == og::analysis::R_SKIN);
+        ok &= (dd.v[og::analysis::D_RDL] > 1.f);
+        ok &= close(dd.v[og::analysis::D_RDL], d.v[og::analysis::D_RDL], 0.5f);
+
+        check(ok, "the separation triple reads real regions, and survives decimation");
+    }
+
+    // 35. The Range Balance latch splits the frame where the gap is, not at a fixed percentile.
+    // Two synthetic frames with the SAME two populations in very different proportions: a window
+    // that is 5% of frame, and a sky that is 60% of it. A percentile cannot serve both -- p98 sits
+    // inside the window on one and far above the sky on the other -- and that is what this pins.
+    {
+        auto build = [](double brightShare) {
+            std::vector<float> y;
+            for (int i = 0; i < 10000; ++i) {
+                const bool hi = (double)i / 10000.0 < brightShare;
+                // Each population spread over ~10 units so the histogram has real width.
+                const float jitter = 0.10f * (float)(i % 100) / 100.f;
+                y.push_back(hi ? 0.80f + jitter : 0.10f + jitter);
+            }
+            return y;
+        };
+        bool ok = true;
+        const og::grade::RangeLatch w = og::grade::range_latch(build(0.05));
+        const og::grade::RangeLatch s = og::grade::range_latch(build(0.60));
+        ok &= w.ok && s.ok;
+        // Both land in the gap between the populations (10..20 dark, 80..90 bright), regardless
+        // of how much of the frame the bright side occupies.
+        ok &= (w.latch >= 20.0 && w.latch <= 80.0);
+        ok &= (s.latch >= 20.0 && s.latch <= 80.0);
+        // ...and the coverage it reports is the bright population itself, not a fixed slice.
+        ok &= (w.cover > 3.0  && w.cover < 8.0);
+        ok &= (s.cover > 55.0 && s.cover < 65.0);
+        // A frame with ONE population has no gap, and saying so is the honest answer -- a latch
+        // invented on a flat frame would matte either all of it or none of it, and the caller
+        // needs to tell that apart from a measurement.
+        ok &= !og::grade::range_latch(std::vector<float>(1000, 0.4f)).ok;
+        ok &= !og::grade::range_latch(std::vector<float>(8, 0.4f)).ok;   // too few to split
+
+        // AND THE GAP MUST BE ABSOLUTE, not Otsu's own separability -- which is scale-invariant
+        // and so scores a frame spanning seven code values the same as a window against a room.
+        // Two clean populations two units apart: bimodal, and nothing worth holding apart.
+        std::vector<float> tight;
+        for (int i = 0; i < 10000; ++i) tight.push_back(i < 3000 ? 0.30f : 0.32f);
+        const og::grade::RangeLatch t = og::grade::range_latch(tight);
+        ok &= !t.ok && t.gap < og::grade::kRangeGapMin;
+        ok &= (w.gap > og::grade::kRangeGapMin && s.gap > og::grade::kRangeGapMin);
+        check(ok, "the range latch splits by population, not by percentile");
+    }
+
+    // 36. The locked mask holds its shape while the grade under it moves.
+    // Range Balance's mask reads the graded picture, so changing exposure re-cuts it -- which is
+    // the defect the reference grade in P[21..23] exists to remove. Measured as coverage: run a
+    // ramp through the stage twice, once with the reference following the grade and once with it
+    // held, and count how many samples come out held.
+    {
+        bool ok = true;
+        auto coverage = [](float gain, bool lock) {
+            float P[og::analysis::kParamN]; neutral13(P);
+            P[5]  = gain;                       // the grade that moves under the mask
+            P[13] = 45.f;                       // latch
+            P[14] = 2.6f;
+            P[18] = 1.f;                        // render the matte: the mask IS the output
+            P[21] = 0.f; P[22] = 1.f;
+            P[23] = lock ? 1.0f : gain;         // reference: held, or following the grade
+            int held = 0;
+            for (int i = 0; i < 200; ++i) {
+                const float v = (float)i / 199.f;
+                float r, g, b;
+                og::process(/*cam=*/1, /*enc=*/1, P, v, v, v, r, g, b);
+                if (r > 0.5f) ++held;
+            }
+            return held;
+        };
+        const int base = coverage(1.00f, false);
+        ok &= (base > 10 && base < 190);        // the latch actually cuts the ramp somewhere
+
+        // UNLOCKED: brightening pulls more of the picture over the latch, darkening pulls less.
+        ok &= (coverage(1.60f, false) > base);
+        ok &= (coverage(0.60f, false) < base);
+
+        // LOCKED: the same two grades select exactly what the reference grade selected.
+        ok &= (coverage(1.60f, true) == base);
+        ok &= (coverage(0.60f, true) == base);
+
+        check(ok, "a locked mask keeps its coverage while the grade under it moves");
+    }
+
+    // 37. The shape restricts WHERE Range Balance acts, and multiplies rather than replaces.
+    // The case it exists for: two equally bright things, one of which must not be held. No
+    // threshold separates them; their positions do.
+    {
+        bool ok = true;
+        auto M = [](float u, float v, int type, float soft, bool inv) {
+            return og::shape_mask(u, v, type, /*cx=*/0.f, /*cy=*/0.f,
+                                  /*sx=*/0.5f, /*sy=*/0.5f, /*rot=*/0.f, soft, inv);
+        };
+        ok &= (M(0.f, 0.f, 0, 0.f, false) == 1.f);       // no shape: the stage is untouched
+        ok &= (M(9.f, 9.f, 0, 0.f, false) == 1.f);       // ...anywhere at all
+
+        // Inside is held, outside is not, and the boundary sits at the size.
+        ok &= (M(0.f,  0.f,  1, 0.f, false) > 0.99f);
+        ok &= (M(1.2f, 0.f,  1, 0.f, false) < 0.01f);
+        ok &= close(M(0.5f, 0.f, 1, 0.f, false), 0.5f, 0.02f);   // exactly on the edge
+
+        // ROUND ON A 16:9 FRAME: both axes are normalised by half-height, so a point the same
+        // distance out in x and in y gets the same answer. Normalising each axis by its own
+        // extent -- the obvious thing -- would fail this.
+        ok &= close(M(0.35f, 0.f, 1, 0.3f, false), M(0.f, 0.35f, 1, 0.3f, false), 1e-5f);
+
+        // Rectangle holds its corners where the ellipse does not.
+        ok &= (M(0.45f, 0.45f, 2, 0.f, false) > 0.99f);
+        ok &= (M(0.45f, 0.45f, 1, 0.f, false) < 0.01f);
+
+        // Invert swaps the two sides.
+        ok &= (M(0.f, 0.f, 1, 0.f, true) < 0.01f);
+        ok &= (M(1.2f, 0.f, 1, 0.f, true) > 0.99f);
+
+        // SOFTNESS FEATHERS SYMMETRICALLY, so softening does not shrink the selection: the
+        // half-way point stays on the boundary however soft the edge is.
+        ok &= close(M(0.5f, 0.f, 1, 0.8f, false), 0.5f, 0.02f);
+
+        // ...and it MULTIPLIES the luminance mask. Two pixels of identical brightness, one inside
+        // the shape and one outside: only the first is held. That is the silk-pillow case, and no
+        // latch on its own can do it.
+        float P[og::analysis::kParamN]; neutral13(P);
+        P[13] = 45.f; P[18] = 1.f;                       // latch, render the matte
+        P[24] = 1.f; P[27] = 0.5f; P[28] = 0.5f; P[30] = 0.f;   // ellipse at centre, hard edge
+        float r0, g0, b0, r1, g1, b1;
+        og::process(1, 1, P, 0.9f, 0.9f, 0.9f, r0, g0, b0, /*shapeM=*/1.0f);   // inside
+        og::process(1, 1, P, 0.9f, 0.9f, 0.9f, r1, g1, b1, /*shapeM=*/0.0f);   // outside
+        ok &= (r0 > 0.99f && r1 < 0.01f);
+        check(ok, "the shape restricts where Range Balance acts, and multiplies the latch");
+    }
+
+    // 38. The tone map: contains the range without moving anything below its knee.
+    // The defect it exists for: measured over the training corpus at neutral parameters, 9 of 18
+    // frames pushed data past 1.0 -- up to 47.8% of channels -- while the SOURCE was pinned
+    // essentially nowhere. The footage had the range; the pipeline had no shoulder.
+    {
+        bool ok = true;
+        const float k = 0.40f, W = 3.0f;
+
+        // OFF is white <= knee, and it must be EXACTLY identity -- that is what lets the four
+        // render paths carry two floats and no branch.
+        for (float v : {0.f, 0.2f, 0.5f, 1.0f, 3.26f})
+            ok &= (og::tone_map(v, k, 0.f) == v);
+
+        // Below the knee nothing moves at all. Not "close to" -- the same value.
+        for (float v : {0.f, 0.1f, 0.25f, 0.399f})
+            ok &= (og::tone_map(v, k, W) == v);
+
+        // C1 AT THE KNEE: slope is exactly 1 there, so no seam appears where it engages. A curve
+        // that merely joins up leaves a visible crease in a gradient.
+        const float e = 1e-3f;
+        const float slope = (og::tone_map(k + e, k, W) - k) / e;
+        ok &= close(slope, 1.0f, 5e-3f);
+
+        // The white point maps to display white EXACTLY -- that is what makes it mean "the value
+        // that becomes white" instead of an asymptote nobody reaches. softclip() only approaches.
+        ok &= close(og::tone_map(W, k, W), 1.0f, 1e-4f);
+
+        // Monotone, and nothing escapes the range however far past white it starts. The rational
+        // form diverges above `white`, so the clamp is load-bearing rather than defensive.
+        float prev = -1.f;
+        for (int i = 0; i <= 400; ++i) {
+            const float v = (float)i * 0.05f;
+            const float o = og::tone_map(v, k, W);
+            ok &= (o <= 1.0f) && (o >= prev);
+            prev = o;
+        }
+
+        // AND IT KEEPS MORE HIGHLIGHT RANGE THAN THE SOFT CLIP IT REPLACES, which is the whole
+        // reason it is not just softclip(): on the frame that started this, softclip left the top
+        // decile spanning 0.033 of display range. Same comparison in miniature -- two scene values
+        // an octave apart stay further apart under the tone map than under the soft clip.
+        const float tmGap = og::tone_map(3.2f, k, W) - og::tone_map(1.6f, k, W);
+        const float scGap = og::softclip(3.2f, 0.8f)   - og::softclip(1.6f, 0.8f);
+        ok &= (tmGap > 3.0f * scGap);
+
+        check(ok, "the tone map contains the range and keeps the highlights apart");
+    }
+
+    // 39. Fitting the tone map to the frame: adaptive, and blind to what the sensor already lost.
+    // The argument for doing this in a plugin at all is that we hold the pixels -- a fixed curve
+    // is one compromise struck against a corpus, too gentle for a frame peaking at 3.3 and
+    // needless compression on one peaking at 1.1.
+    {
+        bool ok = true;
+        float P[og::analysis::kParamN]; neutral13(P);
+
+        // Build a frame of camera-log greys spanning a given top. cam 1 / enc 1 so decode_log and
+        // the encode are an exact inverse pair and the display value is predictable.
+        auto frameTo = [&](float topLinear, size_t nPinned) {
+            og::analysis::SampleSet S;
+            for (int i = 0; i < 4000; ++i) {
+                const float lin = topLinear * (float)i / 3999.f;
+                const float code = og::di_encode(lin);
+                S.rgb.push_back(code); S.rgb.push_back(code); S.rgb.push_back(code);
+                S.band.push_back(0); S.u.push_back(0.5f); S.v.push_back(0.5f);
+            }
+            // A pinned population sitting ON the clip's own ceiling -- unrecoverable by anything.
+            const float top = og::di_encode(topLinear);
+            for (size_t i = 0; i < nPinned; ++i) {
+                S.rgb.push_back(top); S.rgb.push_back(top); S.rgb.push_back(top);
+                S.band.push_back(0); S.u.push_back(0.5f); S.v.push_back(0.5f);
+            }
+            return S;
+        };
+
+        // A frame that already fits asks for no shoulder at all. A tone map is a remedy, not a
+        // house style, and compressing a picture that fits would be damage for its own sake.
+        const og::grade::ToneMapFit gentle = og::grade::fit_tone_map(frameTo(0.5f, 0), 1, 1, P);
+        ok &= gentle.ok && (gentle.white == 0.0);
+
+        // A frame that runs well over gets a shoulder, and `white` lands above its own peak so the
+        // brightest real highlight keeps a little headroom instead of sitting exactly on white.
+        const og::grade::ToneMapFit wild = og::grade::fit_tone_map(frameTo(40.f, 0), 1, 1, P);
+        ok &= wild.ok && (wild.white > 1.0) && (wild.white > wild.peak);
+
+        // ADAPTIVE: the harder the frame, the lower the knee. A fixed knee is the thing this
+        // replaces, so a fit that returned the same one for both would be no fit at all.
+        const og::grade::ToneMapFit mild = og::grade::fit_tone_map(frameTo(4.f, 0), 1, 1, P);
+        ok &= mild.ok && (mild.white > 1.0) && (mild.knee > wild.knee);
+
+        // ...and it actually contains what it measured.
+        {
+            float Q[og::analysis::kParamN]; neutral13(Q);
+            Q[32] = (float)wild.knee; Q[33] = (float)wild.white;
+            float r, g, b;
+            og::process(1, 1, Q, og::di_encode(40.f), og::di_encode(40.f), og::di_encode(40.f), r, g, b);
+            ok &= (r <= 1.0f + 1e-4f);
+        }
+
+        // SENSOR-CLIPPED SAMPLES ARE EXCLUDED FROM THE PEAK. Pixels pinned at the clip's own
+        // ceiling are flat and no curve recovers them; letting them set `white` would compress
+        // everything real to make room for data that is not there. Adding a large pinned
+        // population must move `pin`, and must NOT drag the fitted white point up with it.
+        const og::grade::ToneMapFit clean  = og::grade::fit_tone_map(frameTo(4.f, 0),    1, 1, P);
+        const og::grade::ToneMapFit blown  = og::grade::fit_tone_map(frameTo(4.f, 2000), 1, 1, P);
+        // The clean frame is not pin-free: a ramp's top samples legitimately sit within eps of the
+        // ramp's own ceiling, which is the pin test working. What matters is the large gap.
+        ok &= (blown.pin > 20.0) && (clean.pin < 5.0) && (blown.pin > 5.0 * clean.pin);
+        ok &= close((float)blown.white, (float)clean.white, 0.05f);
+
+        check(ok, "the tone map fit adapts to the frame and ignores what the sensor lost");
+    }
+
+    // 40. THE CREATIVE PRESET MUST NOT TOUCH SCENE WHITE BALANCE.
+    //
+    // It used to stamp P[11] = 6500 along with the rest of the look, and that one line destroyed
+    // "White Balance First" outright. solve_magic measures the cast, writes the kelvin into
+    // out.P[11], and then runs solve_creative_px -- whose first act is creative_preset. Across the
+    // whole bench corpus the estimator solved a real temperature on 13 frames, between 5445 K and
+    // 9500 K, reported it in the panel, and every one of them rendered at 6500 K.
+    //
+    // The bug was invisible from either end: the WB solve was correct and said so, and the render
+    // was correct for the parameters it was given. Only holding the two numbers side by side
+    // showed one was not reaching the other -- which is why the assertion is on the ARRAY rather
+    // than on any picture.
+    //
+    // Scene Exposure is checked with it. It is the same kind of parameter, scene-referred and
+    // upstream of the look, and it IS stamped -- correctly, because in solve_magic nothing has
+    // written it yet at that point and the tone solve sets it afterwards. Pinned so that if it
+    // ever moves ahead of the preset the way white balance did, this fails instead of going quiet.
+    {
+        bool ok = true;
+        float P[og::analysis::kParamN]; og::analysis::neutral_params(P);
+        P[11] = 9242.f;    // the user's own measured warm value, from the interview shot
+        P[10] = 1.75f;
+        og::grade::creative_preset(P);
+        ok &= (P[11] == 9242.f);            // survives the look stamp
+        ok &= (P[10] == 0.f);               // scene exposure still reset, deliberately
+        ok &= (P[5]  == 0.80f);             // and the look itself is still stamped
+        ok &= (P[0]  == -0.22f);
+
+        // A neutral array must come out of it holding a usable temperature rather than whatever
+        // the caller left on the stack: creative_preset no longer supplies one, so every caller
+        // has to start from neutral_params(). This is the invariant applyAutoGradeClean broke by
+        // declaring its array bare -- there, [13..33] were stack garbage feeding og::process.
+        float Q[og::analysis::kParamN]; og::analysis::neutral_params(Q);
+        og::grade::creative_preset(Q);
+        ok &= (Q[11] == 6500.f);
+        ok &= (Q[13] == 0.f) && (Q[33] == 0.f);   // Range Balance off, shoulder off
+
+        check(ok, "the Creative preset stamps the look and leaves white balance alone");
+    }
+
+    // 41. THE FRAME FLOOR GUARD READS A POPULATION, NOT ONE PIXEL.
+    //
+    // frameFloorMin exists to stop the tone solve crushing the shadows, and it was inert for its
+    // whole life because it was anchored on a single extreme pixel -- first fLo, the min channel
+    // of the pixel ranked p0.1 by MAX channel, then mBotY, the darkest by luma. What it guards
+    // against is `crushed%`, which counts EVERY pixel whose min channel is at or under 1/255, and
+    // one pixel cannot count pixels. On real footage two frames rendered that pixel to an
+    // identical 0.041 while one had 5.07% of its frame crushed and the other 0.14%.
+    //
+    // The frame below is that disagreement in miniature: a population of SATURATED pixels whose
+    // min channel is zero but whose luma is not low, plus a smaller population of genuinely dark
+    // neutral pixels. Ranked by luma the dark neutrals win and the guard sees 0.02 -- fine.
+    // Ranked by min channel the saturated ones win and it sees 0.00 -- crushed. Both readings are
+    // correct about their own question; only one is about the thing being prevented.
+    {
+        bool ok = true;
+        const size_t N = 4000;
+        std::vector<unsigned char> region(N, (unsigned char)og::analysis::R_SKIN);
+        // 4% saturated: min channel 0, luma 0.064 -- crushed but NOT darkest by luma.
+        // 1% neutral dark: min channel 0.02, luma 0.02 -- darkest by luma, NOT crushed.
+        auto at = [&](size_t i, float& r, float& g, float& b) {
+            if (i < N / 25)                { r = 0.30f; g = 0.f; b = 0.f; }
+            else if (i < N / 25 + N / 100) { r = g = b = 0.02f; }
+            else                           { r = g = b = 0.50f; }
+        };
+        const og::grade::TonePick pk =
+            og::grade::pick_tone_samples(N, region.data(), og::analysis::R_SKIN, at);
+        ok &= pk.ok;
+
+        auto minOf  = [&](size_t i) { float r,g,b; at(i,r,g,b); return std::min(r, std::min(g,b)); };
+        auto lumaOf = [&](size_t i) { float r,g,b; at(i,r,g,b); return 0.2126f*r+0.7152f*g+0.0722f*b; };
+
+        // The new statistic lands ON the crushed population...
+        ok &= (minOf(pk.iMinP) < 0.001f);
+        // ...and the luma-ranked pick does not, which is precisely why it could not see crushing.
+        // Swap iMinP for iBotY in the line above and this test fails -- that is the old anchor.
+        ok &= (minOf(pk.iBotY) > 0.01f);
+        // Sanity: the luma pick really is darkest by luma, so it is wrong here without being broken.
+        ok &= (lumaOf(pk.iBotY) < lumaOf(pk.iMinP));
+
+        check(ok, "the frame floor guard counts crushed pixels instead of finding one dark one");
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");

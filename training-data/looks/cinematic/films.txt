@@ -1,0 +1,43 @@
+# CINEMATIC -- the broad narrative baseline
+#
+# Curation approved by the user 2026-08-13, then extended to ~30 to clear the
+# separability floor (8 stills per REGION, and a still only counts toward the
+# regions it contains). Trim freely -- this list IS the ground truth.
+#
+# Each film appears in exactly ONE look. Sharing stills between two looks would
+# bias their comparison straight toward "overlapping".
+#
+# Find slugs with:  ./experiments/looks/fetch.py find "title"
+1917
+dune
+arrival
+interstellar
+skyfall
+the-revenant
+there-will-be-blood
+blade-runner-2049
+gladiator
+the-dark-knight
+inception
+tenet
+dunkirk
+the-social-network
+the-tree-of-life
+the-new-world
+days-of-heaven
+barry-lyndon
+2001-a-space-odyssey
+apocalypse-now
+lawrence-of-arabia
+the-master
+phantom-thread
+moonlight
+if-beale-street-could-talk
+the-power-of-the-dog
+nomadland
+true-grit
+o-brother-where-art-thou
+fargo
+inside-llewyn-davis
+a-serious-man
+drive-my-car

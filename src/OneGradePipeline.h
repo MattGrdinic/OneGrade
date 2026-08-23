@@ -119,7 +119,7 @@ static inline void XYZ_to_709(const float v[3], float o[3])
 }
 
 // ---------- RAW-style white balance (mirrors the Camera RAW tab's Temp control) ----------
-// Correlated colour temperature (Kelvin) -> CIE xy on the Planckian locus (Kim et al. 2002).
+// Correlated color temperature (Kelvin) -> CIE xy on the Planckian locus (Kim et al. 2002).
 static inline void cct_to_xy(float T, float& x, float& y)
 {
     float t1 = 1.0f/T, t2 = t1*t1, t3 = t2*t1;
@@ -269,6 +269,50 @@ static inline float softclip(float v, float amt)
     return k + r*(1.0f - expf(-(v - k)/r));
 }
 
+// ---------------------------------------------------------------------------------------
+// THE TONE MAP — the shoulder that stops log footage from leaving the display range.
+//
+// WHY THIS EXISTS. The pipeline had no tone map: a log clip carries ~13 stops, a display encode
+// holds about six, and nothing bridged them. Measured over the training corpus at NEUTRAL
+// parameters, 9 of 18 frames pushed data past 1.0 -- up to 47.8% of channels -- while the SOURCE
+// was pinned essentially nowhere (max 0.84, 0.000% pinned on the frame that started this). The
+// footage had the range and the plugin threw it away, on half of everything, from the day it
+// shipped. It went unnoticed because nothing measured it: Rolloff is driven by `pin`, which is
+// SOURCE clipping, and correctly reads 0% when the clipping is ours.
+//
+// WHY NOT softclip(). It was tried and it is the wrong tool -- an exponential asymptote built to
+// stop practicals turning neon, not to map a scene into a display. On the frame above it contains
+// everything (max 3.26 -> 1.00) and leaves the sky FLAT: the top decile spans 0.033 of display
+// range at Rolloff 0.8. Contained is not the same as legible.
+//
+// WHY NOT SCALING TO FIT. Solving RAW Exposure so the peak lands on 1.0 costs -3.75 EV on that
+// frame and drags the median 0.443 -> 0.136. It trades a blown sky for a dead picture.
+//
+// THE SHAPE. Identity below `knee`, then a Reinhard shoulder that reaches exactly 1.0 at `white`:
+//
+//     x  = (v - knee)/(1 - knee)        the excess, in units of the remaining display range
+//     wx = (white - knee)/(1 - knee)
+//     out = knee + (1 - knee) * x*(1 + x/wx^2)/(1 + x)
+//
+// C1 at the knee (slope is exactly 1 there, so nothing below it moves and no seam appears), and
+// x = wx maps to 1 exactly, which is what makes `white` mean "the scene value that becomes display
+// white" rather than an asymptote nobody can reach. Anything above `white` would run past 1 in
+// this form -- Reinhard-with-white-point diverges eventually -- so it is clamped, which on real
+// footage is a rounding concern rather than a visible one.
+//
+// DISPLAY-REFERRED ONLY, exactly like softclip: a Cineon/DI/Linear feed to a downstream node must
+// keep its scene-referred values, and a shoulder there would be a lie about what the pixels are.
+static inline float tone_map(float v, float knee, float white)
+{
+    if (v <= knee) return v;                       // the whole point: mids do not move
+    const float span = 1.0f - knee;
+    if (span <= 1e-4f || white <= knee) return v;  // degenerate: leave it alone rather than divide
+    const float wx = (white - knee)/span;
+    const float x  = (v - knee)/span;
+    const float out = knee + span * (x*(1.0f + x/(wx*wx))/(1.0f + x));
+    return (out > 1.0f) ? 1.0f : out;              // above `white` the rational form diverges
+}
+
 // Post-LUT trim in display space: exposure (multiply) then contrast about 0.5.
 static inline void apply_trim(float postExp, float postCon, float& r, float& g, float& b)
 {
@@ -279,8 +323,97 @@ static inline void apply_trim(float postExp, float postCon, float& r, float& g, 
 }
 
 // full per-pixel process. in/out are RGB (alpha handled by caller).
+// ---------------------------------------------------------------------------------------
+// HIGHLIGHT MASK — a luminance qualifier, per pixel.
+//
+// Deliberately NOT local. A qualifier is a function of the pixel's own value and nothing else, so
+// it fits this scalar per-pixel function exactly as it stands: no neighbourhood, no second pass,
+// no change to how the three kernels mirror it. Anything that needed neighbouring pixels -- real
+// local tone mapping, a spatial blur on the mask -- would not.
+//
+// Matches Resolve's Luminance qualifier, on its 0..100 scale, so the four numbers a colorist
+// reads off that panel can be typed straight in: Low / High with L.Soft / H.Soft widening the
+// ramp either side. Returns 1 inside the window and 0 outside.
+//
+// SMOOTHSTEP, NOT A LINEAR RAMP, at both ends. A linear ramp has a corner where it meets flat,
+// and a corner in a mask is a visible contour line in a gradient -- exactly where this gets used,
+// on a window or a sky. The cubic is C1 at both joins and costs two multiplies.
+//
+// THE SOFTNESS IS IN LUMINANCE, NOT IN SPACE, and that is the whole limitation. Where the
+// threshold lands on a steep edge -- a window frame -- the mask edge is stable. Where it lands
+// inside noise, noise crosses it differently every frame and the mask shimmers. Resolve solves
+// that with a spatial blur that a per-pixel function cannot have.
+static inline float smooth01(float t)
+{
+    t = clamp01(t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// ONE EDGE, NOT TWO. This had an upper edge as well -- a window from `lo` to 100, the shape a
+// Resolve qualifier shows. It is wrong here, and measurably so: the top taper put the BRIGHTEST
+// pixels back OUTSIDE the highlight mask, which on the user's bedroom dropped 27% of the window
+// (8.08% of frame held with the ceiling open, 5.92% with it at 100) -- and the part it dropped
+// was the blown middle of the window, the exact thing "hold the highlights" is about.
+//
+// Resolve gets away with the same shape because its qualifier axis stops at 100. Ours is float
+// and superwhite is ordinary: a practical at 121 is highlight by any definition. The mask rises
+// once and stays up.
+static inline float highlight_mask(float Y, float lo, float soft)
+{
+    // Guard the degenerate width so a zero-soft edge is a hard step rather than a divide by zero.
+    const float le = fmaxf(soft, 1e-4f);
+    return smooth01((Y - (lo - le)) / (2.0f * le));
+}
+
+// ---------------------------------------------------------------------------------------
+// THE SHAPE MASK — where Range Balance is allowed to act, as opposed to on what.
+//
+// A SHAPE IS NOT A BLUR, and this was filed with the blur once by mistake. A blur needs a pixel's
+// NEIGHBOURS, which a per-pixel kernel does not have and cannot cheaply get. A shape needs only
+// the pixel's OWN coordinate, which every backend already has -- get_global_id in OpenCL,
+// thread_position_in_grid in Metal, blockIdx/threadIdx in CUDA. So this is an ordinary per-pixel
+// function like every other stage here, and far cheaper than the feathering work it was confused
+// with.
+//
+// COORDINATES ARE CENTRE-ORIGIN AND NORMALISED BY HALF-HEIGHT, both axes. Normalising each axis by
+// its own extent is the obvious thing and it is wrong: a circle would come out an ellipse on a
+// 16:9 frame and the softness would feather further horizontally than vertically. Dividing both by
+// half-height keeps the geometry round, at the cost of u running past 1 at the sides -- which is
+// what "size 0.5" meaning the same distance in any direction is worth.
+//
+// It MULTIPLIES the luminance mask rather than replacing it: the held region is "bright AND inside
+// the shape". That is a qualifier plus a power window, which is the thing this is standing in for.
+static inline float shape_mask(float u, float v, int type, float cx, float cy,
+                               float sx, float sy, float rotDeg, float soft, bool invert)
+{
+    if (type <= 0) return 1.0f;                     // no shape: the luminance mask stands alone
+    const float ax = fmaxf(fabsf(sx), 1e-4f), ay = fmaxf(fabsf(sy), 1e-4f);
+    float du = u - cx, dv = v - cy;
+    if (rotDeg != 0.0f) {
+        const float r = rotDeg * 0.01745329252f;    // degrees, because a panel in radians is unusable
+        const float cs = cosf(r), sn = sinf(r);
+        const float t = du*cs + dv*sn;              // rotate INTO the shape's frame
+        dv = -du*sn + dv*cs;
+        du = t;
+    }
+    // d == 1 on the boundary for both shapes, which is what lets one feather serve both.
+    const float nx = du/ax, ny = dv/ay;
+    const float d = (type == 1) ? sqrtf(nx*nx + ny*ny)      // ellipse
+                                : fmaxf(fabsf(nx), fabsf(ny));  // rectangle
+    // Feather SYMMETRICALLY about the boundary, so raising Softness grows the shape outward as
+    // much as inward and the edge stays where you put it. Feathering inward only would shrink the
+    // selection every time you softened it.
+    const float e = fmaxf(soft, 1e-4f);
+    const float m = 1.0f - smooth01((d - (1.0f - 0.5f*e)) / e);
+    return invert ? (1.0f - m) : m;
+}
+
+// `shapeM` is the shape mask at THIS pixel, computed by the caller because only the caller knows
+// where the pixel is. 1.0 means "no shape", which is what every analysis path passes -- a defaulted
+// argument rather than a new required one, so the fifty-odd call sites that have no geometry keep
+// meaning exactly what they meant.
 static inline void process(int cam, int enc, const float* P, float inR, float inG, float inB,
-                           float& outR, float& outG, float& outB)
+                           float& outR, float& outG, float& outB, float shapeM = 1.0f)
 {
     const float temp=P[0], tint=P[1], density=P[2], lift=P[3], gamma=P[4], gain=P[5], offTemp=P[6], offTint=P[7];
     const float rawExp=P[10], rawTemp=P[11];   // RAW-tab analogs: exposure (stops) + white balance (Kelvin)
@@ -334,13 +467,115 @@ static inline void process(int cam, int enc, const float* P, float inR, float in
     //      lift  : pivot @ white, reach clamped at white so superwhites aren't amplified
     //      gamma : power, pivot @ black & white
     const float dg = (enc == 1) ? 2.2f : (enc == 2) ? 2.4f : 0.0f;   // 0 = Scene OETF
+    float d[3];
+    for (int i=0;i<3;i++) d[i] = (dg > 0.f) ? r709_g_enc(outc[i], dg) : r709_enc(outc[i]);
+
+
+    // 6b. RANGE BALANCE — hold the bright areas, open the rest.
+    //
+    // For footage whose range WAS captured: a window and an unlit room both inside the sensor's
+    // latitude, where a single curve has to blow one to serve the other. A luminance mask splits
+    // the frame in two and each half gets its own move -- highlights pulled down, everything else
+    // lifted -- which is the "qualifier, invert, second node" dance in Resolve reduced to a few
+    // sliders.
+    //
+    // THE MASK READS THE PRE-GRADE DISPLAY LUMINANCE, computed here before lgg_core touches
+    // anything. Reading the graded value would make the mask move as the room is lifted, so the
+    // control would chase its own output -- the defect that made Magic Grade converge over three
+    // presses and the reason Bias re-solves from a frozen anchor. It is measured off `d`, not off
+    // `v`, and that ordering is the whole of it.
+    //
+    // m + (1-m) == 1, so the two moves are a PARTITION and never a double-apply. Holding the
+    // highlights alone was tried first and does nothing useful: it cannot recover a window an
+    // earlier stage already threw away, which on the test frame was blown identically with the
+    // mask on and off while the mask was working correctly.
+    const float rbLatch = P[13], rbSoft = P[14], rbHigh = P[15], rbLift = P[16], rbGamma = P[17];
+    const bool  rbShow  = (P[18] > 0.5f);   // preview the matte instead of the picture
+    const float rbHiGam = P[19], rbLoGain = P[20];
+    // Showing the matte has to work BEFORE the three moves are dialled in -- that is the whole
+    // point of it -- so the preview alone is enough to switch the stage on.
+    const bool  rbOn = (rbLatch > 0.f) &&
+                       (rbShow || rbHigh != 1.f || rbLift != 0.f || rbGamma != 1.f ||
+                        rbHiGam != 1.f || rbLoGain != 1.f);
+    // AFTER THE GRADE CURVE, BEFORE RANGE BALANCE'S OWN MOVES -- which is what a Resolve
+    // qualifier sees when you drop it on a node, and the distinction the first version got wrong.
+    //
+    // Only Range Balance's OWN three moves can make the mask chase itself; Lift/Gamma/Gain cannot,
+    // because they run once and are not driven by the mask. Excluding them too was over-correction
+    // and it cost the selection: pre-grade the picture is flat, so a bright pillow and a window
+    // sit within a few points of each other and NO threshold separates them. The user could not
+    // match Resolve's window selection at any latch for exactly this reason. After the grade the
+    // two are far apart and the same threshold picks the window alone.
+    //
+    // ...BUT THE MASK READS A REFERENCE GRADE, NOT THE LIVE ONE (P[21..23]).
+    //
+    // "After the grade curve" makes the selection possible and makes it MOVE: change exposure and
+    // the same threshold now cuts the picture somewhere else, so the held region grows or shrinks
+    // under a control that was supposed to be adjusting it. The caller decides what the reference
+    // is -- unlocked it writes the live Lift/Gamma/Gain here and nothing changes, locked it writes
+    // the values that were in effect when the latch was measured, and the mask stops moving.
+    //
+    // One code path either way. A branch on "is it locked" would be a second definition of the
+    // mask, and there is nothing here that could tell you which one a given frame used.
+    //
+    // Two extra lgg_core calls per pixel is the whole cost, because `d` is already in hand. That
+    // is also why the reference is the GRADE CURVE and not the entire chain: anchoring RAW
+    // Exposure or Density would mean running everything upstream a second time, and those are not
+    // the controls a mask gets nudged by while you dial it.
+    float v3[3], ref[3];
     for (int i=0;i<3;i++) {
-        float v = (dg > 0.f) ? r709_g_enc(outc[i], dg) : r709_enc(outc[i]);
-        v = lgg_core(v, lift, gamma, gain);
+        v3[i]  = lgg_core(d[i], lift, gamma, gain);
+        ref[i] = lgg_core(d[i], P[21], P[22], P[23]);
+    }
+
+    float rbM = 0.f;
+    if (rbOn)
+        rbM = highlight_mask(100.f*(0.2126f*ref[0] + 0.7152f*ref[1] + 0.0722f*ref[2]),
+                             rbLatch, rbSoft) * shapeM;
+
+    for (int i=0;i<3;i++) {
+        float v = v3[i];
+        if (rbOn) {
+            // A FULL SET EACH SIDE, except one. The held area gets Gain and Gamma: Gain pulls a
+            // bright window or a cloud bank down, and Gamma then puts back the midtone detail
+            // that pulling it down flattened -- which is the move a cloudscape needs and the one
+            // Gain alone cannot make.
+            //
+            // NO LIFT ON THE HELD SIDE, deliberately. Lift is lift*(1 - min(v,1)), so its
+            // authority falls away toward white and it does essentially nothing to a region
+            // selected FOR being bright. That is the same property that made the tone solve run
+            // Lift to its bound on a sky, and a control that cannot move its own target is worse
+            // than a missing one.
+            const float room = lgg_core(v, rbLift, rbGamma, rbLoGain);
+            const float high = lgg_core(v, 0.f, rbHiGam, rbHigh);
+            v = (1.f - rbM)*room + rbM*high;
+        }
+        // THE TONE MAP, LAST IN THE DISPLAY CHAIN -- after the grade curve and after Range
+        // Balance, before the encode.
+        //
+        // BEFORE THE GRADE WAS TRIED FIRST and it is the wrong side, for a reason worth keeping:
+        // a shoulder starting below 1.0 moves diffuse white off display white, and the grade curve
+        // is DEFINED against those pivots -- Lift is lift*(1 - min(v,1)) and pins white, Gain
+        // pins black. Tone mapping first redefines where white is, so Lift stops pinning it (test
+        // 7, "lift pins white") and every documented pivot quietly means something else. Grading
+        // first and mapping the result keeps the whole control set meaning exactly what it says.
+        //
+        // The cost is that the solves' render model must include this, because they predict the
+        // render as lgg_core() on a measured percentile -- see tone_render(), which now applies it
+        // in the same position. That is a real cost and a bounded one; the alternative was
+        // redefining every control.
+        //
+        // enc <= 2 only, exactly like softclip: Cineon, DI and Linear are scene-referred feeds to
+        // a downstream node, and a shoulder in them would be a lie about what the pixels are.
+        if (enc <= 2) v = tone_map(v, P[32], P[33]);
         outc[i] = (dg > 0.f) ? r709_g_dec(v, dg) : r709_dec(v);
     }
 
-    // 7. Final output encode
+    // 7. Final output encode. The matte is a MEASUREMENT, not a picture, so it bypasses the
+    //    encode entirely -- 0.5 of mask has to read as 0.5, and pushing it through a transfer
+    //    function would make a matte that looks like coverage it does not have. The caller
+    //    likewise skips the LUT and trim while this is on.
+    if (rbShow && rbOn) { outR = outG = outB = rbM; return; }
     outR = encode(enc, outc[0]);
     outG = encode(enc, outc[1]);
     outB = encode(enc, outc[2]);

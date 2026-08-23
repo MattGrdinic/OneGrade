@@ -23,7 +23,7 @@
 //
 // CHOSEN ON LICENCE FIRST AND IT TURNED OUT TO BE BETTER ANYWAY. NVIDIA's SegFormer-B0 is the
 // obvious candidate and converts more easily, but its licence restricts use to "research or
-// evaluation purposes only" -- and that lands on the END USER, not the distributor. A colourist
+// evaluation purposes only" -- and that lands on the END USER, not the distributor. A colorist
 // grading a paid job is doing neither, so no amount of relicensing OneGrade could have fixed
 // it; the restriction would simply have moved onto the people the plugin exists for.
 //

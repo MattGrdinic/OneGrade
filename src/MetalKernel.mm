@@ -96,10 +96,36 @@ inline float og_r709e(float L){ return (L<0.018f)?(4.5f*L):(1.099f*og_pow(L,0.45
 inline float og_r709d(float V){ return (V<0.081f)?(V/4.5f):og_pow((V+0.099f)/1.099f,1.0f/0.45f); }
 inline float og_r709ge(float L, float g){ return og_pow(L,1.0f/g); }
 inline float og_r709gd(float V, float g){ return og_pow(V,g); }
+inline float og_lggc(float v, float gain, float lift, float gamma){
+    v=v*gain; v=v+lift*(1.0f-min(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma);   // negatives pass through (see og::process)
+    return v;
+}
 inline float og_lgg(float L, float gain, float lift, float gamma, float dg){
     float v = (dg>0.0f) ? og_r709ge(L,dg) : og_r709e(L);
-    v=v*gain; v=v+lift*(1.0f-min(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma);   // negatives pass through (see og::process)
+    v = og_lggc(v,gain,lift,gamma);
     return (dg>0.0f) ? og_r709gd(v,dg) : og_r709d(v);
+}
+inline float og_smooth01(float t){ t=clamp(t,0.0f,1.0f); return t*t*(3.0f-2.0f*t); }
+inline float og_hlmask(float Y,float lo,float s){   // one rising edge; see highlight_mask()
+    float le=max(s,1e-4f);
+    return og_smooth01((Y-(lo-le))/(2.0f*le));
+}
+inline float og_tonemap(float v,float k,float W){
+    if(v<=k) return v; float sp=1.0f-k; if(sp<=1e-4f||W<=k) return v;
+    float wx=(W-k)/sp, x=(v-k)/sp;
+    float o=k+sp*(x*(1.0f+x/(wx*wx))/(1.0f+x));
+    return (o>1.0f)?1.0f:o;
+}
+inline float og_shape(float u,float v,int t,float cx,float cy,float sx,float sy,float rd,float sf,bool inv){
+    if(t<=0) return 1.0f;
+    float ax=max(fabs(sx),1e-4f), ay=max(fabs(sy),1e-4f);
+    float du=u-cx, dv=v-cy;
+    if(rd!=0.0f){ float r=rd*0.01745329252f, cs=cos(r), sn=sin(r); float q=du*cs+dv*sn; dv=-du*sn+dv*cs; du=q; }
+    float nx=du/ax, ny=dv/ay;
+    float d=(t==1)?sqrt(nx*nx+ny*ny):max(fabs(nx),fabs(ny));
+    float e=max(sf,1e-4f);
+    float m=1.0f-og_smooth01((d-(1.0f-0.5f*e))/e);
+    return inv?(1.0f-m):m;
 }
 inline float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2(x+A)+B)*C):(x*M); }
 inline float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2(x/C-B)-A):(x/M); }
@@ -152,8 +178,31 @@ kernel void OneGradeKernel(constant int& W [[buffer(11)]], constant int& H [[buf
         if(density!=0.0f){ float3 l=float3(og_dienc(w.x),og_dienc(w.y),og_dienc(w.z)); float3 hsv=og_rgb2hsv(l); hsv.y=fmin(fmax(hsv.y*(1.0f+density),0.0f),1.0f); l=og_hsv2rgb(hsv); w=float3(og_didec(l.x),og_didec(l.y),og_didec(l.z)); } // density in DI-log
         float3 outc = (enc<=3) ? og_XYZto709(og_DWGtoXYZ(w)) : w;                 // output primaries (linear): 709 for Scene/2.2/2.4/Cineon
         float dg = (enc==1) ? 2.2f : (enc==2) ? 2.4f : 0.0f;                      // grade curve follows output (pure gamma vs Scene OETF)
-        outc.x=og_lgg(outc.x,gain,lift,gamma,dg); outc.y=og_lgg(outc.y,gain,lift,gamma,dg); outc.z=og_lgg(outc.z,gain,lift,gamma,dg); // LGG
+        float3 d = float3((dg>0.0f)?og_r709ge(outc.x,dg):og_r709e(outc.x),
+                          (dg>0.0f)?og_r709ge(outc.y,dg):og_r709e(outc.y),
+                          (dg>0.0f)?og_r709ge(outc.z,dg):og_r709e(outc.z));
+        // Range Balance — the mask reads a REFERENCE grade (P[21..23]), not the live one, so
+        // moving exposure cannot slide the selection under you. See highlight_mask() in the header.
+        float rbL=P[13], rbS=P[14], rbH=P[15], rbF=P[16], rbG=P[17];
+        bool rbW = (P[18]>0.5f); float rbHg=P[19], rbLg=P[20];
+        bool rbOn = (rbL>0.0f) && (rbW || rbH!=1.0f || rbF!=0.0f || rbG!=1.0f || rbHg!=1.0f || rbLg!=1.0f);
+        float3 v3 = float3(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma));
+        float3 rf = float3(og_lggc(d.x,P[23],P[21],P[22]),og_lggc(d.y,P[23],P[21],P[22]),og_lggc(d.z,P[23],P[21],P[22]));
+        // Centre-origin, BOTH axes over half-height, so the shape stays round on a 16:9 frame.
+        float shU=((float)id.x-0.5f*(float)W)/(0.5f*(float)H), shV=((float)id.y-0.5f*(float)H)/(0.5f*(float)H);
+        float shM = og_shape(shU,shV,(int)(P[24]+0.5f),P[25],P[26],P[27],P[28],P[29],P[30],P[31]>0.5f);
+        float rbM = rbOn ? og_hlmask(100.0f*(0.2126f*rf.x+0.7152f*rf.y+0.0722f*rf.z),rbL,rbS)*shM : 0.0f;
+        if(rbOn){
+            float3 room = float3(og_lggc(v3.x,rbLg,rbF,rbG),og_lggc(v3.y,rbLg,rbF,rbG),og_lggc(v3.z,rbLg,rbF,rbG));
+            float3 high = float3(og_lggc(v3.x,rbH,0.0f,rbHg),og_lggc(v3.y,rbH,0.0f,rbHg),og_lggc(v3.z,rbH,0.0f,rbHg));
+            v3 = room*(1.0f-rbM) + high*rbM;
+        }
+        if(enc<=2){ v3=float3(og_tonemap(v3.x,P[32],P[33]),og_tonemap(v3.y,P[32],P[33]),og_tonemap(v3.z,P[32],P[33])); }  // shoulder
+        outc = float3((dg>0.0f)?og_r709gd(v3.x,dg):og_r709d(v3.x),
+                      (dg>0.0f)?og_r709gd(v3.y,dg):og_r709d(v3.y),
+                      (dg>0.0f)?og_r709gd(v3.z,dg):og_r709d(v3.z)); // LGG
         float3 e = float3(og_enc(enc,outc.x), og_enc(enc,outc.y), og_enc(enc,outc.z));
+        if(rbW&&rbOn){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }  // matte: no encode, LUT or trim; needs a latch or it is just black
         if(lutN>=2 && lutMix>0.0f){ float3 s=og_sampleLUT(lut,lutN,e); e = e + (s-e)*lutMix; }  // LUT + mix
         float ex=exp2(P[8]); e = (e*ex - 0.5f)*P[9] + 0.5f;                                     // post-LUT trim (exposure, contrast)
         if(P[12]>0.0f && (enc<=2 || (lutN>=2 && lutMix>0.0f))){ e.x=og_softclip(e.x,P[12]); e.y=og_softclip(e.y,P[12]); e.z=og_softclip(e.z,P[12]); } // highlight roll-off (display-referred only)
@@ -238,7 +287,7 @@ void RunMetalKernel(void* p_CmdQ, int p_Width, int p_Height, const float* p_Para
     [computeEncoder setBuffer:dstDeviceBuf offset:0 atIndex:8];
     [computeEncoder setBytes:&p_Width  length:sizeof(int) atIndex:11];
     [computeEncoder setBytes:&p_Height length:sizeof(int) atIndex:12];
-    [computeEncoder setBytes:p_Params  length:sizeof(float)*13 atIndex:13];
+    [computeEncoder setBytes:p_Params  length:sizeof(float)*34 atIndex:13];
     [computeEncoder setBytes:&p_Camera length:sizeof(int) atIndex:14];
     [computeEncoder setBytes:&p_Encode length:sizeof(int) atIndex:15];
     [computeEncoder setBytes:&lutN     length:sizeof(int) atIndex:16];

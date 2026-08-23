@@ -93,6 +93,22 @@ struct Tunables {
     double subjMid      = 0.278;
     double frameCeiling = 0.968;
 
+    // AIM LOWER, SETTLE FOR WHAT THE FRAME ALLOWS.
+    //
+    // 0.968 came from one hand-graded interview and survived being tested against 851 films, which
+    // is why it is still the ceiling of the range rather than replaced by the corpus median. But
+    // that frame is underexposed, and fitting the only number to the worst shot is how a starting
+    // point ends up tuned for footage nobody wants to shoot. Swept 0.890/0.920/0.968 on five clips:
+    // four were VISUALLY IDENTICAL at all three and the fifth -- the badly lit one -- clipped a
+    // face below 0.968. So the low end costs nothing on footage that was lit, and the high end is
+    // needed only where the frame cannot give it.
+    //
+    // Hence a range, not a value: ask for frameCeilingLow, and walk back up only as far as the
+    // frame forces. Infeasible here means the ceiling started fighting the subject (branch 2) --
+    // the one branch whose far side is a washed-out picture, and the same test Bias holds at.
+    // Equal to frameCeiling disables the search and restores the single-value behaviour exactly.
+    double frameCeilingLow = 0.890;
+
     // Where an underexposed subject's NEUTRAL midtone has to reach before the tone solve runs.
     // Read off the frames that already work: their subjects sit near this without help, so a shot
     // below it is one the grade stage cannot rescue on its own.
@@ -106,7 +122,134 @@ struct Tunables {
     // brightened, but "lost a good bit of its original intent". Low-key has to survive being
     // made legible.
     double frameFloorMax = 0.085;
+
+    // THE OTHER SIDE OF THE SAME GUARD, and it was missing until sky.
+    //
+    // frameFloorMax stops a DARK subject dragging the frame's black up. Nothing stopped a BRIGHT
+    // subject crushing it down, because with skin as the only subject nothing was ever bright
+    // enough to push that way. Placing a sky's shadows sent Lift to -0.211 on one clip and took
+    // its crushed share from 6.33% to 23.23%, shadow separation collapsing 0.049 -> 0.001.
+    //
+    // A guard fitted to the only case that had ever come up looked complete for as long as that
+    // was the only case.
+    // RE-ANCHORED AND NOW LIVE (2026-08-22). It was inert at 0.020, and the note here said the
+    // value was not the problem -- the statistic was. That turned out to be exactly right.
+    //
+    // `crushed%` counts EVERY pixel whose MIN channel is at or under 1/255. The guard was reading
+    // one pixel: first fLo (min channel of the pixel ranked p0.1 by MAX channel, so a saturated
+    // pixel scores well while sitting at zero), then mBotY (darkest by luma). Neither counts
+    // anything, and a single pixel cannot say how MUCH of the frame went black. Measured: two
+    // corpus frames both render that pixel to 0.041 while one crushes 5.07% of its pixels with
+    // zero shadow separation and the other 0.14% with 0.114.
+    //
+    // It now reads TonePick::iMinP -- p1 of per-pixel MIN across the frame, the statistic
+    // `crushed%` is actually made of. With that anchor the sweep behaves the way the earlier one
+    // could not: 0.02 and 0.04 still do nothing, and 0.06 takes the frame that regressed from
+    // 5.07% crushed to 0.00% while leaving the high-key frame within 0.02 points of untouched.
+    //
+    // Across the corpus, with the downward exposure rescue: total crushed share 108.9% -> 74.6%,
+    // seven frames better, one a trade (13.84% -> 6.73% crushed for 0.053 of separation).
+    // frameFloorMax still reads fLo and is untouched -- the two guards ask different questions,
+    // "did a channel hit zero" against "did the picture go black", and want different statistics.
+    // LIVE AT LAST, at 0.080. It read as inert at every value anyone swept and the value was never
+    // the problem: the ceiling-gives-way branch re-solved Lift against the subject's floor
+    // immediately afterwards and discarded it, on exactly the frames where both fire. With the
+    // ordering fixed it does the job it was written for.
+    //
+    // 0.080 was chosen because it reproduces what the USER reached for by hand. On the ETTR frame
+    // they corrected with Bias at maximum and landed on Lift +0.110 / Gain 0.452; the guard at
+    // 0.080 solves to +0.119 / 0.437 on its own. Across the corpus: total crushed share
+    // 108.9% -> 72.2%, two frames that previously declined now solve (large-face 6.04% -> 1.19%
+    // crushed with shadow separation 0.050 -> 0.084, and 00104865), 00091084 17.22% -> 0.84% with
+    // separation 0.063 -> 0.137, 00096619 35.27% -> 21.33%. dark-scene is untouched and keeps its
+    // validated +2.29 EV rescue.
+    double frameFloorMin = 0.080;
     double rawExpMax      = 4.0;   // stops; beyond this the shot is not underexposed, it is noise
+
+    // THE OTHER DIRECTION, and it was missing for the same reason frameFloorMin was: nothing in
+    // the test footage had ever pushed that way. ETTR does. A Sony Cine EI shooter deliberately
+    // exposes to the right to keep shadow detail, clipping nothing, intending to bring it back in
+    // post -- and the tone solve had no way to bring it back, because the exposure rescue only
+    // ran upward. So the grade curve did the whole job: on the user's frame Lift went to -0.500,
+    // its own floor, Gain to 1.192 on an already-bright shot, and shadow separation to 0.000.
+    //
+    // A control on a bound is the documented signature of an infeasible target, and the target was
+    // never the problem -- placing the subject at its midtone is right on this frame. Only the
+    // INSTRUMENT was wrong. RAW Exposure is a scene-linear gain applied before the transform,
+    // which is precisely the operation ETTR is asking to have undone.
+    // DEFAULT 0 = OFF, PENDING A CORRECT FIX. The reasoning below still holds and the mechanism
+    // works; what it produces does not. Pulling an ETTR frame down 3.07 stops leaves the solve
+    // needing Gain 1.5 to reach the frame ceiling again, and the rendered picture comes back
+    // washed out -- worse than the crushed one it replaced. The shadow metrics said it improved
+    // (crushed 2.14% -> 0.14%, separation 0.000 -> 0.114) because they only describe the SHADOW
+    // end; nobody had looked at the render. Reachable from the bench with --raw-exp-min.
+    double rawExpMin      = 0.0;   // stops; the mirror of rawExpMax, for a shot exposed right
+
+    // Take the face's shadows and midtone from SKIN pixels within the `person` region rather than
+    // from the whole region. Correct by the corpus and currently regressive on footage -- see the
+    // note in pick_tone_samples. --skin-tone-mask=1 on the bench.
+    bool   skinToneMask   = false;
+
+    // ---------------------------------------------------------------------------------------
+    // PER-SUBJECT TONE TARGETS -- why the solve declined everything that was not a face.
+    //
+    // subjFloor/subjMid above are absolute display values measured on ONE hand-graded interview,
+    // and the old gate refused every other subject rather than apply them. That was right: a
+    // beach frame whose subject came back VEGETATION was destroyed by being driven to a face's
+    // midtone, sky in neon cyan and red pinned flat at zero, while the solve met every condition
+    // it was given.
+    //
+    // But the reason given for the gate does not survive measurement. "A face is the one subject
+    // whose correct lightness is not a matter of taste" predicts skin should be the most
+    // consistent region across films, and it is not: over 350 films SKY lands at 0.634 with a
+    // relative spread of 22%, three times TIGHTER than skin's 73%. (Skin's figure is inflated by
+    // ADE20K class 12 being "person" -- whole body, wardrobe and hair -- so that comparison is
+    // unfair to skin rather than damning; sky has no such confound.) What the numbers do support
+    // is that sky is a better candidate for an absolute target than skin ever was.
+    //
+    // So the gate becomes a LOOKUP rather than a species test. A region with a measured target
+    // gets the tone solve; one without still declines, so nothing is guessed and the default
+    // behaviour for every unmeasured region is exactly what it was before.
+    //
+    // maxCover is per-region for the same reason the target is. The face ceiling is a
+    // plausibility check on the label, and it is nonsense elsewhere: sky is over 35% of the frame
+    // in HALF of all films, and built in 77%. Applying one ceiling everywhere would reject the
+    // very frames the target was measured on.
+    struct RegionTone {
+        double floor    = 0.0;
+        double mid      = 0.0;
+        double maxCover = 1.0;   // fraction of frame above which the label stops being credible
+        bool   has      = false; // false -> decline, exactly as before
+    };
+    // Indexed by analysis::Region: SKY, WATER, SKIN, VEG, TERRAIN, GROUND, BUILT, OTHER.
+    RegionTone region[analysis::kRegionN] = {
+        // Measured over 851 films: floor 0.475 (MAD 0.218), mid 0.602 (MAD 0.207). Relative
+        // spread 34%, the tightest of any region -- water is next at 42%, skin 71%, built 84%.
+        // maxCover 0.90 because sky is over 35% of frame in half of all films and over 76% in a
+        // tenth; the face ceiling would have rejected the very frames this was measured on.
+        // MEASURED BUT NOT ENABLED, pending the guard below. On the user's four sky clips all
+        // four solved and landed on target (mid 0.600-0.609 against 0.602), but one took Lift
+        // -0.211 and its crushed share went 6.33% -> 23.23% with shadow separation 0.049 -> 0.001.
+        // Two improved and one was unchanged; shipping one-in-four worse is not shipping.
+        //
+        // THE GUARD IS ONE-SIDED AND THAT IS THE BUG. frameFloorMax stops a DARK subject dragging
+        // the frame's black up; nothing stops a BRIGHT subject crushing it down. Sky is simply the
+        // first subject bright enough to push that way, so the asymmetry never surfaced. The fix
+        // is the branch-swap that already exists for the upper bound: when placing the subject
+        // would take the frame's floor below a minimum, Lift serves the frame and Gamma carries
+        // the subject's midtone.
+        // ENABLED once the lower guard was re-anchored on luma -- see the frameFloorMin branch.
+        // The guard existed before this and was inert, because it read the min channel of a pixel
+        // ranked by max channel, so it never saw the crushing it was there to prevent.
+        /* SKY     */ { 0.475, 0.602, 0.90, true  },
+        /* WATER   */ { 0.0,   0.0,   1.00, false },
+        /* SKIN    */ { 0.125, 0.278, 0.60, true  },   // the hand-graded interview, unchanged
+        /* VEG     */ { 0.0,   0.0,   1.00, false },
+        /* TERRAIN */ { 0.0,   0.0,   1.00, false },
+        /* GROUND  */ { 0.0,   0.0,   1.00, false },
+        /* BUILT   */ { 0.0,   0.0,   1.00, false },
+        /* OTHER   */ { 0.0,   0.0,   1.00, false },
+    };
 };
 
 // A TARGET MAY NEVER ASK FOR WHAT THE ACCEPTANCE TEST REJECTS.
@@ -128,11 +271,16 @@ static const double kFrameCeilingMax = 0.990;   // ...so never TARGET above this
 // viewer is actually judging. The tone solve places its targets with this, and callers ask it
 // "where is the subject NOW?" with the same function, so the question and the answer cannot
 // drift apart. It was a lambda inside the solve until a caller needed to ask.
+// tmK/tmW MUST track the node's actual P[32]/P[33]; the defaults here only match the shipping
+// default (off). A call site that forgets them models a pipeline the plugin is not running, which
+// is the paraphrase failure in its quietest form -- so the five call sites below pass them.
 static inline double tone_render(double v, double lf, double gm, double gn,
                                  double pe, double con, double roll,
-                                 const float* lut, int lutSize)
+                                 const float* lut, int lutSize,
+                                 double tmK = 0.40, double tmW = 0.0)
 {
     float x = og::lgg_core((float)v, (float)lf, (float)gm, (float)gn);
+    x = og::tone_map(x, (float)tmK, (float)tmW);   // same position as og::process()
     float r = x, g = x, b = x;
     if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
     og::apply_trim((float)pe, (float)con, r, g, b);
@@ -143,7 +291,8 @@ static inline double tone_render(double v, double lf, double gm, double gn,
 // The three conditions a grade currently MEETS, in the order the solve names them. This is what
 // lets a hand edit become the thing Bias leans away from: measure what the hand did, and Bias
 // offsets from there instead of from the constants the button was solved to.
-struct ToneTargets { double floor = -1.0, mid = -1.0, ceil = -1.0, floorMax = -1.0; };
+struct ToneTargets { double floor = -1.0, mid = -1.0, ceil = -1.0, floorMax = -1.0,
+                     surr = -1.0; };
 
 // floorMax IS PART OF THE ANSWER, not a detail. Solving to the conditions a grade already meets
 // only gives that grade back if EVERY constraint agrees it is acceptable, and the frame-floor cap
@@ -152,13 +301,18 @@ struct ToneTargets { double floor = -1.0, mid = -1.0, ceil = -1.0, floorMax = -1
 // zero -- re-solving the untouched grade moved Lift 0.084 -> 0.066 and Gamma 1.199 -> 1.264.
 static inline ToneTargets tone_targets_of(double sLo, double sMid, double fHi, double fLo,
                                           const float P[analysis::kParamN],
-                                          const float* lut, int lutSize)
+                                          const float* lut, int lutSize, double sSur = -1.0)
 {
     ToneTargets t;
-    t.floor    = tone_render(sLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
-    t.mid      = tone_render(sMid, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
-    t.ceil     = tone_render(fHi,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
-    t.floorMax = tone_render(fLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize);
+    // The surround's CURRENT midtone, which is what makes Tone Separation's origin the identity:
+    // at sep 0 the fourth condition asks for exactly what is on screen, so adding it changes
+    // nothing. Left unset when the caller has no surround reading, which keeps the condition off.
+    if (sSur >= 0.0)
+        t.surr = tone_render(sSur, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
+    t.floor    = tone_render(sLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
+    t.mid      = tone_render(sMid, P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
+    t.ceil     = tone_render(fHi,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
+    t.floorMax = tone_render(fLo,  P[3], P[4], P[5], P[8], P[9], P[12], lut, lutSize, P[32], P[33]);
     return t;
 }
 
@@ -166,6 +320,56 @@ static inline ToneTargets tone_targets_of(double sLo, double sMid, double fHi, d
 // together: these are what walk the ceiling into the clamp.
 static const double kBiasSubjFloorPer = 0.06;
 static const double kBiasCeilingPer   = 0.03;
+
+// TONE SEPARATION moves the subject's MIDTONE, and nothing else -- which is what keeps it a
+// separate control from Bias rather than a second way to drive the same one. Bias owns the
+// subject's floor and the frame's ceiling (Lift and Gain); this owns the midtone (Gamma). Two
+// sliders, two targets, two controls, so they can be compared on one frame without either
+// explaining the other's result.
+//
+// WHY A TARGET AND NOT A PARAMETER. The rdL* row of the descriptor Jacobian, measured on the
+// user's footage, is dominated by lift, gamma, gain and post contrast -- every control the tone
+// solve already owns -- and its signs flip between frames depending on which side of the contrast
+// pivot the subject sits. Writing any of them directly would undo the three conditions that place
+// the subject, which is the failure Bias was rebuilt to avoid ("if I touch the bias slider we kill
+// the grade"). Moving the target and re-solving cannot: the other two conditions still hold.
+//
+// MEASURED AND REJECTED AS THE SEPARATION AXIS -- kept because the plumbing is what any
+// separation law needs, NOT because this one works. Walked across its full range on a face clip
+// with the achieved rdL* beside it: rdL* moved -18.05 to -19.96, about 1.9 L* units or 10%, while
+// Lift went 0.001 -> 0.173 and Gamma 1.914 -> 0.890. An enormous change in the picture for almost
+// none in the quantity the control is named after.
+//
+// The reason is structural and should have been predictable: the subject and its surround are
+// placed by ONE curve, so moving the subject's target drags the surround along with it and the gap
+// between them barely opens. Separation needs the two moved DIFFERENTLY, which means a condition
+// on the surround -- a fourth condition on a fourth control, with post contrast the candidate
+// (it pivots at 0.5, between a subject at 0.278 and a brighter surround, and it carries the
+// largest consistent d(rdL*)/dp in the Jacobian). See docs/ROADMAP.md.
+//
+// This is the fourth time on this feature that a plausible control law produced a confident number
+// and no picture, and the fourth time the bench caught it by rendering the result instead of
+// trusting the solve's own report.
+static const double kToneSepMidPer = 0.05;
+
+// Sentinels, named because -1.0 appears in four argument slots and they do not all mean the same
+// thing: one turns a guard off, one says "no separate floor reading, reuse fLo".
+static const double kFrameFloorMinOff = -1.0;
+static const double kFloorReadUnset   = -1.0;
+
+// Below this, the subject and its surround are at the same lightness and "further apart" has no
+// direction to point in. The slider goes inert and says so rather than picking one: a control that
+// moves the picture in an arbitrary direction is worse than a control that admits it has nothing
+// to act on. In L* units, where the footage measured so far spans roughly 2 to 34.
+static const double kToneSepMinDL = 3.0;
+
+// The direction "more separated" points in, from the region separation triple. Returns 0 when the
+// two are too close in tone for the question to have an answer.
+static inline double tone_sep_dir(double rdL)
+{
+    if (std::fabs(rdL) < kToneSepMinDL) return 0.0;
+    return (rdL > 0.0) ? 1.0 : -1.0;
+}
 
 // The Cinematic Film Emulation recipe, which Creative Grade starts from. User-validated, and the
 // tint in particular (Gain Temp -0.22 / Gain Tint 0.09) is what gives the look its character --
@@ -189,8 +393,22 @@ static inline void creative_preset(float P[analysis::kParamN])
     P[8]  =  0.55f;   // Post Exposure
     P[9]  =  1.00f;   // Contrast
     P[10] =  0.00f;   // Scene Exposure
-    P[11] =  6500.f;  // Scene White Balance
     P[12] =  0.00f;   // Rolloff     -- overwritten from `pin` below
+    // SCENE WHITE BALANCE (P[11]) IS DELIBERATELY NOT HERE, and it used to be, at 6500.
+    //
+    // This is the Creative LOOK, and white balance is a scene-referred correction that happens
+    // upstream of any look -- the same reason presets set the balance controls but never RAW.
+    // Stamping it here made the preset assert an opinion it does not have, and that assertion
+    // silently destroyed the "White Balance First" feature: solve_magic measures the cast, writes
+    // the kelvin into out.P[11], and then calls solve_creative_px, whose first act is this
+    // function. Every frame in the corpus solved a real temperature -- 5445 K to 9500 K -- and
+    // every frame rendered at 6500 K. The estimator was right, was reported in the panel, and was
+    // thrown away one line later.
+    //
+    // Third instance of THIS EXACT LANDMINE: the note above solve_black_px records the same
+    // function erasing the Magic color move, differently on each side of the plugin/bench split.
+    // The array-wide stamp is the hazard; leaving scene-referred parameters out of it is the fix.
+    // Callers wanting a full neutral start already have analysis::neutral_params().
 }
 
 // Monotonic bisection. Used rather than a closed form because the controls interact and a closed
@@ -232,14 +450,13 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
     // while the curve ran in Cineon, and the analysis reading the node's encode before the preset
     // that changes it. The rule from docs/AUTO-GRADE.md 2 covers this too: a number pushed
     // through the pipeline needs the space the pipeline runs in, and the LUT is in the pipeline.
+    // CALL tone_render(), DO NOT RE-INLINE IT. This was a hand-copied duplicate of that function
+    // and it drifted the moment the tone map landed: the render grew a shoulder and this did not.
+    // The black point sits far below any knee so nothing moved in practice -- which is exactly why
+    // it would have gone unnoticed until something else was solved up here.
     const double pe = P[8], gm = P[4], con = P[9];
     const double lift = solve1d(-0.50, 0.50, t.blackTarget, [&](double lf) {
-        float x = og::lgg_core((float)m.d01, (float)lf, (float)gm, (float)gain);
-        float r = x, g = x, b = x;
-        if (lut && lutSize >= 2) og::apply_lut(lut, lutSize, 1.f, r, g, b);
-        og::apply_trim((float)pe, (float)con, r, g, b);
-        if (rolloff > 0.0) g = og::softclip(g, (float)rolloff);
-        return (double)g;
+        return tone_render(m.d01, lf, gm, gain, pe, con, rolloff, lut, lutSize, P[32], P[33]);
     });
 
     P[3]  = (float)lift;
@@ -262,14 +479,14 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
 // LUT to the scalar solve only moved 46% to 42%, which is the tell that the error is chromatic
 // rather than tonal: the neutral axis simply is not where those pixels are.
 //
-// So the darkest samples are carried through in colour. Cheap because only the bottom slice
+// So the darkest samples are carried through in color. Cheap because only the bottom slice
 // matters -- a few thousand triples through a bisection, against a solve that already renders
 // 200k samples once.
 // The black point alone, on real pixels, LEAVING EVERY OTHER PARAMETER ALONE.
 //
 // Separate from solve_creative_px because that one begins with creative_preset(), which rewrites
 // the whole array -- including Gain Temp and Offset Temp. Re-solving the floor after the Magic
-// colour move therefore erased the colour move, and it did so DIFFERENTLY on each side: the bench
+// color move therefore erased the color move, and it did so DIFFERENTLY on each side: the bench
 // rendered the reset array, so its picture lost the move entirely, while the plugin copied only
 // Lift and Gain back into params that still held it. Two implementations, one bug, two different
 // wrong answers -- which is exactly why they stopped matching on one frame.
@@ -287,7 +504,7 @@ static inline void solve_creative(const Measurements& m, const Tunables& t,
 // it makes the picture worse while the number improves.
 //
 // What survives from that work and is worth keeping: solving on real pixels rather than a grey
-// scalar, so the Magic colour move is accounted for. Pre-LUT that costs nothing, since the grade
+// scalar, so the Magic color move is accounted for. Pre-LUT that costs nothing, since the grade
 // curve is per-channel and monotonic; it earns its keep only because Offset and Gain Temp move
 // the channels after the floor is placed.
 static inline void solve_black_px(const analysis::SampleSet& S, int cam, int enc,
@@ -299,7 +516,7 @@ static inline void solve_black_px(const analysis::SampleSet& S, int cam, int enc
 
     // Rank by the neutral render's min channel: what crushes is a CHANNEL, not a luminance, and
     // on a saturated shadow the channels sit far apart.
-    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
     Pn[11] = P[11];
     std::vector<std::pair<float,size_t>> key; key.reserve(n);
     for (size_t i = 0; i < n; ++i) {
@@ -375,7 +592,7 @@ static inline double solve_magic_base(const analysis::SampleSet& S, int cam, int
     if (!c.ok) return 0.0;
     analysis::SampleSet D = analysis::decimate(S, 8000);
     const float step = analysis::param_steps()[c.param];
-    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
     float Pp[analysis::kParamN];
     for (int i = 0; i < analysis::kParamN; ++i) Pp[i] = Pn[i];
     Pp[c.param] += step;
@@ -397,7 +614,7 @@ static inline double solve_magic_base(const analysis::SampleSet& S, int cam, int
     double base = 0.0;
     if (std::fabs(grip) > 1e-4)
         base = c.sign * t.magicUnit * (double)step / std::fabs((double)grip);
-    return std::min(0.35, std::max(-0.35, base));   // a colour cast, not a transform
+    return std::min(0.35, std::max(-0.35, base));   // a color cast, not a transform
 }
 
 // ---------------------------------------------------------------------------------------
@@ -412,7 +629,7 @@ struct WhiteBalance {
     float  b0     = 0.f;   // the reference's warm/cool error before correction
     // WHICH decline, not just that it declined. "No reference" is a sunset with no neutral
     // surface in it; "not neutral" is the reference itself looking wrong; "unreachable" is a cast
-    // no sane colour temperature fixes. They call for completely different responses and a bare
+    // no sane color temperature fixes. They call for completely different responses and a bare
     // false makes them indistinguishable -- which cost an hour of looking at the wrong check.
     const char* why = "";
     bool   ok     = false;
@@ -427,7 +644,7 @@ struct WhiteBalance {
 // an image nobody was looking at. Fourth instance in one day of a number computed in one space
 // and judged in another.
 //
-// The print stock's own colour character is deliberately NOT what this corrects: it is a look and
+// The print stock's own color character is deliberately NOT what this corrects: it is a look and
 // it belongs. What it corrects is a surface that should read neutral and does not, measured where
 // the eye reads it.
 static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSrc,
@@ -446,7 +663,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
     const size_t N = (size_t)512 * 512;
     if (thumbSrc.size() != N * 3 || regions.size() != N) return out;
 
-    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
 
     // A LIGHT SOURCE IS NOT A REFERENCE SURFACE, even when the model is right about what it is.
     // ADE20K's `windowpane` and `curtain` are both BUILT, so a blown window -- the brightest,
@@ -490,7 +707,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
             // AGAINST THE STOCK'S OWN NEUTRAL, not against zero.
             //
             // Targeting b* = 0 post-LUT asks Scene White Balance to cancel the print stock, and
-            // the stock's colour character is the look -- it belongs. On one frame with 63% good
+            // the stock's color character is the look -- it belongs. On one frame with 63% good
             // reference no temperature between 2500 K and 15000 K could reach zero, and the
             // estimator reported "unreachable" for a shot that needed almost no correction.
             //
@@ -506,7 +723,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
             //
             // The user's call, and the better shape: start as neutral as the controls can get and
             // let Separation dial the blue back in or out deliberately. Magic Grade's asset is the
-            // subject's tone; colour is offered, not imposed.
+            // subject's tone; color is offered, not imposed.
             float r, g, b;
             shade(P, i, r, g, b);
             float L, a, bb; analysis::display_to_Lab(1, r, g, b, L, a, bb);
@@ -525,7 +742,7 @@ static inline WhiteBalance solve_white_balance(const std::vector<float>& thumbSr
     //
     // Fitted on eight frames -- city 6.4, car interior 7.5, grass-as-wall 11.7 -- so 9 separates
     // them, and the margin is thin. The failure it buys is a false negative: a genuinely neutral
-    // wall under a STRONG cast also reads as strongly coloured and gets declined, which is
+    // wall under a STRONG cast also reads as strongly colored and gets declined, which is
     // exactly the case worth correcting. That is the safe direction to fail in, since declining
     // changes nothing and the checkbox is optional, but if real interiors start being refused
     // this number is the reason.
@@ -644,7 +861,15 @@ struct MagicTone {
     // 200k samples -- which is what makes Bias a target move rather than a parameter drift.
     float sLo = 0.f, sMid = 0.f, sHi = 0.f, fHi = 0.f, fLo = 0.f;
     float rawExp = 0.f;   // scene-linear stops added to rescue an underexposed subject
+    float ceil = 0.f;     // the frame highlight target actually solved against, after the search
     float frameLo = 0.f;  // the frame's own floor, which placing the subject must not wash out
+    // THE FOURTH CONDITION, present only when Tone Separation asks for one. `con` is the post-LUT
+    // Contrast the solve chose, `sSur` the surround's neutral midtone it was solved against and
+    // `surr` what that midtone ended up at. Contrast rather than any of the other three because
+    // it is the only tone control the subject conditions do not already own, and because it
+    // pivots at 0.5 -- between a subject at 0.278 and a brighter surround, which is what lets the
+    // two move APART instead of together.
+    float con = 1.f, sSur = 0.f, surr = 0.f;
     float sMidNeutral = 0.f;   // the subject's midtone before any of this, for diagnosis
     const char* why = "";   // which decline, when ok is false -- see solve_white_balance
     // WHICH CONDITIONS BOUND, as a bitmask: 1 = the frame's floor took Lift off the subject,
@@ -663,12 +888,39 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
                                               const float P0[analysis::kParamN],
                                               const float* lut, int lutSize,
                                               double subjFloor, double subjMid, double frameCeiling,
-                                              double fLo, double frameFloorMax)
+                                              double fLo, double frameFloorMax,
+                                              double frameFloorMin = -1.0,
+                                              double fLoY = -1.0,
+                                              double sSur = 0.0, double surrMid = -1.0)
 {
     MagicTone out;
-    const double pe = P0[8], con = P0[9], roll = P0[12];
+    const double pe = P0[8], roll = P0[12];
+
+    // THE FOURTH CONDITION IS ABSENT AT REST, not fitted to a constant -- which is what makes this
+    // safe to add to a solve every validated grade stands on. surrMid < 0 means "no surround
+    // condition", the loops below stay exactly three passes, and a fresh Magic Grade is bit
+    // identical to what it was. The condition only exists once Tone Separation is off zero, and
+    // its target is then whatever the grade already achieves, so the slider's own origin is the
+    // identity too.
+    //
+    // Contrast has to be a solved variable rather than a constant read from P0, so `cn` is what
+    // render() closes over. Every existing call site is unchanged because it reads the same
+    // variable; only the new pass writes it.
+    const bool useSurr = (surrMid >= 0.0);
+    double cn = P0[9];
+    auto renderC = [&](double v, double lf, double gm, double gn, double c) {
+        return tone_render(v, lf, gm, gn, pe, c, roll, lut, lutSize, P0[32], P0[33]);
+    };
     auto render = [&](double v, double lf, double gm, double gn) {
-        return tone_render(v, lf, gm, gn, pe, con, roll, lut, lutSize);
+        return renderC(v, lf, gm, gn, cn);
+    };
+    // One more coordinate pass, in the same form as the other three: each condition is monotone in
+    // its own control. Run LAST in each round so the three subject/frame conditions are solved
+    // against the contrast the previous round settled on, rather than chasing a value that moves
+    // underneath them mid-round.
+    auto surrPass = [&](double lf, double gm, double gn) {
+        if (!useSurr) return;
+        cn = solve1d(0.05, 2.00, surrMid, [&](double c) { return renderC(sSur, lf, gm, gn, c); });
     };
 
     double lf = P0[3], gm = P0[4], gn = P0[5];
@@ -677,6 +929,7 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
         lf = solve1d(-0.50, 0.50, subjFloor,    [&](double v) { return render(sLo,  v, gm, gn); });
         gm = solve1d( 0.30,  3.00, subjMid,     [&](double v) { return render(sMid, lf, v, gn); });
         gn = solve1d( 0.05,  3.00, frameCeiling,[&](double v) { return render(fHi,  lf, gm, v); });
+        surrPass(lf, gm, gn);
     }
     // LOW KEY HAS TO SURVIVE BEING MADE LEGIBLE.
     //
@@ -702,6 +955,47 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
             lf = solve1d(-0.50, 0.50, frameFloorMax, [&](double v) { return frameLo(v, gm, gn); });
             gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
             gn = solve1d( 0.05,  3.00, frameCeiling, [&](double v) { return render(fHi,  lf, gm, v); });
+            surrPass(lf, gm, gn);
+        }
+    }
+
+    // ...AND THE SAME SWAP WHEN THE SUBJECT IS TOO BRIGHT.
+    //
+    // Exactly the branch above with the comparison reversed, because it is exactly the same
+    // failure: Lift is global, so pulling a bright subject's shadows DOWN onto their target takes
+    // the whole picture with it and the foreground goes to black. Lift serves the frame's floor,
+    // Gamma keeps the subject's midtone, Gain keeps the ceiling -- still three conditions on three
+    // controls.
+    //
+    // AND IT IS ANCHORED ON LUMA, NOT ON THE MIN CHANNEL -- which is the whole reason it was inert.
+    //
+    // fLo is the MIN channel of the pixel ranked p0.1 by MAX channel, and those are two different
+    // pixels. A saturated pixel has a bright max and a min at zero, so it ranks nowhere near the
+    // bottom on the ranking while sitting at the bottom of the value being read: the sample this
+    // guard protected was not the darkest thing in the frame by any measure a viewer uses. Swept
+    // 0.00/0.02/0.04/0.06 on the four sky clips and the first three changed nothing at all.
+    //
+    // Third instance of the same defect -- after the black-point encode bug and hot-versus-pin --
+    // and it was found the same way, by the bench reporting a correct picture as 43.8% crushed
+    // until that statistic was re-anchored on luma too. THE NUMBER COMPARED AGAINST A CONSTANT HAS
+    // TO BE THE NUMBER THAT MATTERS.
+    //
+    // fLo keeps its min-channel reading for frameFloorMax above, deliberately: that cap is
+    // load-bearing on every validated face grade, and re-anchoring it would move all of them. The
+    // two guards want different statistics because they are asking different questions -- one is
+    // "did a channel hit zero", the other "did the picture go black".
+    //
+    // Negative default means off, so every caller that does not ask for it behaves exactly as it
+    // did. The two cannot both fire: a floor cannot be above the cap and below the minimum at once.
+    const double loRead = (fLoY >= 0.0) ? fLoY : fLo;
+    auto frameLoY = [&](double l, double g, double n) { return render(loRead, l, g, n); };
+    if (frameFloorMin >= 0.0 && frameLoY(lf, gm, gn) < frameFloorMin) {
+        branch |= 4;
+        for (int pass = 0; pass < kMagicTonePasses; ++pass) {
+            lf = solve1d(-0.50, 0.50, frameFloorMin, [&](double v) { return frameLoY(v, gm, gn); });
+            gm = solve1d( 0.30,  3.00, subjMid,      [&](double v) { return render(sMid, lf, v, gn); });
+            gn = solve1d( 0.05,  3.00, frameCeiling, [&](double v) { return render(fHi,  lf, gm, v); });
+            surrPass(lf, gm, gn);
         }
     }
 
@@ -733,7 +1027,30 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
         gm = P0[4];
         for (int pass = 0; pass < kMagicTonePasses; ++pass) {
             lf = solve1d(-0.50, 0.50, subjFloor, [&](double v) { return render(sLo,  v, gm, gn); });
+            // ...BUT NOT THROUGH THE FRAME'S FLOOR. This line is the whole fix.
+            //
+            // The frame-floor guard above sets Lift to keep the picture's own black off zero, and
+            // then this branch re-solved Lift against the subject's floor and threw that away.
+            // Both fire together on exactly the hard frames -- `br 6` -- so the protection was
+            // silently undone every time it was needed. It is why frameFloorMin has read as inert
+            // at every value anyone has ever swept, and why re-anchoring it on a population
+            // statistic changed nothing: the anchor was never the problem, the ordering was.
+            //
+            // Measured on the ETTR frame: shadow separation 0.000 with 11.2% of the frame crushed,
+            // while the face sat exactly on its target. The subject was being placed perfectly
+            // into a picture whose shadows had been destroyed to get it there.
+            //
+            // The priority is the one already stated for the other guard: Lift is global, so when
+            // placing the subject would take the frame's black below the minimum, Lift serves the
+            // FRAME and the subject's midtone is carried by the other control -- Gain here, as it
+            // is for the rest of this branch.
+            if (frameFloorMin >= 0.0 && frameLoY(lf, gm, gn) < frameFloorMin) {
+                branch |= 4;
+                lf = solve1d(-0.50, 0.50, frameFloorMin,
+                             [&](double v) { return frameLoY(v, gm, gn); });
+            }
             gn = solve1d( 0.05,  2.00, subjMid,  [&](double v) { return render(sMid, lf, gm, v); });
+            surrPass(lf, gm, gn);
         }
     }
 
@@ -753,8 +1070,13 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     //
     // Checked on the RESULT, not on whether a control sits at a bound. A bound can be reached
     // legitimately, and a solve can fail without reaching one.
-    if (std::fabs(render(sMid, lf, gm, gn) - subjMid) > 0.02) { out.why = "subject unplaceable"; return out; }
-    if (render(fHi, lf, gm, gn) >= kFrameBlown) { out.why = "highlight blown"; return out; }
+    // Stamped BEFORE the two declines, not after. Both of these are judgements about a number,
+    // and returning without the number leaves the reader to guess whether the solve missed by a
+    // hair or by a mile.
+    out.mid     = (float)render(sMid, lf, gm, gn);
+    out.frameHi = (float)render(fHi,  lf, gm, gn);
+    if (std::fabs(out.mid - subjMid) > 0.02)  { out.why = "subject unplaceable"; return out; }
+    if (out.frameHi >= kFrameBlown)           { out.why = "highlight blown";     return out; }
 
     out.lift = (float)lf; out.gamma = (float)gm; out.gain = (float)gn;
     out.sLo = (float)sLo; out.sMid = (float)sMid; out.sHi = (float)sHi;
@@ -764,6 +1086,9 @@ static inline MagicTone solve_magic_tone_from(double sLo, double sMid, double sH
     out.subjHi  = (float)render(sHi,  lf, gm, gn);
     out.frameHi = (float)render(fHi,  lf, gm, gn);
     out.mid     = (float)render(sMid, lf, gm, gn);
+    out.con     = (float)cn;
+    out.sSur    = (float)sSur;
+    out.surr    = (float)render(sSur, lf, gm, gn);
     out.branch  = branch;
     out.ok = true;
     return out;
@@ -790,7 +1115,10 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
                                               const float P0[analysis::kParamN],
                                               const float* lut, int lutSize,
                                               const Tunables& t, double fLo, double bias,
-                                              ToneTargets base = ToneTargets())
+                                              ToneTargets base = ToneTargets(),
+                                              double sep = 0.0, double sepDir = 0.0,
+                                              double sepPer = kToneSepMidPer,
+                                              double sSur = -1.0)
 {
     // BIAS LEANS AWAY FROM WHATEVER THE GRADE CURRENTLY MEETS, not from the constants the button
     // was solved to. Pass the conditions a hand edit achieved and the edit survives by
@@ -805,16 +1133,40 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
     // only ever let an existing grade through -- it cannot license a new one to wash out.
     const double bFFMax = (base.floorMax >= 0.0) ? std::max(t.frameFloorMax, base.floorMax)
                                                  : t.frameFloorMax;
-    auto at = [&](double b) {
+    const double bSurr  = base.surr;
+    // ONE LINE FROM THE ANCHOR TO WHEREVER BOTH SLIDERS CURRENTLY SIT, walked by a single
+    // parameter. With two sliders the feasible region is an area rather than an interval, and
+    // bisecting each axis in turn would make the result depend on which was bisected first --
+    // which is the same defect as keeping the last value when a drag runs out of road: the grade
+    // would depend on the order the user touched the controls rather than on where they left them.
+    //
+    // A straight line from the origin depends only on the endpoint, so it is path-independent by
+    // construction. With sep = 0 it reduces to exactly the interval the bias bisection used to
+    // walk, point for point, which is why the existing behaviour is unchanged rather than
+    // approximately preserved.
+    // SEPARATION MOVES THE SURROUND, AWAY FROM THE SUBJECT. sepDir is the sign of the gap that
+    // already exists (subject minus surround, from the region triple), so positive sep always
+    // widens it whichever way round the frame is: a subject darker than its surround separates by
+    // the surround going up, a brighter one by it coming down.
+    //
+    // The subject's own targets are untouched by this, which is the point. Moving them moves the
+    // surround with them through the same curve -- measured at 1.9 L* across a whole slider, the
+    // dead end this replaced. Moving the surround against a pinned subject is the only way the gap
+    // opens.
+    const bool hasSurr = (bSurr >= 0.0) && (sSur >= 0.0) && (sepDir != 0.0);
+    auto at = [&](double u) {
+        const double b = bias * u, s = sep * u;
         return solve_magic_tone_from(
             sLo, sMid, sHi, fHi, P0, lut, lutSize,
             std::min(0.40, std::max(0.00, bFloor + b * kBiasSubjFloorPer)),
-            bMid,
+            std::min(0.60, std::max(0.05, bMid + s * sepDir * sepPer)),
             std::min(kFrameCeilingMax, std::max(0.60, bCeil - b * kBiasCeilingPer)),
-            fLo, bFFMax);
+            fLo, bFFMax, kFrameFloorMinOff, kFloorReadUnset,
+            sSur,
+            hasSurr ? std::min(0.98, std::max(0.02, bSurr - s * sepDir * sepPer)) : -1.0);
     };
     MagicTone feasible = at(0.0);
-    if (!feasible.ok) return at(bias);   // never armed by Magic Tone -- let the caller fall back
+    if (!feasible.ok) return at(1.0);   // never armed by Magic Tone -- let the caller fall back
 
     // THE CEILING GIVING WAY IS A STEP IN THE PICTURE, so it bounds the slider like a decline.
     //
@@ -840,16 +1192,146 @@ static inline MagicTone solve_magic_tone_bias(double sLo, double sMid, double sH
         return s.ok && ((s.branch & 2) == (feasible.branch & 2));
     };
 
-    MagicTone mt = at(bias);
+    MagicTone mt = at(1.0);
     if (sameShape(mt)) return mt;
 
-    double lo = 0.0, hi = bias;          // lo keeps the assignment, hi does not
+    double lo = 0.0, hi = 1.0;           // lo keeps the assignment, hi does not
     for (int i = 0; i < 18; ++i) {
         const double mid = 0.5 * (lo + hi);
         const MagicTone s = at(mid);
         if (sameShape(s)) { lo = mid; feasible = s; } else hi = mid;
     }
     return feasible;
+}
+
+// ---------------------------------------------------------------------------------------
+// WHICH SAMPLES A TONE TARGET IS MADE OF -- extracted so a reference still can be measured at the
+// same five points the solve reads, rather than at five points that merely sound the same.
+//
+// solve_magic_tone() places its conditions at the subject's p10/p50/p90 ranked by Rec.709 LUMA and
+// the frame's p99.9/p0.1 ranked by MAX CHANNEL. Both halves matter and neither is guessable: rank
+// the frame by luma instead and a saturated practical stops being the ceiling; rank the subject by
+// max channel and a red cheek outranks a lit forehead.
+//
+// A look fitted by measuring a reference at "the 50th percentile" without matching the ranking key
+// would be a paraphrase, and on this feature every paraphrase produced plausible output while being
+// wrong -- a neutral render for a graded one, a pre-LUT render for the real one, a threshold
+// verified in Python and never ported. The rule lives here so there is one of it.
+//
+// It is the RULE that is shared and not a pixel buffer, because the two callers legitimately hold
+// different things. The solve keeps SOURCE indices and re-renders them at every stage, since RAW
+// Exposure acts before the measurement and moves the numbers it stands on; a reference still is
+// already the finished picture and has nothing to re-render. So the callback hands back a rendered
+// triple for sample i and the rule does not care where it came from.
+struct TonePick {
+    size_t iLo = 0, iMid = 0, iHi = 0;   // subject p10 / p50 / p90, ranked by luma
+    size_t iTop = 0, iBot = 0;           // frame p99.9 / p0.1, ranked by max channel
+    // The frame's darkest pixel BY LUMA, which is a different pixel from iBot and has to be.
+    // Ranking by max channel finds the pixel with the dimmest brightest channel, and a saturated
+    // pixel scores well on that while sitting at zero in its other two -- so the sample iBot
+    // selects is not the darkest thing in the frame by the measure a viewer uses.
+    size_t iBotY = 0;
+    // THE FRAME'S FLOOR AS A POPULATION, not as one pixel. p1 of per-pixel MIN channel: the
+    // statistic the frameFloorMin guard was always supposed to use and never had. iBot and iBotY
+    // each identify a single extreme pixel, and a single pixel cannot say how MUCH of the frame
+    // went black -- measured on two frames that both render their floor to 0.041 while one crushes
+    // 5.07% of its pixels and the other 0.14%.
+    size_t iMinP = 0;
+    // The SURROUND's midtone: p50 by luma over everything the subject is not. The thing the
+    // subject has to stand out from, and the only reading here that is about neither the subject
+    // nor the frame as a whole.
+    size_t iSur = 0;
+    size_t subjN = 0;                    // how many samples carried the subject label
+    size_t skinN = 0;                    // ...and how many of those were skin by chroma
+    bool   ok = false;
+};
+
+// The two readings a picked sample is turned into, kept next to the picker for the same reason:
+// iTop is measured as its MAX channel and iBot as its MIN, which is not symmetric and not obvious.
+// A ceiling is the brightest channel of the brightest pixel; a floor is the darkest channel of the
+// darkest one, because that is the channel that hits zero first and takes the shadow detail with it.
+static inline double tone_luma(float r, float g, float b) { return 0.2126*r + 0.7152*g + 0.0722*b; }
+static inline double tone_hi(float r, float g, float b)   { return std::max(r, std::max(g, b)); }
+static inline double tone_lo(float r, float g, float b)   { return std::min(r, std::min(g, b)); }
+
+// SELECT ON `person`, MEASURE ON SKIN -- two jobs, and collapsing them breaks one or the other.
+//
+// The model's class 12 is `person`: body, wardrobe and hair. That is the right region for CHOOSING
+// a subject -- a face shot should read as being about the person in it -- and the wrong pixels to
+// take a face's shadows and midtone from, because on a wide shot most of them are clothes.
+//
+// Narrowing the region map itself was tried first and is worse: with skin-only regions the WALLS
+// win subject selection on nearly every face shot in the corpus (SKIN 21% -> BUILT 55%, and
+// dark-scene's face 16% -> BUILT 77%). The subject was correct; only its percentiles were not.
+//
+// So the region stays as the model drew it and the SUBJECT PERCENTILES are taken from the skin
+// pixels within it, tested on the rendered color the callback already produces. Falls back to the
+// whole region when there is too little skin to rank -- a silhouette or a back-of-head shot has no
+// face to measure, and 32 is the same floor the subject population already uses.
+//
+// This is what the corpus says the target means: narrowed the same way, 411 stills land on
+// floor 0.120 / mid 0.273 against the 0.125 / 0.278 measured from one hand-graded interview.
+// Unnarrowed they land on 0.051 / 0.158, which is a photograph of clothing.
+static inline TonePick pick_tone_samples(size_t n, const unsigned char* region, int subject,
+                                         const std::function<void(size_t, float&, float&, float&)>& at,
+                                         bool skinMask = false)
+{
+    TonePick p;
+    if (!region || n < 64) return p;
+
+    std::vector<std::pair<float,size_t>> subjK, allK, allY, surK, allM, skinK;
+    subjK.reserve(n / 4 + 1); allK.reserve(n); allY.reserve(n); surK.reserve(n); allM.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        float r, g, b;
+        at(i, r, g, b);
+        allK.push_back({ (float)tone_hi(r, g, b), i });
+        allY.push_back({ (float)tone_luma(r, g, b), i });
+        allM.push_back({ (float)tone_lo(r, g, b), i });
+        if ((int)region[i] == subject) {
+            subjK.push_back({ (float)tone_luma(r, g, b), i });
+            if (skinMask && subject == analysis::R_SKIN && analysis::skin_chroma(r, g, b))
+                skinK.push_back({ (float)tone_luma(r, g, b), i });
+        }
+        else                           surK.push_back({ (float)tone_luma(r, g, b), i });
+    }
+    p.subjN = subjK.size();
+    if (subjK.size() < 32) return p;
+
+    auto pct = [](std::vector<std::pair<float,size_t>>& v, double q) {
+        const size_t k = (size_t)(q * (v.size() - 1));
+        std::nth_element(v.begin(), v.begin() + k, v.end(),
+            [](const std::pair<float,size_t>& a, const std::pair<float,size_t>& b) { return a.first < b.first; });
+        return v[k].second;
+    };
+    // OFF BY DEFAULT, AND THE CORPUS SAYS IT IS RIGHT ANYWAY -- which is the tension worth
+    // recording rather than resolving in either direction.
+    //
+    // Narrowed this way, 411 corpus stills put a face at floor 0.120 / mid 0.273 against the
+    // 0.125 / 0.278 measured from one hand-graded interview. Unnarrowed, 613 stills say
+    // 0.051 / 0.158, which is a photograph of clothing. The narrowing is what makes the shipped
+    // target and the corpus agree, so it is describing the right population.
+    //
+    // It still regresses the corpus: dark-scene goes from the user's validated +2.29 EV rescue
+    // (shadow separation 0.184) to declining outright (0.011), and 00093080 likewise. Both trip
+    // `highlight blown`. That is the THIRD independent route to the same wall -- box-averaged
+    // thumbnails, the exposure back-off and this all end at the same decline -- and its fallback,
+    // Creative alone, is unusable on the frames that most need help. The blocker is the decline,
+    // not this. See docs/ROADMAP.md 7.
+    std::vector<std::pair<float,size_t>>& tone = (skinK.size() >= 32) ? skinK : subjK;
+    p.skinN = skinK.size();
+    p.iLo  = pct(tone, 0.10); p.iMid = pct(tone, 0.50); p.iHi = pct(tone, 0.90);
+    p.iTop = pct(allK,  0.999); p.iBot = pct(allK,  0.001);
+    p.iBotY = pct(allY, 0.001);
+    // p1 rather than p0.1: this one is meant to speak for a population, so it must sit where there
+    // is a population to speak for. At p0.1 it is another extreme pixel wearing a different name.
+    p.iMinP = pct(allM, 0.01);
+    // Falls back to the frame's own midtone when the subject fills the frame. A surround of
+    // nothing has no midtone, and a separation target against an empty population would be a
+    // number describing noise -- the same failure the 200-sample gate on the region triple exists
+    // to prevent.
+    p.iSur = surK.size() >= 200 ? pct(surK, 0.50) : pct(allY, 0.50);
+    p.ok = true;
+    return p;
 }
 
 static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subject,
@@ -874,27 +1356,45 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     // subjects is a DATA question, not a code one: it needs a hand-graded landscape the way the
     // face targets needed a hand-graded interview. Until then a wrong target is worse than none,
     // because the whole point of the button is that its bad cases are impossible rather than rare.
-    if (subject != analysis::R_SKIN) { out.why = "not a face"; return out; }
+    if (subject < 0 || subject >= analysis::kRegionN || !t.region[subject].has) {
+        out.why = "no target for this subject";
+        return out;
+    }
+    const double subjFloorT = t.region[subject].floor;
+    const double subjMidT   = t.region[subject].mid;
 
-    // AND ONLY WHEN THE MASK PLAUSIBLY IS A FACE. Coverage is the tell, the same tell
-    // skin_trustworthy() already uses at 25% for the chromatic mask: a face occupies a modest
-    // share of frame, and when the number climbs the label has stopped meaning what it says.
+    // AND ONLY WHEN THE MASK PLAUSIBLY IS A FACE. Coverage is a PROXY -- the thing that actually
+    // makes a merged mask unusable is that no monotone curve can place its p10 and p50 and still
+    // keep its top in the picture -- and a proxy set too tight refuses the case it was meant to
+    // serve. It was 0.35, and a genuine close-up (face, hands and forearms, nothing else in the
+    // frame) reads 46%: the guard rejected the most obviously face-shaped frame there is.
     //
-    // One frame came back SKIN 43% with the region spanning 0.875 of the tonal range and its p90
-    // pinned at 1.000. No monotone curve can place p10 and p50 for a region that wide and still
-    // keep its top inside the picture, and the solve duly ran Gain to its bound trying: the
-    // symptom of an infeasible target is a control on a bound, and the cause was that the mask
-    // covered a dark interior AND a window rather than a face.
+    // RAISED TO 0.60 ON MEASUREMENT, not on argument. The frame this was built for is in the
+    // corpus -- a car interior whose skin mask swallows the windscreen at 42% -- and with the
+    // ceiling lifted it declines ANYWAY, as "highlight blown", after the RAW Exposure rescue asks
+    // for 3.18 EV and the top goes. The real acceptance tests catch it; the proxy was collecting
+    // the credit.
     //
-    // Set above the chromatic mask's 25% because this one is a segmentation label rather than a
-    // hue window, so a genuine close-up can legitimately read higher.
+    // A tonal-spread test was the obvious replacement and is RULED OUT BY THE SAME MEASUREMENT.
+    // The bad mask's neutral spread is 0.455 against 0.312-0.459 for the five frames that solve
+    // correctly -- indistinguishable. (The 0.875 in the note this replaces predates the RAW
+    // Exposure rescue, which changes the render the spread is measured through.) So there is no
+    // second signal to lean on here, and the honest shape is a loose ceiling plus the feasibility
+    // tests downstream rather than a tight ceiling standing in for them.
+    //
+    // Still a ceiling rather than nothing: a mask calling most of the frame skin has stopped
+    // meaning what it says whatever the solve then does with it, and 0.60 is above any real
+    // close-up while well below that.
     {
         size_t cover = 0;
         for (size_t i = 0; i < n; ++i) if ((int)S.region[i] == subject) ++cover;
-        if ((double)cover > 0.35 * (double)n) { out.why = "face too large to be one"; return out; }
+        if ((double)cover > t.region[subject].maxCover * (double)n) {
+            out.why = "region too large to be credible";
+            return out;
+        }
     }
 
-    float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
     Pn[11] = P0[11];   // keep the white balance; it is not a tone control
 
     // Neutral render once, in the encode the grade curve runs in. Everything below is a solve on
@@ -906,25 +1406,17 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     // Exposure, which acts on scene light BEFORE the transform, so changing it changes the very
     // numbers the solve is standing on. Keeping the source triple that sits at each percentile
     // makes every stage a function of the parameters, exposure included.
-    std::vector<std::pair<float,size_t>> subjK, allK;
-    subjK.reserve(n / 4 + 1); allK.reserve(n);
-    for (size_t i = 0; i < n; ++i) {
-        float r, g, b;
-        og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        allK.push_back({ std::max(r, std::max(g, b)), i });
-        if ((int)S.region[i] == subject)
-            subjK.push_back({ 0.2126f*r + 0.7152f*g + 0.0722f*b, i });
-    }
-    if (subjK.size() < 32) { out.why = "subject too small"; return out; }
-
-    auto at = [](std::vector<std::pair<float,size_t>>& v, double q) {
-        const size_t k = (size_t)(q * (v.size() - 1));
-        std::nth_element(v.begin(), v.begin() + k, v.end(),
-            [](const std::pair<float,size_t>& a, const std::pair<float,size_t>& b) { return a.first < b.first; });
-        return v[k].second;
-    };
-    const size_t iLo = at(subjK, 0.10), iMid = at(subjK, 0.50),
-                 iHi = at(subjK, 0.90), iTop = at(allK, 0.999), iBot = at(allK, 0.001);
+    // The picking rule is shared with the reference-still measurement (pick_tone_samples), so a
+    // look's targets and the solve that consumes them cannot disagree about what "the subject's
+    // midtone" means. The callback re-renders from source, which is what lets RAW Exposure move
+    // these numbers later instead of them being frozen scalars.
+    const TonePick pk = pick_tone_samples(n, S.region.data(), subject,
+        [&](size_t i, float& r, float& g, float& b) {
+            og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
+        }, t.skinToneMask);
+    if (!pk.ok) { out.why = "subject too small"; return out; }
+    const size_t iLo = pk.iLo, iMid = pk.iMid, iHi = pk.iHi, iTop = pk.iTop, iBot = pk.iBot;
+    const size_t iBotY = pk.iBotY, iSur = pk.iSur, iMinP = pk.iMinP;
 
     // UNDEREXPOSURE IS NOT LOW KEY, AND THE SUBJECT IS HOW YOU TELL THEM APART.
     //
@@ -967,32 +1459,101 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
     };
     // Target the subject's NEUTRAL midtone, so the tone solve then starts from a shot that looks
     // correctly exposed rather than one it has to rescue with the grade curve.
-    if (neutralMid(0.0) < t.subjNeutralMid) {
+    //
+    // BOTH DIRECTIONS, AND THEY USE DIFFERENT THRESHOLDS ON PURPOSE.
+    //
+    // Up is unchanged: `subjNeutralMid`, one constant for every subject. Down keys on the
+    // SUBJECT'S OWN target midtone instead, because a single constant cannot serve both ends. The
+    // up threshold is 0.28, which happens to equal SKIN's target -- and the corpus's four
+    // sky-subject frames sit at neutral midtones of 0.54 to 0.70 while SKY's target is 0.602.
+    // Pulling those down to 0.28 would be correcting an exposure that is already right, on the
+    // strength of a number that was only ever fitted for faces.
+    //
+    // CONTINUOUS THROUGH ZERO, which is why neither branch has a deadband. Just above the down
+    // threshold the solve asks for ~0 EV, just below the up threshold likewise, and for SKIN the
+    // two thresholds are 0.278 and 0.28 -- so the control law has no step in it. This project has
+    // shipped four discontinuities at boundaries already; a margin here would have been the fifth.
+    //
+    // Note what this does NOT change: the subject is still placed at exactly the same target. The
+    // solve was already trying to bring an ETTR frame's face down and running Lift into its floor
+    // to do it. This changes which control gets there, not where "there" is.
+    const double nm0 = neutralMid(0.0);
+    if (nm0 < t.subjNeutralMid) {
         Pe[10] = (float)std::min(t.rawExpMax,
                                  solve1d(0.0, t.rawExpMax, t.subjNeutralMid, neutralMid));
         Pn[10] = Pe[10];
+    } else if (nm0 > subjMidT) {
+        Pe[10] = (float)std::max(t.rawExpMin,
+                                 solve1d(t.rawExpMin, 0.0, subjMidT, neutralMid));
+        Pn[10] = Pe[10];
     }
 
+    // Same three readings the reference measurement takes, via the same helpers -- a subject point
+    // is its luma, the frame's top is its max channel and the frame's bottom its min.
     auto shade = [&](size_t i) {
         float r, g, b;
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        return (double)(0.2126f*r + 0.7152f*g + 0.0722f*b);
+        return tone_luma(r, g, b);
     };
     auto shadeMin = [&](size_t i) {
         float r, g, b;
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        return (double)std::min(r, std::min(g, b));
+        return tone_lo(r, g, b);
     };
     auto shadeMax = [&](size_t i) {
         float r, g, b;
         og::process(cam, enc, Pn, S.rgb[i*3], S.rgb[i*3+1], S.rgb[i*3+2], r, g, b);
-        return (double)std::max(r, std::max(g, b));
+        return tone_hi(r, g, b);
     };
-    MagicTone r = solve_magic_tone_from(shade(iLo), shade(iMid), shade(iHi), shadeMax(iTop),
-                                        Pe, lut, lutSize, t.subjFloor, t.subjMid, t.frameCeiling,
-                                        shadeMin(iBot), t.frameFloorMax);
+    // The five readings are independent of the ceiling, so take them once and let the search vary
+    // the one argument it is searching over. Recomputing them per probe would be harmless but
+    // would make it look as though the measurement moved with the target, which is the confusion
+    // that produced Magic Grade reading its own output.
+    const double mLo = shade(iLo), mMid = shade(iMid), mHi = shade(iHi);
+    const double mTop = shadeMax(iTop), mBot = shadeMin(iBot);
+    // The frame floor read as LUMA, from the pixel that is darkest by luma -- a
+    // different sample and a different reading from mBot, which is why it is measured
+    // separately rather than derived from it.
+    const double mBotY = shade(iBotY), mSur = shade(iSur);
+    // RE-ANCHORED ON A POPULATION. frameFloorMin used mBotY -- the frame's darkest pixel by luma --
+    // and could not see crushing, because one pixel does not count pixels. Two corpus frames both
+    // render that pixel to 0.041 while one has 5.07% of the frame crushed and zero shadow
+    // separation and the other 0.14% and 0.114. mMinP is p1 of per-pixel MIN channel, which is the
+    // statistic %crushMin is actually measuring, and it separates them.
+    const double mMinP = shadeMin(iMinP);
+    auto solve_at = [&](double c) {
+        return solve_magic_tone_from(mLo, mMid, mHi, mTop, Pe, lut, lutSize,
+                                     subjFloorT, subjMidT, c,
+                                     mBot, t.frameFloorMax, t.frameFloorMin, mMinP,
+                                     mSur, -1.0);
+    };
+
+    // TWO CANDIDATES, NOT A SEARCH -- and the difference is not economy, it is safety.
+    //
+    // Bisecting for the lowest feasible ceiling was written first and is wrong by construction: a
+    // bisection converges TO the boundary, so the value it returns is always within its tolerance
+    // of infeasible. On the underexposed clip it settled at 0.9339 while 0.9340 crosses into the
+    // ceiling-gives-way branch and blows the face to 0.993 -- a grade balanced on a knife edge,
+    // where the next frame of the same shot, or the first touch of Bias, falls off it. Fifth time
+    // this project has met a discontinuity at a boundary, after Rolloff at 0, RAW Temp at 6500, the
+    // halfway-armed anchor and the ceiling target that asked for what the acceptance test forbids.
+    //
+    // Both endpoints are validated values, which is the other half of the argument. 0.968 is the
+    // hand-graded interview; 0.890 was checked on five clips. Anything between them is a number
+    // nobody has looked at, so there is nothing to gain by landing on one.
+    double ceil = t.frameCeilingLow;
+    MagicTone r = solve_at(ceil);
+    if (t.frameCeilingLow < t.frameCeiling && (!r.ok || (r.branch & 2))) {
+        ceil = t.frameCeiling;
+        r = solve_at(ceil);
+    }
+    r.ceil = (float)ceil;
     r.rawExp = Pe[10];
     r.sMidNeutral = (float)neutralMid(0.0);
+    // Stamp the neutral percentiles whatever the outcome. They were being written only on the
+    // success path, so a declined frame reported spread 0.000 -- exactly the frames where the
+    // question "what did the mask actually cover" is the one being asked.
+    r.sLo = (float)mLo; r.sMid = (float)mMid; r.sHi = (float)mHi;
     return r;
 }
 
@@ -1001,7 +1562,7 @@ static inline MagicTone solve_magic_tone(const analysis::SampleSet& S, int subje
 //
 // Every individual solve was already shared, and it was not enough. What stayed duplicated was
 // the ORDER, written out once in applyMagicGrade and once in bench.cpp, and that is what drifted:
-// the bench gained a re-solve after the colour move and the plugin did not, so the two produced
+// the bench gained a re-solve after the color move and the plugin did not, so the two produced
 // different pictures from the same still -- the one failure an offline harness exists to prevent.
 //
 // Extracting the steps fixed the arithmetic and left the choreography to be kept in step by hand.
@@ -1020,23 +1581,29 @@ using SegmentFn = std::function<bool(const unsigned char* rgb, int w, int h,
                                      std::vector<unsigned char>& regions512)>;
 
 struct MagicResult {
-    float P[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    // Mirrors analysis::neutral_params(); a default member initialiser cannot call it.
+    // static_assert there fires if the count moves, which is the reminder to update this.
+    float P[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
+                                  0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f, 0.f,1.f,1.f,
+                                  0.f,0.f,0.f, 0.5f,0.5f, 0.f,0.25f,0.f, 0.40f,0.0f};
     // The grade as Creative left it, BEFORE a subject was chosen. Kept so switching subjects
     // starts from the same place every time -- re-running from the graded result would compound
-    // one subject's colour move onto the next, and the answer would depend on the order they
+    // one subject's color move onto the next, and the answer would depend on the order they
     // were tried in.
-    float Pcreative[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+    float Pcreative[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f,
+                                  0.f,2.6f,1.f, 0.f,1.f,0.f, 1.f,1.f, 0.f,1.f,1.f,
+                                  0.f,0.f,0.f, 0.5f,0.5f, 0.f,0.25f,0.f, 0.40f,0.0f};
     analysis::MagicChoice choice;
     MagicTone     tone;
     WhiteBalance  wb;
-    double        magicBase = 0.0;   // the colour move before Separation scales it
+    double        magicBase = 0.0;   // the color move before Separation scales it
     bool          wbRan = false;
     bool          ok = false;
 };
 
 // thumbSrc: 512*512*3 camera log, top-down. S must already hold the frame's samples; its region
-// labels are filled in here. `click` cycles the subject, `sep` scales the colour move.
-// STEPS 4-7, GIVEN A SEGMENTATION THAT ALREADY EXISTS: decide, tone, colour, re-solve.
+// labels are filled in here. `click` cycles the subject, `sep` scales the color move.
+// STEPS 4-7, GIVEN A SEGMENTATION THAT ALREADY EXISTS: decide, tone, color, re-solve.
 //
 // Split out of solve_magic() so the choice of subject can be revisited for free. Segmentation is
 // the whole cost of the button (~100 ms of inference); everything here is arithmetic over a
@@ -1044,7 +1611,7 @@ struct MagicResult {
 // nothing next to offering one.
 //
 // `creativeP` is the grade as Creative left it -- BEFORE any subject was chosen. Re-running from
-// the graded result instead would compound one subject's colour move onto the next, so switching
+// the graded result instead would compound one subject's color move onto the next, so switching
 // options would depend on which order they were tried in.
 static inline MagicResult solve_magic_from_regions(analysis::SampleSet& S,
                                                    const float creativeP[analysis::kParamN],
@@ -1138,7 +1705,7 @@ static inline MagicResult solve_magic(analysis::SampleSet& S,
     // 1. WHITE BALANCE, on a NEUTRAL render: the cast is what we are here to measure, so it has
     //    to still be in the picture. Before everything else, so the rest sees a balanced frame.
     if (wbFirst && thumbSrc.size() == (size_t)512 * 512 * 3) {
-        float Pn[analysis::kParamN] = {0.f,0.f,0.f, 0.f,1.f,1.f, 0.f,0.f, 0.f,1.f, 0.f,6500.f, 0.f};
+        float Pn[analysis::kParamN]; analysis::neutral_params(Pn);
         std::vector<unsigned char> t0, regions;
         thumb(Pn, /*withLut=*/false, t0);
         if (segment(t0.data(), 512, 512, regions)) {
@@ -1170,6 +1737,194 @@ static inline MagicResult solve_magic(analysis::SampleSet& S,
     out.choice = tail.choice; out.tone = tail.tone; out.magicBase = tail.magicBase;
     out.ok = tail.ok;
     return out;
+}
+
+// ---------------------------------------------------------------------------------------
+// RANGE BALANCE — where the bright population begins.
+//
+// The first version took p98 of the graded luminance. That assumes the highlight is a FIXED
+// SHARE OF THE FRAME, and it is not: on a bedroom with one window p98 read 72.1 against the
+// user's hand-dialled 63.5, and on a landscape whose top half is cloud it selected 1.97% of
+// the frame — the same rule, two shot shapes, one of them absurd. A percentile answers "how
+// much", and the question is "where is the gap".
+//
+// So: split the frame into two populations and put the edge between them (Otsu — maximise
+// between-class variance, which is the same thing as minimising the spread within each side).
+// It reads the shape of the histogram rather than a position in it, so a window that is 2% of
+// frame and a sky that is 50% both land at their own boundary.
+//
+// The luma handed in must be the SAME luminance the mask reads at render — post grade curve,
+// pre Range Balance. A threshold is only meaningful in the space it was chosen in, and this
+// project has paid for that lesson on the black point already.
+// OTSU ALWAYS ANSWERS, AND THAT IS ITS ONE TRAP. It finds the best of all possible splits, which
+// on a frame with no bright population is still some split -- one corpus frame spans 27.9 to 35.3
+// in display units and got a latch holding 87% of itself.
+//
+// SO THE TEST IS THE GAP, IN ABSOLUTE UNITS, NOT OTSU'S OWN SEPARABILITY. That was tried first
+// and it is scale-invariant by construction: the flat frame above scored 0.65 and another one
+// spanning 53 to 71 scored 0.80, both comfortably inside the range the bedroom window (0.77) and
+// the sky (0.82) occupy. A ratio cannot see that one frame's two "populations" are seven code
+// values apart. `gap` is the distance between the class means on the 0..100 display axis, which
+// is the thing that decides whether holding one side off the other means anything.
+//
+// Third time this shape has come up here: hot versus pin, crushed% versus crushedY, and now this.
+// A NUMBER COMPARED AGAINST A CONSTANT HAS TO BE THE NUMBER THAT MATTERS.
+struct RangeLatch {
+    double latch = 0.0;    // 0..100, where the mask crosses 0.5
+    double cover = 0.0;    // % of the frame at or above it
+    double gap   = 0.0;    // display units between the two class means
+    bool   ok    = false;
+};
+
+// Below this there is nothing to hold apart. On the corpus the frames with a real window or sky
+// sit far above it and the flat ones fall well under -- see docs/ROADMAP.md for the table. One
+// corpus, so it is a bar rather than a constant of nature.
+static const double kRangeGapMin = 20.0;
+
+static inline RangeLatch range_latch(const std::vector<float>& y)
+{
+    RangeLatch out;
+    if (y.size() < 64) return out;
+
+    // 256 bins over [0,100]. Superwhite folds into the top bin: it is unambiguously highlight,
+    // and letting it stretch the axis would push every threshold down with it.
+    const int kB = 256;
+    long long hist[kB] = {0};
+    for (float v : y) {
+        int b = (int)(v * (float)(kB - 1) + 0.5f);
+        hist[b < 0 ? 0 : (b > kB - 1 ? kB - 1 : b)]++;
+    }
+
+    const double total = (double)y.size();
+    double sum = 0.0;
+    for (int i = 0; i < kB; ++i) sum += (double)i * (double)hist[i];
+
+    double wB = 0.0, sumB = 0.0, best = -1.0, bestGap = 0.0;
+    int bestT = 0;
+    for (int t = 0; t < kB - 1; ++t) {
+        wB += (double)hist[t];
+        if (wB <= 0.0) continue;
+        const double wF = total - wB;
+        if (wF <= 0.0) break;
+        sumB += (double)t * (double)hist[t];
+        const double mB = sumB / wB, mF = (sum - sumB) / wF;
+        const double between = wB * wF * (mB - mF) * (mB - mF);
+        if (between > best) { best = between; bestT = t; bestGap = mF - mB; }
+    }
+    if (best < 0.0) return out;
+
+    out.latch = 100.0 * ((double)bestT + 0.5) / (double)(kB - 1);
+    long long above = 0;
+    for (float v : y) if (100.0 * (double)v >= out.latch) ++above;
+    out.cover = 100.0 * (double)above / total;
+
+    out.gap = bestGap * 100.0 / (double)(kB - 1);   // bins -> the 0..100 display axis
+    out.ok  = (out.gap >= kRangeGapMin);
+    return out;
+}
+
+// ---------------------------------------------------------------------------------------
+// FIT THE TONE MAP TO THE FRAME — because we have the whole image, and a fixed curve does not.
+//
+// A constant knee/white is a compromise struck once against a corpus: too gentle for a frame that
+// peaks at 3.3, and needless compression on one that peaks at 1.1. With the pixels in hand the
+// right shoulder is a measurement, not a default.
+//
+// THE ONE THING THAT MAKES IT CORRECT: MEASURE ONLY WHAT IS RECOVERABLE. A pixel already pinned at
+// the SENSOR ceiling is flat and detail-free and no curve brings it back; including it in the peak
+// would stretch `white` to make room for data that does not exist, compressing everything real to
+// accommodate a blown sky that stays blown either way. So source-pinned samples are excluded from
+// the peak and allowed to ride up to white. This is `hot` versus `pin` a third time -- the same
+// distinction that decides Rolloff, and the same one whose absence let this defect exist at all.
+//
+// Pinning is tested against the CLIP'S OWN maximum, never against 1.0: log formats do not all
+// reach the top of the code range and Blackmagic peaks near 0.75, so a fixed threshold reports 0%
+// on every Blackmagic shot including the blown ones.
+struct ToneMapFit {
+    double knee  = 0.40;
+    double white = 0.0;    // 0 = off, i.e. nothing needed
+    double peak  = 0.0;    // recoverable peak in display units, tone map bypassed
+    double pin   = 0.0;    // % of frame already clipped at the SENSOR -- unrecoverable
+    double top   = 0.0;    // the TRUE recoverable maximum -- how far past `peak` the tail goes
+    bool   ok    = false;
+    char   why[64] = {0};
+};
+
+// `ratio` bounds the compression: the input range above the knee may be at most `ratio` times the
+// output range it is squeezed into. That is what makes the fit ADAPTIVE rather than merely
+// sufficient -- solving knee from it gives a gentle frame a high knee (almost nothing moves) and a
+// wild one a low knee (the shoulder gets the room it needs), from one number with a meaning.
+static inline ToneMapFit fit_tone_map(const analysis::SampleSet& S, int cam, int enc,
+                                      const float* P, double ratio = 4.0)
+{
+    ToneMapFit f;
+    const size_t n = S.size();
+    if (n < 512) { snprintf(f.why, sizeof f.why, "too few samples"); return f; }
+
+    float srcMax = 0.f;
+    for (size_t i = 0; i < n; ++i)
+        srcMax = std::max(srcMax, std::max(S.rgb[i*3], std::max(S.rgb[i*3+1], S.rgb[i*3+2])));
+    const float eps = std::max(0.002f, srcMax * 0.004f);
+
+    // Render with the tone map BYPASSED -- this measures what the shoulder has to contain, so
+    // measuring through a shoulder would be the control reading its own output.
+    float Q[analysis::kParamN];
+    for (int k = 0; k < analysis::kParamN; ++k) Q[k] = P[k];
+    Q[33] = 0.f;
+
+    std::vector<float> peaks;
+    peaks.reserve(n);
+    size_t pinned = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const float s0 = S.rgb[i*3], s1 = S.rgb[i*3+1], s2 = S.rgb[i*3+2];
+        if (std::max(s0, std::max(s1, s2)) >= srcMax - eps) { ++pinned; continue; }
+        float r, g, b;
+        og::process(cam, enc, Q, s0, s1, s2, r, g, b);
+        peaks.push_back(std::max(r, std::max(g, b)));
+    }
+    f.pin = 100.0 * (double)pinned / (double)n;
+    if (peaks.size() < 64) { snprintf(f.why, sizeof f.why, "almost everything is clipped at source"); return f; }
+
+    // p99.95 rather than the true maximum: one hot pixel is not a highlight, and stretching the
+    // white point to cover it would compress the whole picture to protect a speck.
+    const size_t k = (size_t)(0.9995 * (peaks.size() - 1));
+    std::nth_element(peaks.begin(), peaks.begin() + k, peaks.end());
+    f.peak = (double)peaks[k];
+
+    // HOW FAR THE TRIMMED TAIL ACTUALLY GOES, which is the number that says what it is. Counting
+    // the SHARE above p99.95 was tried first and it is a tautology -- it is 0.05% on every frame by
+    // construction, which is the "a number compared against a constant must be the number that
+    // matters" trap wearing yet another hat. The magnitude is what distinguishes a sun from noise:
+    // one corpus frame reads p99.95 = 0.85 against a true maximum of 4.13, nearly five times over.
+    //
+    // Reserving range for that is actively wrong. Fitting white to 4.13 drives the knee to its
+    // floor and compresses the ENTIRE picture to protect a speck that is a light source, not
+    // detail. Speculars are allowed to clip -- that is what they do in a camera and in the eye.
+    // What is not allowed is for the plugin to be quiet about it.
+    for (float v : peaks) f.top = std::max(f.top, (double)v);
+
+    if (f.peak <= 1.0) {
+        // Everything but the trimmed tail already fits, so the honest fit is no shoulder at all.
+        // Say when that tail is a real light source, or "nothing to contain" is a claim the
+        // waveform will contradict.
+        if (f.top > 1.05) snprintf(f.why, sizeof f.why, "fits already; speculars reach %.1fx", f.top);
+        else              snprintf(f.why, sizeof f.why, "nothing to contain (peak %.2f)", f.peak);
+        f.white = 0.0;                      // off: identity, and honest about why
+        f.ok = true;
+        return f;
+    }
+    // A little margin so the peak lands just BELOW white rather than exactly on it -- landing on
+    // it means the brightest real highlight in the frame is the one value with no headroom left.
+    f.white = f.peak * 1.02;
+    f.knee  = std::min(0.90, std::max(0.05, (ratio - f.white) / (ratio - 1.0)));
+    if (f.pin >= 0.05)
+        snprintf(f.why, sizeof f.why, "peak %.2f, %.1f%% clipped at sensor", f.peak, f.pin);
+    else if (f.top > f.white * 1.10)
+        snprintf(f.why, sizeof f.why, "peak %.2f, speculars to %.1f clip", f.peak, f.top);
+    else
+        snprintf(f.why, sizeof f.why, "peak %.2f contained, sensor clean", f.peak);
+    f.ok = true;
+    return f;
 }
 
 } // namespace grade

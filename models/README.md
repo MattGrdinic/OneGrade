@@ -17,7 +17,7 @@ resolved at runtime from the plugin binary's own path so it works on any render 
 **The licence is the reason this model and not another one.** The obvious candidate,
 NVIDIA's SegFormer-B0, is smaller and converts more easily, but its licence restricts use to
 "research or evaluation purposes only" — and that restriction lands on the END USER rather than
-the distributor. A colourist grading a paid job is doing neither, so no amount of relicensing
+the distributor. A colorist grading a paid job is doing neither, so no amount of relicensing
 OneGrade could have fixed it. PP-MobileSeg is both cleanly licensed and *better*: 41.57% mIoU
 against SegFormer-B0's ~37.4%, and 96 ms against 251 ms.
 

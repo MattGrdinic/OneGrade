@@ -1,0 +1,1298 @@
+[
+  {
+    "stem": "Timeline_1_00102381",
+    "axis": "gamma",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00102381__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:51:48.869Z"
+  },
+  {
+    "stem": "Timeline_1_00087360",
+    "axis": "lift",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00087360__lift_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:51:49.610Z"
+  },
+  {
+    "stem": "dark-scene00117737",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": 1,
+    "chosen_file": "dark-scene00117737__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:51:52.002Z"
+  },
+  {
+    "stem": "Timeline_1_00089408",
+    "axis": "expo",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:51:54.664Z"
+  },
+  {
+    "stem": "Timeline_1_00093080",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:51:55.739Z"
+  },
+  {
+    "stem": "Timeline_1_00095358",
+    "axis": "warmth",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00095358__warmth_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:51:57.306Z"
+  },
+  {
+    "stem": "Timeline_1_00093080",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:51:59.122Z"
+  },
+  {
+    "stem": "Timeline_1_00092022",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:01.402Z"
+  },
+  {
+    "stem": "Timeline_1_00102228",
+    "axis": "gamma_vs_base",
+    "chosen": -1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00102228__gamma_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:02.823Z"
+  },
+  {
+    "stem": "Timeline_1_00104865",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00104865__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:08.323Z"
+  },
+  {
+    "stem": "Timeline_1_00092397",
+    "axis": "expo",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092397__expo_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:09.760Z"
+  },
+  {
+    "stem": "Timeline_1_00093080",
+    "axis": "warmth",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:11.706Z"
+  },
+  {
+    "stem": "Timeline_1_00087360",
+    "axis": "gamma",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00087360__gamma_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:12.681Z"
+  },
+  {
+    "stem": "Timeline_1_00093080",
+    "axis": "expo",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:14.248Z"
+  },
+  {
+    "stem": "Timeline_1_00096619",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00096619__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:15.710Z"
+  },
+  {
+    "stem": "dark-scene00117737",
+    "axis": "gain",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "dark-scene00117737__gain_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:18.860Z"
+  },
+  {
+    "stem": "Timeline_1_00092397",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:20.964Z"
+  },
+  {
+    "stem": "Timeline_1_00092987",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092987__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:25.112Z"
+  },
+  {
+    "stem": "Timeline_1_00124265",
+    "axis": "expo",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00124265__expo_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:26.844Z"
+  },
+  {
+    "stem": "Timeline_1_00087360",
+    "axis": "expo",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:28.447Z"
+  },
+  {
+    "stem": "Timeline_1_00091084",
+    "axis": "expo",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00091084__expo_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:30.904Z"
+  },
+  {
+    "stem": "Timeline_1_00093080",
+    "axis": "gain",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:31.827Z"
+  },
+  {
+    "stem": "Timeline_1_00095358",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:33.129Z"
+  },
+  {
+    "stem": "Timeline_1_00096619",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:33.860Z"
+  },
+  {
+    "stem": "Timeline_1_00091084",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:35.217Z"
+  },
+  {
+    "stem": "extreme-settings00098434",
+    "axis": "gamma_vs_base",
+    "chosen": 1,
+    "rejected": 0,
+    "chosen_file": "extreme-settings00098434__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:38.138Z"
+  },
+  {
+    "stem": "Timeline_1_00092022",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092022__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:40.054Z"
+  },
+  {
+    "stem": "Timeline_1_00093080",
+    "axis": "lift",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:40.970Z"
+  },
+  {
+    "stem": "Timeline_1_00103119",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00103119__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:44.853Z"
+  },
+  {
+    "stem": "Timeline_1_00092022",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092022__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:46.107Z"
+  },
+  {
+    "stem": "Timeline_1_00124265",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:47.831Z"
+  },
+  {
+    "stem": "Timeline_1_00103119",
+    "axis": "expo",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00103119__expo_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:48.748Z"
+  },
+  {
+    "stem": "extreme-settings00098434",
+    "axis": "warmth",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:50.099Z"
+  },
+  {
+    "stem": "Timeline_1_00096619",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:50.754Z"
+  },
+  {
+    "stem": "Timeline_1_00087360",
+    "axis": "gamma_vs_base",
+    "chosen": -1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00087360__gamma_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:51.842Z"
+  },
+  {
+    "stem": "Timeline_1_00092022",
+    "axis": "gamma",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092022__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:53.027Z"
+  },
+  {
+    "stem": "Timeline_1_00089408",
+    "axis": "gamma",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:54.091Z"
+  },
+  {
+    "stem": "Timeline_1_00104865",
+    "axis": "lift",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00104865__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:56.231Z"
+  },
+  {
+    "stem": "Timeline_1_00087360",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00087360__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:56.920Z"
+  },
+  {
+    "stem": "Timeline_1_00102381",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00102381__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:52:58.488Z"
+  },
+  {
+    "stem": "extreme-settings00098434",
+    "axis": "lift",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:52:59.854Z"
+  },
+  {
+    "stem": "Timeline_1_00102228",
+    "axis": "warmth",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:02.922Z"
+  },
+  {
+    "stem": "Timeline_1_00103119",
+    "axis": "gamma",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:04.387Z"
+  },
+  {
+    "stem": "Timeline_1_00095358",
+    "axis": "gain",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00095358__gain_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:05.474Z"
+  },
+  {
+    "stem": "Timeline_1_00092987",
+    "axis": "gamma_vs_base",
+    "chosen": 1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00092987__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:07.104Z"
+  },
+  {
+    "stem": "Timeline_1_00104865",
+    "axis": "expo",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00104865__expo_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:08.275Z"
+  },
+  {
+    "stem": "Timeline_1_00091084",
+    "axis": "gain",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00091084__gain_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:13.823Z"
+  },
+  {
+    "stem": "Timeline_1_00103119",
+    "axis": "lift_vs_base",
+    "chosen": -1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00103119__lift_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:15.501Z"
+  },
+  {
+    "stem": "Timeline_1_00124265",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00124265__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:19.171Z"
+  },
+  {
+    "stem": "Timeline_1_00124265",
+    "axis": "gain",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00124265__gain_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:20.913Z"
+  },
+  {
+    "stem": "Timeline_1_00104865",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00104865__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:23.363Z"
+  },
+  {
+    "stem": "dark-scene00117737",
+    "axis": "expo",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "dark-scene00117737__expo_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:24.690Z"
+  },
+  {
+    "stem": "Timeline_1_00096619",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:25.472Z"
+  },
+  {
+    "stem": "Timeline_1_00093080",
+    "axis": "gamma",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:26.376Z"
+  },
+  {
+    "stem": "Timeline_1_00124265",
+    "axis": "lift",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:27.907Z"
+  },
+  {
+    "stem": "dark-scene00117737",
+    "axis": "lift",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:29.515Z"
+  },
+  {
+    "stem": "Timeline_1_00102381",
+    "axis": "gain",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:30.986Z"
+  },
+  {
+    "stem": "extreme-settings00098434",
+    "axis": "expo",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:32.422Z"
+  },
+  {
+    "stem": "Timeline_1_00093080",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:33.333Z"
+  },
+  {
+    "stem": "Timeline_1_00089408",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:34.216Z"
+  },
+  {
+    "stem": "Timeline_1_00089408",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00089408__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:36.288Z"
+  },
+  {
+    "stem": "Timeline_1_00102381",
+    "axis": "warmth",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00102381__warmth_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:37.777Z"
+  },
+  {
+    "stem": "Timeline_1_00089408",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:39.059Z"
+  },
+  {
+    "stem": "Timeline_1_00092987",
+    "axis": "expo",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092987__expo_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:40.251Z"
+  },
+  {
+    "stem": "Timeline_1_00091084",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:43.277Z"
+  },
+  {
+    "stem": "Timeline_1_00087360",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:45.143Z"
+  },
+  {
+    "stem": "Timeline_1_00102228",
+    "axis": "lift",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00102228__lift_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:46.165Z"
+  },
+  {
+    "stem": "Timeline_1_00092022",
+    "axis": "gamma_vs_base",
+    "chosen": 1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00092022__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:47.525Z"
+  },
+  {
+    "stem": "dark-scene00117737",
+    "axis": "gamma_vs_base",
+    "chosen": -1,
+    "rejected": 0,
+    "chosen_file": "dark-scene00117737__gamma_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:52.246Z"
+  },
+  {
+    "stem": "Timeline_1_00102228",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:53:54.603Z"
+  },
+  {
+    "stem": "Timeline_1_00102228",
+    "axis": "expo",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00102228__expo_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:55.413Z"
+  },
+  {
+    "stem": "extreme-settings00098434",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "extreme-settings00098434__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:53:57.292Z"
+  },
+  {
+    "stem": "extreme-settings00098434",
+    "axis": "gamma",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "extreme-settings00098434__gamma_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:00.718Z"
+  },
+  {
+    "stem": "Timeline_1_00095358",
+    "axis": "gamma",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:54:03.697Z"
+  },
+  {
+    "stem": "Timeline_1_00092022",
+    "axis": "warmth",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:54:05.374Z"
+  },
+  {
+    "stem": "dark-scene00117737",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "dark-scene00117737__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:06.698Z"
+  },
+  {
+    "stem": "Timeline_1_00124265",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:54:07.583Z"
+  },
+  {
+    "stem": "Timeline_1_00104865",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00104865__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:08.810Z"
+  },
+  {
+    "stem": "Timeline_1_00091084",
+    "axis": "gamma",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00091084__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:12.104Z"
+  },
+  {
+    "stem": "Timeline_1_00092987",
+    "axis": "lift",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092987__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:13.139Z"
+  },
+  {
+    "stem": "Timeline_1_00089408",
+    "axis": "lift",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:54:14.829Z"
+  },
+  {
+    "stem": "Timeline_1_00104865",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:54:17.564Z"
+  },
+  {
+    "stem": "extreme-settings00098434",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:54:22.406Z"
+  },
+  {
+    "stem": "Timeline_1_00092397",
+    "axis": "gamma",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092397__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:24.356Z"
+  },
+  {
+    "stem": "Timeline_1_00087360",
+    "axis": "lift_vs_base",
+    "chosen": -1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00087360__lift_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:25.221Z"
+  },
+  {
+    "stem": "Timeline_1_00092022",
+    "axis": "lift",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092022__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:30.504Z"
+  },
+  {
+    "stem": "Timeline_1_00124265",
+    "axis": "gamma",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00124265__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:32.267Z"
+  },
+  {
+    "stem": "Timeline_1_00087360",
+    "axis": "warmth",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00087360__warmth_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:33.277Z"
+  },
+  {
+    "stem": "Timeline_1_00092987",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092987__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:34.657Z"
+  },
+  {
+    "stem": "Timeline_1_00103119",
+    "axis": "gain",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00103119__gain_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:36.450Z"
+  },
+  {
+    "stem": "Timeline_1_00095358",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00095358__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:38.769Z"
+  },
+  {
+    "stem": "Timeline_1_00092022",
+    "axis": "gain",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092022__gain_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:40.199Z"
+  },
+  {
+    "stem": "Timeline_1_00087360",
+    "axis": "gain",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00087360__gain_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:40.960Z"
+  },
+  {
+    "stem": "Timeline_1_00102228",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00102228__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:42.022Z"
+  },
+  {
+    "stem": "Timeline_1_00104865",
+    "axis": "warmth",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00104865__warmth_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:43.491Z"
+  },
+  {
+    "stem": "Timeline_1_00104865",
+    "axis": "gain",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00104865__gain_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:45.373Z"
+  },
+  {
+    "stem": "Timeline_1_00092397",
+    "axis": "warmth",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00092397__warmth_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:47.659Z"
+  },
+  {
+    "stem": "Timeline_1_00096619",
+    "axis": "lift",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00096619__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:49.402Z"
+  },
+  {
+    "stem": "Timeline_1_00102381",
+    "axis": "expo",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00102381__expo_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:50.538Z"
+  },
+  {
+    "stem": "Timeline_1_00103119",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:54:51.739Z"
+  },
+  {
+    "stem": "Timeline_1_00089408",
+    "axis": "warmth",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:54:52.711Z"
+  },
+  {
+    "stem": "Timeline_1_00103119",
+    "axis": "lift",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00103119__lift_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:54.021Z"
+  },
+  {
+    "stem": "Timeline_1_00092987",
+    "axis": "gain",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092987__gain_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:54.964Z"
+  },
+  {
+    "stem": "extreme-settings00098434",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": 1,
+    "chosen_file": "extreme-settings00098434__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:56.352Z"
+  },
+  {
+    "stem": "Timeline_1_00102228",
+    "axis": "lift_vs_base",
+    "chosen": -1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00102228__lift_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:54:57.264Z"
+  },
+  {
+    "stem": "Timeline_1_00091084",
+    "axis": "warmth",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00091084__warmth_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:02.862Z"
+  },
+  {
+    "stem": "Timeline_1_00124265",
+    "axis": "warmth",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:04.255Z"
+  },
+  {
+    "stem": "Timeline_1_00092397",
+    "axis": "lift_vs_base",
+    "chosen": 1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00092397__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:09.368Z"
+  },
+  {
+    "stem": "Timeline_1_00095358",
+    "axis": "lift",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00095358__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:10.825Z"
+  },
+  {
+    "stem": "Timeline_1_00102228",
+    "axis": "gain",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00102228__gain_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:12.002Z"
+  },
+  {
+    "stem": "Timeline_1_00096619",
+    "axis": "gain",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:13.345Z"
+  },
+  {
+    "stem": "Timeline_1_00124265",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00124265__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:15.575Z"
+  },
+  {
+    "stem": "dark-scene00117737",
+    "axis": "warmth",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "dark-scene00117737__warmth_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:20.859Z"
+  },
+  {
+    "stem": "Timeline_1_00103119",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:22.075Z"
+  },
+  {
+    "stem": "Timeline_1_00102381",
+    "axis": "lift",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00102381__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:23.108Z"
+  },
+  {
+    "stem": "Timeline_1_00095358",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:25.543Z"
+  },
+  {
+    "stem": "Timeline_1_00092987",
+    "axis": "gamma",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092987__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:26.496Z"
+  },
+  {
+    "stem": "Timeline_1_00093080",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:27.769Z"
+  },
+  {
+    "stem": "Timeline_1_00104865",
+    "axis": "gamma",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00104865__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:29.801Z"
+  },
+  {
+    "stem": "Timeline_1_00092397",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092397__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:31.270Z"
+  },
+  {
+    "stem": "Timeline_1_00092397",
+    "axis": "gain",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092397__gain_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:33.764Z"
+  },
+  {
+    "stem": "Timeline_1_00096619",
+    "axis": "expo",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:35.047Z"
+  },
+  {
+    "stem": "Timeline_1_00091084",
+    "axis": "lift",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00091084__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:38.027Z"
+  },
+  {
+    "stem": "Timeline_1_00103119",
+    "axis": "warmth",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:39.418Z"
+  },
+  {
+    "stem": "Timeline_1_00102381",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00102381__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:40.774Z"
+  },
+  {
+    "stem": "extreme-settings00098434",
+    "axis": "gain",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "extreme-settings00098434__gain_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:43.918Z"
+  },
+  {
+    "stem": "Timeline_1_00102228",
+    "axis": "gamma",
+    "chosen": -1,
+    "rejected": 1,
+    "chosen_file": "Timeline_1_00102228__gamma_lo.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:44.860Z"
+  },
+  {
+    "stem": "Timeline_1_00102381",
+    "axis": "gamma_vs_base",
+    "chosen": 1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00102381__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:46.349Z"
+  },
+  {
+    "stem": "Timeline_1_00095358",
+    "axis": "lift_vs_base",
+    "chosen": 1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00095358__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:47.693Z"
+  },
+  {
+    "stem": "dark-scene00117737",
+    "axis": "gamma",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "dark-scene00117737__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:50.950Z"
+  },
+  {
+    "stem": "Timeline_1_00092987",
+    "axis": "warmth",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:52.162Z"
+  },
+  {
+    "stem": "Timeline_1_00092397",
+    "axis": "lift",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092397__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:53.501Z"
+  },
+  {
+    "stem": "Timeline_1_00092987",
+    "axis": "lift_vs_base",
+    "chosen": 1,
+    "rejected": 0,
+    "chosen_file": "Timeline_1_00092987__lift_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:55:55.648Z"
+  },
+  {
+    "stem": "Timeline_1_00089408",
+    "axis": "gain",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:56.585Z"
+  },
+  {
+    "stem": "Timeline_1_00089408",
+    "axis": "gamma_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:57.166Z"
+  },
+  {
+    "stem": "Timeline_1_00095358",
+    "axis": "expo",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:55:58.955Z"
+  },
+  {
+    "stem": "Timeline_1_00092022",
+    "axis": "expo",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092022__expo_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:56:00.376Z"
+  },
+  {
+    "stem": "Timeline_1_00102381",
+    "axis": "lift_vs_base",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:56:02.088Z"
+  },
+  {
+    "stem": "Timeline_1_00091084",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00091084__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:56:03.573Z"
+  },
+  {
+    "stem": "dark-scene00117737",
+    "axis": "lift_vs_base",
+    "chosen": 0,
+    "rejected": 1,
+    "chosen_file": "dark-scene00117737__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:56:04.935Z"
+  },
+  {
+    "stem": "Timeline_1_00096619",
+    "axis": "warmth",
+    "chosen": null,
+    "rejected": null,
+    "chosen_file": null,
+    "tie": true,
+    "at": "2026-08-14T05:56:05.897Z"
+  },
+  {
+    "stem": "Timeline_1_00092397",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00092397__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:56:07.194Z"
+  },
+  {
+    "stem": "Timeline_1_00091084",
+    "axis": "gamma_vs_base",
+    "chosen": 0,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00091084__base.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:56:08.885Z"
+  },
+  {
+    "stem": "Timeline_1_00096619",
+    "axis": "gamma",
+    "chosen": 1,
+    "rejected": -1,
+    "chosen_file": "Timeline_1_00096619__gamma_hi.jpg",
+    "tie": false,
+    "at": "2026-08-14T05:56:10.127Z"
+  }
+]

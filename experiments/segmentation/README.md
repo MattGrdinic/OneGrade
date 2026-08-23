@@ -44,7 +44,7 @@ triple between the two largest regions — the same three signed components the 
 so the numbers sit directly alongside the panel's `Separation` row.
 
 **Always look at `out/*-regions.png`.** A mask that is plausible in numbers and wrong in pixels
-is the worst outcome here, so every run writes the frame beside its colour-coded regions.
+is the worst outcome here, so every run writes the frame beside its color-coded regions.
 
 ## Model
 
@@ -62,7 +62,7 @@ this is a research harness.
 
 ## What this deliberately does not do
 
-No grading and no parameter solving. It reports regions and their colour statistics so the
+No grading and no parameter solving. It reports regions and their color statistics so the
 heuristic table — *label → desired direction* — can be written against real numbers instead of a
 guess. The solver that turns those targets into slider values already exists in
 `src/OneGradeAnalysis.h`.

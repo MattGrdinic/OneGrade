@@ -76,7 +76,20 @@ const char* KernelSource = "\n" \
 "inline float og_r709d(float V){ return (V<0.081f)?(V/4.5f):og_pow((V+0.099f)/1.099f,1.0f/0.45f); }             \n" \
 "inline float og_r709ge(float L, float g){ return og_pow(L,1.0f/g); }                                           \n" \
 "inline float og_r709gd(float V, float g){ return og_pow(V,g); }                                                \n" \
-"inline float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=v*gain; v=v+lift*(1.0f-fmin(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); } \n" \
+"inline float og_lggc(float v,float gain,float lift,float gamma){ v=v*gain; v=v+lift*(1.0f-fmin(v,1.0f)); v=(v<0.0f)?v:og_pow(v,1.0f/gamma); return v; } \n" \
+"inline float og_lgg(float L,float gain,float lift,float gamma,float dg){ float v=(dg>0.0f)?og_r709ge(L,dg):og_r709e(L); v=og_lggc(v,gain,lift,gamma); return (dg>0.0f)?og_r709gd(v,dg):og_r709d(v); } \n" \
+"inline float og_sm01(float t){ t=fmin(fmax(t,0.0f),1.0f); return t*t*(3.0f-2.0f*t); }                          \n" \
+"inline float og_hlmask(float Y,float lo,float s){ float le=fmax(s,1e-4f); return og_sm01((Y-(lo-le))/(2.0f*le)); }        \n" \
+"inline float og_tonemap(float v,float k,float W){                                                       \n" \
+"  if(v<=k) return v; float sp=1.0f-k; if(sp<=1e-4f||W<=k) return v;                                     \n" \
+"  float wx=(W-k)/sp, x=(v-k)/sp; float o=k+sp*(x*(1.0f+x/(wx*wx))/(1.0f+x));                            \n" \
+"  return (o>1.0f)?1.0f:o; }                                                                             \n" \
+"inline float og_shape(float u,float v,int t,float cx,float cy,float sx,float sy,float rd,float sf,int inv){ \n" \
+"  if(t<=0) return 1.0f;                                                                                    \n" \
+"  float ax=fmax(fabs(sx),1e-4f), ay=fmax(fabs(sy),1e-4f); float du=u-cx, dv=v-cy;                          \n" \
+"  if(rd!=0.0f){ float r=rd*0.01745329252f, cs=cos(r), sn=sin(r); float q=du*cs+dv*sn; dv=-du*sn+dv*cs; du=q; } \n" \
+"  float nx=du/ax, ny=dv/ay; float d=(t==1)?sqrt(nx*nx+ny*ny):fmax(fabs(nx),fabs(ny));                      \n" \
+"  float e=fmax(sf,1e-4f); float m=1.0f-og_sm01((d-(1.0f-0.5f*e))/e); return inv?(1.0f-m):m; }              \n" \
 "inline float og_dienc(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LIN=0.00262409f; return (x>LIN)?((log2(x+A)+B)*C):(x*M); } \n" \
 "inline float og_didec(float x){ float A=0.0075f,B=7.0f,C=0.07329248f,M=10.44426855f,LC=0.02740668f; return (x>LC)?(exp2(x/C-B)-A):(x/M); } \n" \
 "inline float og_enc(int enc, float x){                                                                         \n" \
@@ -103,7 +116,13 @@ const char* KernelSource = "\n" \
 "  float r=1.0f-k; return k + r*(1.0f-exp(-(v-k)/r)); }                                                          \n" \
 "__kernel void OneGradeKernel(int W,int H,int cam,int enc,                                                    \n" \
 "  float temp,float tint,float density,float lift,float gamma,float gain,float offTemp,float offTint,           \n" \
-"  float postExp,float postCon,float rawExp,float rawTemp,float rolloff, int lutN, float lutMix, __global const float* lut, \n" \
+"  float postExp,float postCon,float rawExp,float rawTemp,float rolloff,                                     \n" \
+"  float rbL,float rbS,float rbH,float rbF,float rbG,float rbWs,float rbHg,float rbLg,                       \n" \
+"  float rfF,float rfG,float rfN,                                                                            \n" \
+"  float shT,float shX,float shY,float shW,float shH,float shR,float shS,float shI,                          \n" \
+"  float tmK,float tmW,                                                                                      \n" \
+"  int lutN, float lutMix,                                                                                   \n" \
+"  __global const float* lut,                                                                                \n" \
 "  __global const float* in, __global float* out) {                                                             \n" \
 "  const int x=get_global_id(0); const int y=get_global_id(1);                                                  \n" \
 "  if(x<W && y<H){                                                                                              \n" \
@@ -116,8 +135,21 @@ const char* KernelSource = "\n" \
 "    if(density!=0.0f){ float3 l=(float3)(og_dienc(w.x),og_dienc(w.y),og_dienc(w.z)); float3 hsv=og_rgb2hsv(l); hsv.y=fmin(fmax(hsv.y*(1.0f+density),0.0f),1.0f); l=og_hsv2rgb(hsv); w=(float3)(og_didec(l.x),og_didec(l.y),og_didec(l.z)); } \n" \
 "    float3 outc=(enc<=3)?og_XYZto709(og_DWGtoXYZ(w)):w;                                                         \n" \
 "    float dg=(enc==1)?2.2f:((enc==2)?2.4f:0.0f);                                                                \n" \
-"    outc.x=og_lgg(outc.x,gain,lift,gamma,dg); outc.y=og_lgg(outc.y,gain,lift,gamma,dg); outc.z=og_lgg(outc.z,gain,lift,gamma,dg); \n" \
+"    float3 d=(float3)((dg>0.0f)?og_r709ge(outc.x,dg):og_r709e(outc.x),(dg>0.0f)?og_r709ge(outc.y,dg):og_r709e(outc.y),(dg>0.0f)?og_r709ge(outc.z,dg):og_r709e(outc.z)); \n" \
+"    int rbW=(rbWs>0.5f);                                                                                     \n" \
+"    int rbOn=(rbL>0.0f)&&(rbW||rbH!=1.0f||rbF!=0.0f||rbG!=1.0f||rbHg!=1.0f||rbLg!=1.0f);                     \n" \
+"    float3 v3=(float3)(og_lggc(d.x,gain,lift,gamma),og_lggc(d.y,gain,lift,gamma),og_lggc(d.z,gain,lift,gamma)); \n" \
+"    float3 rf=(float3)(og_lggc(d.x,rfN,rfF,rfG),og_lggc(d.y,rfN,rfF,rfG),og_lggc(d.z,rfN,rfF,rfG));           \n" \
+"    float shU=((float)x-0.5f*(float)W)/(0.5f*(float)H), shV=((float)y-0.5f*(float)H)/(0.5f*(float)H);         \n" \
+"    float shM=og_shape(shU,shV,(int)(shT+0.5f),shX,shY,shW,shH,shR,shS,shI>0.5f);                            \n" \
+"    float rbM=rbOn?og_hlmask(100.0f*(0.2126f*rf.x+0.7152f*rf.y+0.0722f*rf.z),rbL,rbS)*shM:0.0f;              \n" \
+"    if(rbOn){ float3 rm=(float3)(og_lggc(v3.x,rbLg,rbF,rbG),og_lggc(v3.y,rbLg,rbF,rbG),og_lggc(v3.z,rbLg,rbF,rbG)); \n" \
+"             float3 hi3=(float3)(og_lggc(v3.x,rbH,0.0f,rbHg),og_lggc(v3.y,rbH,0.0f,rbHg),og_lggc(v3.z,rbH,0.0f,rbHg)); \n" \
+"             v3=rm*(1.0f-rbM)+hi3*rbM; }                                                                        \n" \
+"    if(enc<=2){ v3=(float3)(og_tonemap(v3.x,tmK,tmW),og_tonemap(v3.y,tmK,tmW),og_tonemap(v3.z,tmK,tmW)); }    \n" \
+"    outc=(float3)((dg>0.0f)?og_r709gd(v3.x,dg):og_r709d(v3.x),(dg>0.0f)?og_r709gd(v3.y,dg):og_r709d(v3.y),(dg>0.0f)?og_r709gd(v3.z,dg):og_r709d(v3.z)); \n" \
 "    float3 e=(float3)(og_enc(enc,outc.x),og_enc(enc,outc.y),og_enc(enc,outc.z));                                \n" \
+"    if(rbW&&rbOn){ out[i]=rbM; out[i+1]=rbM; out[i+2]=rbM; out[i+3]=in[i+3]; return; }                       \n" \
 "    if(lutN>=2 && lutMix>0.0f){ float3 s=og_sampleLUT(lut,lutN,e); e=e+(s-e)*lutMix; }                          \n" \
 "    float ex=exp2(postExp); e=(e*ex-0.5f)*postCon+0.5f;                                                         \n" \
 "    if(rolloff>0.0f && (enc<=2 || (lutN>=2 && lutMix>0.0f))){ e.x=og_softclip(e.x,rolloff); e.y=og_softclip(e.y,rolloff); e.z=og_softclip(e.z,rolloff); } \n" \
@@ -228,7 +260,7 @@ void RunOpenCLKernelBuffers(void* p_CmdQ, int p_Width, int p_Height, const float
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Height);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Camera);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &p_Encode);
-    for (int i = 0; i < 13; ++i)
+    for (int i = 0; i < 34; ++i)
         error |= clSetKernelArg(kernel, count++, sizeof(float), &p_Params[i]);
     error |= clSetKernelArg(kernel, count++, sizeof(int), &lutN);
     error |= clSetKernelArg(kernel, count++, sizeof(float), &p_LutMix);

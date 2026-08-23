@@ -23,7 +23,7 @@ WHY IDENTITY AND NOT JUST STRUCTURE
     in shadow, is wrong. Direction and permission come from knowing what the thing IS.
 
 WHAT IT DOES NOT DO
-    No grading, no parameter solving. It reports regions and their colour statistics so a
+    No grading, no parameter solving. It reports regions and their color statistics so a
     heuristic table (label -> desired direction) can be written against real numbers instead
     of against a guess. The solver that turns those targets into slider values already exists
     in src/OneGradeAnalysis.h.
@@ -41,12 +41,12 @@ from PIL import Image
 
 # ---------------------------------------------------------------------------------------
 # Grading vocabulary. ADE20K ships 150 classes; almost none of the distinctions matter to a
-# colourist. What matters is the handful of things a grade treats DIFFERENTLY:
+# colorist. What matters is the handful of things a grade treats DIFFERENTLY:
 #
 #   SKY / WATER     large, and we accept exaggeration on them — this is where separation is won
 #   SKIN            protected, never pushed. A cyan-shadow move also cyans skin in shadow, and
 #                   that is the single most visible way to wreck a frame.
-#   VEGETATION      has a memory colour of its own, pushes green rather than cyan
+#   VEGETATION      has a memory color of its own, pushes green rather than cyan
 #   TERRAIN / BUILT the rest of the frame; usually what everything else separates FROM
 #
 # Matched on whole words of the model's own label names, so the map survives a model swap.
@@ -105,7 +105,7 @@ def region_of(label: str) -> str:
 
 # ---------------------------------------------------------------------------------------
 # sRGB -> CIELAB (D65). Mirrors display_to_Lab() in src/OneGradeAnalysis.h so the numbers here
-# are directly comparable with the plugin's Colour / Separation rows. b* IS warm/cool and a* IS
+# are directly comparable with the plugin's Color / Separation rows. b* IS warm/cool and a* IS
 # green/magenta, which is what lines the descriptors up one-for-one with the Temp and Tint
 # controls.
 def srgb_to_lab(img: np.ndarray) -> np.ndarray:

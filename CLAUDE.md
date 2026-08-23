@@ -23,7 +23,7 @@ pre-clip/post-clip split, the DI hand-off + the negative-clip bug it exposed) ·
 what is deliberately not set, the traps found on the way, and §9 the scene descriptors +
 control Jacobian). ·
 `ROADMAP.md` (deferred work with the reasoning kept: Match Clip and why adjacent
-clips aren't reachable, gamut compression for exact LUT export, declaring OFX 1.5 colour
+clips aren't reachable, gamut compression for exact LUT export, declaring OFX 1.5 color
 management).
 
 ## The golden rule
@@ -352,6 +352,15 @@ build time — that's why the rename needs a GPU smoke test, not just a green `m
 **The branch flow (user's, follow it exactly):**
 1. Every version gets a branch off `main` named **`feature/<version_number>`** — e.g.
    `feature/1.2.0`. This is the integration branch for the whole release.
+   **CREATE IT AND `git push -u` IT BEFORE ANY SUB-FEATURE BRANCHES OFF IT.** A local-only
+   release branch looks completely normal — sub-features branch off it, commits land, `git
+   branch` lists it — and it is invisible to GitHub, so the `compare/` URL handed over for the
+   PR 404s and there is nothing for the sub-feature to merge into. It happened on **1.5.0**
+   (caught 2026-08-18, after two sub-features had already been pushed): the branch had existed
+   locally for the whole release. Harmless there only because it still sat exactly on `main`
+   with nothing committed to it, so publishing it was a plain `push` — but had anything been
+   committed directly to the local copy, the fix would have meant rewriting pushed history.
+   Verify with `git ls-remote --heads origin`, not `git branch`.
 2. Each sub-feature gets its **own branch off that** — never off `main`.
 3. When a sub-feature is done, **ASK whether to roll it into the release branch.** Do not
    assume. Sometimes yes, sometimes not — it depends on testing, on-footage validation,
@@ -381,7 +390,7 @@ host, which is the point to stop reading the code and start reading the log.
 - **Validated in Resolve:** Metal + CPU on the user's M3 Max, Rec.709 (Scene) / DaVinci YRGB project.
   Node Role group split (Pre-Clip + Post-Clip) validated 2026-08-02, incl. no float clamp
   between group levels — see the Node Role section above.
-  CUDA perf on the user's Windows box (Ryzen + RTX 5090, 2026-07-16) — real-time; colour
+  CUDA perf on the user's Windows box (Ryzen + RTX 5090, 2026-07-16) — real-time; color
   output not yet A/B'd against the Metal path.
 - **OpenCL:** kernel checked against `og::process` on real HW (2026-07-16) on both an
   RTX 5090 and an AMD gfx1036 iGPU, all 12 cameras x 6 encodes: worst deviation
@@ -436,7 +445,7 @@ host, which is the point to stop reading the code and start reading the log.
   the skipped adaptation isn't an identity and 1 K off default jumps neutral grey by a* +2.06
   (visible green cast from nowhere). Looks like a plain defect; the fix is to adapt to
   blackbody(6500) rather than D65, which makes "identity at 6500" true by construction — but
-  it's a **4-file colour-math edit** and it moves every saved grade with RAW Temp ≠ 6500, so
+  it's a **4-file color-math edit** and it moves every saved grade with RAW Temp ≠ 6500, so
   it's the user's call, not a drive-by.
 - **Camera matrices** other than Blackmagic are published/approx — flagged for on-footage validation.
 - **Resolve's LUT folder is per-platform** (`filmLutDir()`): Windows adds a `Support` level
@@ -797,6 +806,209 @@ that shows its work, not a black box, so a bad analysis costs one undo rather th
 target 0.42" is a measurement) · skin is most of what "pleasing" means and a luma histogram
 can't find it — a hue-window mask is the biggest quality lever, design for it early.
 
+## Range Balance — the luminance qualifier stage (v1.5.0, 2026-08-16/17)
+
+**Panel group "4 Range Balance". Two grades partitioned by a mask, in one node.** For footage
+whose range WAS captured — a window and an unlit room both inside the sensor's latitude — where
+one curve has to blow one end to serve the other. In Resolve that is a qualifier, an invert and a
+second node.
+
+`P[13..20]` = latch · softness · **Held**: gain, gamma · **Rest**: lift, gamma, gain · show-mask.
+`P[21..23]` = the mask's REFERENCE grade. `P[24..31]` = the shape. **kParamN is 32** — every
+addition is the golden-rule 4-file edit *plus* `kParamCount`, `neutral_params()`, `steer_mask()`
+and the three hand-initialised tables in `OneGradeAnalysis.h`.
+
+**Order matters and cost us twice.** The mask is read **AFTER the grade curve, before Range
+Balance's own moves**. Pre-grade the picture is flat — a bright pillow and a window sit a few
+points apart and NO threshold separates them, which is why the first version could not match a
+Resolve qualifier at any latch. Range Balance's own moves are excluded or the mask chases itself.
+
+**The latch is a POPULATION SPLIT (Otsu), not a percentile.** p98 assumes the highlight is a fixed
+share of frame: it put the edge above a window entirely, and selected 1.97% of a landscape that is
+half cloud. `og::grade::range_latch()` reads the histogram's shape — 58.2 → the window at 7.5%,
+46.9 → the sky at 52.5%. **Otsu always answers**, so the decline test is the ABSOLUTE gap between
+class means (`kRangeGapMin = 20`); Otsu's own separability is scale-invariant and scores a frame
+spanning seven code values the same as a window against a room.
+
+**The mask rises once and stays up** — no upper edge. A window from latch to 100 put the BRIGHTEST
+pixels back outside the highlight mask (27% of the window on the test frame). Resolve gets away
+with that shape because its qualifier axis stops at 100; ours is float and a practical at 121 is
+highlight by any definition.
+
+**Lock Mask** freezes the mask against the exposure under it (unlocked, coverage ran 7.45% → 19.39%
+as Gain rose). Resolved in `resolveConfig()` as a reference grade, never as a kernel branch. Locks
+against the grade curve only — RAW Exposure and Density are upstream and still move it. A locked
+mask is never auto-refreshed.
+
+**The Shape** (ellipse/rectangle, centre/size/rotation/softness/invert) restricts WHERE the stage
+acts and **multiplies** the luminance mask. **A shape is not a blur** — a blur needs a pixel's
+neighbours, a shape needs only its own coordinate, which every backend has. `og::process()` takes
+it as a defaulted trailing `shapeM` scalar because only the caller knows where a pixel is.
+**`Fit To Frame`** measures it off the held region (p2/p98 of positions, never a bounding box —
+one stray specular stretches a bounding box over the whole frame).
+
+**RESOLVE NEVER DRAWS OFX OVERLAYS ON THE COLOR PAGE** (measured 2026-08-17). It *advertises*
+`kOfxImageEffectPropSupportsOverlays`, the interact registers, and `draw()` is never called. So
+on-screen handles and freely-drawn polygons are unavailable there — not because point-in-polygon
+is hard, but because there is nothing to draw one with. `RangeShapeInteract` is kept (costs
+nothing, works if a host ever calls it). **Three conditions fail silently and identically here** —
+host advertises / host calls draw / GL context accepts the calls — and telling them apart needed a
+panel line for each.
+
+**Deferred: spatial feathering (the blur).** Softness is in luminance, not space, so the mask is
+stable where the threshold lands on a hard edge and shimmers where it lands in noise. **Measured
+dead ends for the silk-pillow case: a chroma gate** (window b* +1.49 vs pillow +1.52 — identical)
+**and a 3-class split** (the held pillow pixels are speculars, the bright tail of the bedding
+class, not a class of their own). Full write-up + tables in `docs/ROADMAP.md`.
+
+## The tone map — the display shoulder, fitted per frame (2026-08-18)
+
+**The plugin had no tone map and was throwing away recoverable highlights on half of everything.**
+A log clip carries ~13 stops, a display encode holds about six, nothing bridged them. Measured at
+NEUTRAL params over the corpus: **9 of 18 frames push data past 1.0**, up to **47.8%** of channels,
+while the SOURCE is pinned essentially nowhere. The Insta360 Ace Pro 2 frame that surfaced it: source
+max **0.842, 0.000% pinned**, neutral apply peaks at **3.26**. Present since v0.1.0. Nothing caught
+it because Rolloff keys off `pin` — *source* clipping — which correctly reads 0% when the clipping
+is ours.
+
+`og::tone_map(v, knee, white)` (`P[32]/P[33]`): identity below `knee`, then a Reinhard shoulder
+reaching **exactly 1.0 at `white`**. C1 at the knee so no seam. `white <= knee` is OFF, which is how
+the four render paths carry two floats and **no branch**.
+
+**Placement: AFTER the grade curve.** Before it was tried and is wrong — a shoulder starting below
+1.0 moves diffuse white off display white, and the grade curve is *defined* against those pivots
+(Lift pins white, Gain pins black), so test 7 fails and every documented pivot quietly changes
+meaning. The cost of "after" lands on the solves' render model instead: **`tone_render()` applies it
+in the same position and all six call sites pass `P[32]/P[33]`**. Rejected alternatives, both
+measured: scaling to fit costs −3.75 EV and drags the median 0.443 → 0.136; `softclip` contains
+everything but leaves the sky FLAT (top decile spanning 0.033) — it is an asymptote for practicals,
+not a scene-to-display map.
+
+**DEFAULT IS A STATIC FITTED CURVE (ON, knee 0.40 / white 3.0); `Fit From Frame` measures the shot.**
+`fit_tone_map()` sets `white` to the recoverable peak and solves `knee` from a compression ratio
+(input range above the knee ≤ 4× the output range it is squeezed into) — a gentle frame gets knee
+0.90 and is barely touched, a wild one 0.24, and a frame that already fits gets **no shoulder at
+all**.
+
+**IT MAY NOT RUN AUTOMATICALLY ON APPLY, and this was re-learned the hard way (2026-08-18).**
+`fetchImage()` from a lifecycle hook trips an assertion inside Resolve and calls `abort()` —
+`try/catch` gives zero protection because it is a process abort, not an exception. **Only
+`changedParam` and `render` may touch pixels.** An auto-fit was wired to `changedClip` and only
+escaped because Resolve never sent that action; worse, its `autoFitDone` guard defaults to `false`
+in every previously-saved project, so had it fired it would have run on every existing node at
+once. `docs/ROADMAP.md` §2 had recorded exactly this in 2026-08-03. **Read that section before
+wiring anything to a lifecycle hook.**
+
+**SENSOR-CLIPPED PIXELS ARE EXCLUDED FROM THE PEAK** — flat, unrecoverable, and letting them set
+`white` would compress everything real to make room for data that is not there. Third outing for
+`hot` vs `pin`. **Speculars are allowed to clip**: peak is p99.95, because one corpus frame reads
+0.85 against a true max of 4.13 and fitting to that drives the knee to its floor to protect a light
+source. Reporting the *share* above p99.95 was tried and is a **tautology** (0.05% on every frame by
+construction) — the magnitude is what distinguishes a sun from noise.
+
+**Open: the fitted layer above it.** Auto/Magic constants were derived on shoulder-less renders. The
+subject floor (0.125) and midtone (0.278) sit below any fitted knee and are fine; **the frame-ceiling
+target (0.968) now means something different** and wants re-deriving. Full write-up + tables:
+`docs/ROADMAP.md`.
+
+## Panel layout — what OFX and Resolve actually allow (measured 2026-08-25)
+
+**THERE IS NO RUNTIME `setOpen()`.** `GroupParam` exposes `getIsOpen()` and no setter; `setOpen()`
+lives only on `GroupParamDescriptor`, i.e. describe time. A plugin cannot collapse or expand a
+section while running, and no event fires when the user twirls one.
+
+**AND `getIsOpen()` DOES NOT REPORT THE LIVE STATE IN RESOLVE.** A probe printed it for two groups
+into a panel label; the user opened Range Balance, changed a value, opened Output, and the readout
+never moved from `0/1` — exactly the pair `describeInContext` had set (gRange closed, gOut open).
+The call returns the **describe-time default** and never learns anything. So "remember which
+sections the user opened" is not buildable: we can neither set the state nor read it.
+**Second instance of Resolve exposing an OFX facility that does nothing, after overlays.**
+
+**What DOES work at runtime:** `setIsSecret()` (hide/show, including whole groups — validated),
+`setEnabled()` (grey out), and `setValue()` on an `eStringTypeLabel` param (live status text).
+Those three are the entire toolkit for a dynamic panel here.
+
+**Hence the Mode selector hides sections rather than collapsing them** — which is the better answer
+anyway: a Simple panel with four sections beats one with twelve collapsed. `uiMode` is a choice
+param (Simple / Advanced / Color Correction), default **Simple**,
+and `kModeGroups` in `OneGrade.cpp` is the table of which sections each mode shows. **Simple is
+the default** (user's call): the busy panel is the problem the feature exists to solve, so
+defaulting to Advanced would have solved it only for people who found the dropdown.
+
+**A SECTION THAT IS DOING SOMETHING IS NEVER HIDDEN**, whatever the mode says — `groupIsActive()`
+forces Range Balance off its latch, a non-default tone-map curve, an active LUT or a non-default
+camera to stay visible, and the note says how many were kept. Hiding a stage that is changing the
+picture is the silent-override bug this project has already fixed three times.
+
+**Section numbers were removed (2026-08-25)** — they implied a working order that stopped being
+true once the panel was reorganised around the button. Don't reintroduce them; name sections in
+prose instead. Four user-facing hints referred to "group 4" and were already stale from the
+previous renumber.
+
+**Spelling is American throughout the UI and docs** (2026-08-25, user's call). The two exceptions
+are OFX spec identifiers — `kOfxImageEffectPropColourManagementStyle` and
+`kOfxImageClipPropColourspace` — and the header `ofxColour.h`, because the standard is British. A
+global replace over source needs the BUILD as its check: skipping lines containing `kOfx` still
+broke that `#include`. **PARAM NAMES ARE NOT USER-FACING** and were reverted: an OFX
+param name is saved in the project, so renaming one is how saved grades break. `probeColour` keeps
+its British identifier while its label reads "Color".
+
+## Rules earned the hard way on Magic Grade (2026-08-18..24) — read before touching the solve
+
+**1. LOOK AT THE RENDER. The bench writes graded PNGs so they can be opened.** Two "fixes" were
+reported in one session on metrics alone and neither was one. The worst: a change that took crushed
+pixels 2.14% -> 0.14% and shadow separation 0.000 -> 0.114 produced a washed-out, unusable frame,
+because every number on that line described the SHADOW end and `blown` was going 13.28% -> **69.37%**
+unmeasured. `%blown`/`%blownY` exist now; they are not a substitute for looking. Corollary:
+`%crushMin` is saturation-confounded — a blue-dusk frame reads 54% crushed and looks perfect —
+and `%crushY` is 0.00 on every corpus frame, so **the shadow question rests on `shadowSep`**.
+
+**2. THE ACCEPTANCE BAR IS THE USER'S, AND IT IS NOT A METRIC:** *"the initial apply gives a
+perfect starting point, where the sliders land us in the middle of the two directions most users
+would want to go."* A result that needs a slider at its maximum is a failure even when the picture
+is right, because it leaves no headroom. Their earlier verdict on a regression names the same bar
+from the other side: *"so extreme that using the sliders cannot save the image."*
+
+**3. A HAND CORRECTION IS GROUND TRUTH FOR A CONSTANT.** When the user fixes a bad auto-grade,
+read off what their slider positions do to the TARGETS and fit the default to reproduce them. The
+ETTR fix landed because `frameFloorMin = 0.080` solves to Lift +0.119 / Gain 0.437 on its own,
+against the +0.110 / 0.452 they reached by hand. That agreement chose the value; the corpus totals
+only confirmed it.
+
+**4. WHEN SEVERAL UNRELATED FIXES FAIL THE SAME WAY, THE SHARED FAILURE IS THE BUG.** Three
+independent analysis improvements were abandoned because each pushed some frame past
+`kFrameBlown`. The real defect was somewhere else entirely: `branch |= 2` re-solved Lift and threw
+away the floor guard `branch |= 4` had just set.
+
+**5. A GUARD THAT LOOKS INERT MAY BE OVERWRITTEN, NOT MIS-VALUED.** `frameFloorMin` read as inert
+at every value anyone ever swept, and was twice re-anchored on a better statistic to no effect.
+**Check what runs after it before re-tuning it.**
+
+**6. MEASURING ONE POPULATION AND GRADING ANOTHER IS A BUG.** ADE20K class 12 is `person` — body,
+wardrobe, hair — and in the model path that IS `R_SKIN`. Close up it is a lit face and the target
+works; wide it is mostly clothing. The same confound corrupted the corpus: unnarrowed, 613 stills
+say a face sits at 0.158; narrowed to skin chroma, **411 stills say 0.273 against the shipped
+0.278** — the interview-derived target, confirmed, not replaced.
+
+**7. DON'T LEAVE INERT EXPERIMENTS DEFAULTED OFF.** If the corpus is byte-identical with and
+without, revert it and write the reasoning into `docs/ROADMAP.md`. This project's worst bugs are
+all dormant code that woke later (CUDA fallback, the empty OpenCL function, the Windows LUT
+directory, this floor guard). The exception is something genuinely needed later, gated behind a
+named tunable AND a bench flag AND documented with the measurement that says why it is off —
+`skinToneMask` is the pattern.
+
+**8. VERIFY A TEST BITES.** Flip the fix back and confirm the test fails, then restore. Done for
+the `creative_preset` white-balance test and the floor-statistic test; both would otherwise have
+been assertions that pass for the wrong reason.
+
+**9. THE CORPUS DRIVES TARGETS, NEVER GRADES.** `experiments/looks` reads finished stills, reduces
+each to percentiles per region and discards the pixels; what ships is a few numbers per region.
+`training-data/**` is gitignored on purpose ("PIXELS OUT, RECIPES IN") — **the bench corpus exists
+only on the dev machine**, so any measurement quoted from it is unreproducible elsewhere.
+
+**Full write-ups with the numbers: `docs/ROADMAP.md` 6 (resolution independence) and 7 (the ETTR
+frame, plus a table of nine dead ends and why each failed).**
+
 ## Likely next tasks
 **`docs/ROADMAP.md` is now the single place for deferred work** — it carries the reasoning,
 not just the title, so each item restarts from its conclusion. Read it before re-opening any
@@ -813,7 +1025,7 @@ not yet as smooth as the "Blackmagic Gen 5 Film to Video" LUT, which is the stat
 for the default Gen 5 path (Cinematic Film preset). Candidates: tune softclip knee/curve,
 or a scene-linear shoulder before encode instead of (or blended with) the display-space clip.
 
-**CUDA colour A/B (opened 2026-07-16):** the CUDA path is now live and fast on the user's
+**CUDA color A/B (opened 2026-07-16):** the CUDA path is now live and fast on the user's
 5090, but only *perf* was checked — its output has never been compared against the
 validated Metal/CPU result. `CudaKernel.cu` was written blind and had never even been
 compiled before this. Worth a same-frame A/B (mac vs Windows) — still open at v1.0.3.
