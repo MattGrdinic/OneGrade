@@ -289,7 +289,60 @@ this branch's history.
 
 ---
 
-## 7. Standing items
+## 7. A corpus-derived FACE target — measured 2026-08-23, and why the raw number is not it
+
+**The corpus drives TARGETS, never grades.** Nothing measured here reaches a render; what ships is
+a handful of numbers per region. `experiments/looks` reads finished stills, reduces each to
+percentiles per region and discards the pixels.
+
+**Re-run over 1064 corpus stills**, the same process that produced the SKY targets:
+
+| region | corpus median (MAD) | what ships | verdict |
+|---|---|---|---|
+| **SKY** n=130 | floor 0.516 (0.201), mid **0.650** (0.165) | 0.475 / **0.602** | close — and the user reports SKY works |
+| **SKIN** n=613 | floor 0.051 (0.049), mid **0.158** (0.116) | 0.125 / **0.278** | **1.8x apart** |
+
+That gap is the best explanation yet for the user's report that SKIN produces unusable grades while
+SKY behaves, and that selecting FOLIAGE — which has no target, so declines to Creative — beats
+selecting the face on most shots. SKY's shipped target happens to match what films do; SKIN's never
+did. It came from ONE hand-graded close-up interview.
+
+**But the raw corpus figure is not the fix, and this was checked on a render rather than argued.**
+Grading a clean face shot at 0.051/0.158 drives Gamma to ~2.5 and Gain to ~0.3 and comes back
+visibly darker and flatter than the shipping target, which looks correct on that frame.
+
+**The reason is the region, not the process.** ADE20K class 12 is `person` — whole body, wardrobe
+and hair — and in the model path that IS the plugin's `R_SKIN`. On a close-up, person ≈ lit face,
+which is why the interview-derived target works there and why the corpus and the plugin agree on
+that kind of frame. On a wide shot the region is mostly dark clothing, so:
+
+- the corpus median is dragged down by clothing, giving 0.158 rather than a face's true midtone;
+- **and the live grade has the same defect** — driving a clothed body's p10/p50 to a face's floor
+  and midtone is exactly the "too bright, oversaturated" failure being reported.
+
+So one confound explains both the bad corpus number and the bad grades.
+
+### The work
+
+1. **Narrow `R_SKIN` to actual skin**: person mask ∩ the chromatic skin window the plugin already
+   carries (`S.skin`, hue 0.01–0.11, sat 0.10–0.65). It exists and is used by the heuristic
+   classifier; the model path ignores it.
+2. **Apply the same narrowing in `experiments/looks`**, so the corpus measures the population the
+   target is applied to. Measuring one thing and grading another is how this got here.
+3. **Re-run and check the spread.** Skin's 73% relative spread is the documented reason it was
+   rejected as a corpus target; if narrowing tightens it toward SKY's 25%, a corpus face target
+   becomes defensible. If it does not, that is also an answer.
+4. **Judge on renders.** Acceptance is the user's: recoverable by slider, not a metric.
+
+`--skin-floor` / `--skin-mid` on the bench set the target directly; `--subj-floor`/`--subj-mid` are
+the legacy scalars and do NOT reach the per-region table.
+
+**Note on `looks.cpp`**: its `subject_viable()` hardcodes `cover > 35.0`, which was SKIN's maxCover
+before it was raised to 0.60. The comment claims it mirrors the plugin's tests; it no longer does.
+
+---
+
+## 8. Standing items
 
 Carried from `CLAUDE.md`, kept here so there is one place to look:
 

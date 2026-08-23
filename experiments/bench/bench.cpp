@@ -179,6 +179,12 @@ int main(int argc, char** argv)
     // proxy for an infeasible mask and the only way to see what it is refusing is to lift it.
     tun.region[og::analysis::R_SKIN].maxCover =
         argd(argc, argv, "--skin-max-cover", tun.region[og::analysis::R_SKIN].maxCover);
+    // The SKIN tone target itself. subjFloor/subjMid are the legacy scalars; the solve reads the
+    // per-region table, so testing a corpus-derived face target needs these.
+    tun.region[og::analysis::R_SKIN].floor =
+        argd(argc, argv, "--skin-floor", tun.region[og::analysis::R_SKIN].floor);
+    tun.region[og::analysis::R_SKIN].mid =
+        argd(argc, argv, "--skin-mid",   tun.region[og::analysis::R_SKIN].mid);
     tun.frameCeiling = argd(argc, argv, "--frame-ceiling", tun.frameCeiling);
     tun.frameCeilingLow = argd(argc, argv, "--frame-ceiling-low", tun.frameCeilingLow);
     tun.frameFloorMin= argd(argc, argv, "--frame-floor-min", tun.frameFloorMin);
