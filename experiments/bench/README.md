@@ -45,6 +45,21 @@ It rebuilds itself if the source changed, so there is no separate build step.
 | `--bias-step` | 0.5 | how often the sweep **writes a frame**, as `<name>-biasp0150.png` / `-biasm0150.png` (p/m for sign, hundredths, so they sort in slider order). `0` prints the table and writes nothing. Use one frame at a time — at 0.25 a 4K still becomes 17 PNGs |
 | `--wb` | off | White Balance First |
 | `--camera` / `--encode` | 11 / 3 | Rec.2100 PQ decode, Cineon out (what the film LUT forces) |
+| `--tone-map-knee` / `--tone-map-white` | 0.40 / 3.0 | the display shoulder. **Defaults to what the node SHIPS, not to `neutral_params()`** — those differ, and the bench used to render every frame shoulder-less while the plugin rendered every frame with one. `--tone-map-white=0` turns it off. Note the shoulder is **inert on the default `--encode=3`**: see below |
+
+### The shoulder does nothing on the film path
+
+`og::process()` gates it `enc <= 2`, and Creative/Magic force **Cineon (enc 3)** for the print
+LUT — so on the default bench settings, and on every Magic Grade result in the plugin, the tone
+map is **structurally absent**. Measured on `DJI-1`: `%blown` is **45.86% at white 0, 3.0 and
+20.0 alike**, byte-identical. At `--encode=0` it engages and moves 48.21% → 47.80%, because it
+still runs *before* the LUT and the +0.55 EV trim, which re-blow most of what it contained.
+
+The adjacent gate for Highlight Rolloff is `encode <= 2 || lutOn` — it counts "a LUT follows, so
+this IS display-referred". The tone map's does not, because it lives inside `og::process()`,
+which cannot see the LUT (the caller applies it). That is an information problem, not an
+oversight, and fixing it means plumbing the flag in — a four-file edit. Logged in
+`docs/ROADMAP.md`.
 | `--lut=` | Kodak 2383 D60 | print stock; `run.sh` fills this in |
 
 ### Comparing two settings

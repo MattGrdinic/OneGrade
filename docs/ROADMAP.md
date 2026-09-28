@@ -441,6 +441,22 @@ Carried from `CLAUDE.md`, kept here so there is one place to look:
   approximate values, flagged for on-footage checking.
 - **HDR tone-map** — HLG/PQ input is currently a normalize, not a tone-map, so highlights
   can clip. A real shoulder is future work.
+- **The tone map is inert on the entire Magic Grade path** (measured 2026-09-28).
+  `og::process()` gates the shoulder `enc <= 2`; Creative and Magic force **Cineon (enc 3)** for
+  the print LUT, so **no Magic Grade result has ever had a shoulder**. Measured on a blown drone
+  frame: `%blown` is **45.86% at tone-map white 0, 3.0 and 20.0 alike** — byte-identical, the
+  gate excludes it completely. The adjacent gate for Highlight Rolloff is
+  `encode <= 2 || lutOn`, which correctly counts "a LUT follows, so this is display-referred".
+  The tone map's does not, *because it cannot*: it lives inside `og::process()`, which never
+  sees the LUT — the caller applies it, exactly as with rolloff. So this is an information
+  problem, and the fix is to plumb the flag in or hoist the shoulder to the caller: a four-file
+  edit either way, and a change to what every film-look grade renders. **Note the shoulder would
+  still sit BEFORE the LUT and the +0.55 EV trim**, which re-blow much of what it contains — at
+  `--encode=0`, where it does run, it moves `%blown` only 48.21% → 47.80%. So plumbing the gate
+  is necessary but probably not sufficient; the honest question is whether the shoulder belongs
+  after the trim, next to `softclip`, rather than where it is. That is the same
+  placement argument the tone map already had once (see "the display shoulder, fitted per
+  frame") and it deserves re-opening with this measurement in hand.
 - **Rec.2100 HLG disagrees with Resolve by more than its normalization** (measured
   2026-09-28, `experiments/logcurves/`). PQ differs from Resolve's implementation by a
   **dead-constant ×0.4926**, which is exactly our deliberate 203-nit reference-white

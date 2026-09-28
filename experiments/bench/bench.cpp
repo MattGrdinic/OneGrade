@@ -196,6 +196,14 @@ int main(int argc, char** argv)
     const double sep = argd(argc, argv, "--sep", 1.0);
     const bool  wb  = argf(argc, argv, "--wb");
     const bool  noTone = argf(argc, argv, "--no-tone");
+    // THE DISPLAY SHOULDER, defaulting to what the node SHIPS (on, knee 0.40 / white 3.0) and
+    // not to what neutral_params() holds (off). Those are different things and conflating them
+    // was a real defect here: the bench rendered every frame shoulder-less while the plugin
+    // rendered every frame with one, so its graded PNGs and its %blown described a pipeline
+    // nobody runs -- worst on exactly the high-contrast footage the shoulder exists for.
+    // --tone-map-white=0 restores the old shoulder-less render for comparison.
+    const double toneKnee  = argd(argc, argv, "--tone-map-knee",  0.40);
+    const double toneWhite = argd(argc, argv, "--tone-map-white", 3.0);
     // 1 = the shipped point sample; 4 = box-averaged, which makes the thumbnail
     // resolution-independent and moves every frame. See build_thumb.
     const int   thumbTaps = (int)argd(argc, argv, "--thumb-taps", 1.0);
@@ -346,6 +354,16 @@ int main(int argc, char** argv)
         float P[oga::kParamN];
         for (int k = 0; k < oga::kParamN; ++k) P[k] = R.P[k];
         if (noTone) { P[3] = 0.11f; P[4] = 1.f; P[10] = 0.f; }
+
+        // Stamped AFTER the solve and BEFORE the render, which is exactly where the plugin puts
+        // it: solve_magic never sees P[32]/P[33] (it starts from the Creative preset, shoulder
+        // off), and setupAndProcess fills them from the panel on the way to the kernels. So the
+        // node solves against a shoulder-less render and then renders with a shoulder -- a real
+        // inconsistency, logged in docs/ROADMAP.md as the fitted layer needing re-derivation.
+        // The bench's job is to REPRODUCE that, not to quietly improve on it: the moment it
+        // renders a pipeline the node does not, every number it prints stops being evidence.
+        P[32] = (float)toneKnee;
+        P[33] = (float)toneWhite;
 
         oga::classify(S, cam, enc <= 2 ? enc : 1);
         // The subject is chosen inside solve_magic, so it is stamped on afterwards -- which is
