@@ -168,7 +168,7 @@ int main() {
     {
         float P[og::analysis::kParamN]; neutral(P);
         bool ok = true;
-        for (int cam = 0; cam <= 11; ++cam)
+        for (int cam = 0; cam <= 12; ++cam)
           for (int enc = 0; enc <= 5; ++enc)
             for (float x = 0.02f; x <= 0.98f; x += 0.12f) {
                 float or_,og,ob; og::process(cam, enc, P, x, x*0.9f, x*1.1f, or_, og, ob);
@@ -240,7 +240,7 @@ int main() {
         for (int look = 0; look < 2; ++look) {
             const float* P = look ? Pg : Pn;
             for (int enc = 0; enc <= 2; ++enc)
-                for (int cam = 0; cam < 12; ++cam)
+                for (int cam = 0; cam < 13; ++cam)
                     for (int i = 0; i <= 40; ++i) {
                         float x = i/40.0f, y = x*0.85f, z = x*0.62f;
                         float s0,s1,s2;  og::process(cam, enc, P, x, y, z, s0, s1, s2);
@@ -260,7 +260,7 @@ int main() {
     {
         float P[og::analysis::kParamN]; neutral13(P);
         bool sawNegative = false, ok = true;
-        for (int cam = 0; cam < 12 && ok; ++cam)
+        for (int cam = 0; cam < 13 && ok; ++cam)
             for (int i = 1; i <= 40; ++i) {
                 float x = i/40.0f;
                 float r,g,b;
@@ -1547,7 +1547,7 @@ int main() {
             }
             ok &= (mg > 0.f && std::fabs(mg - C.midGrayCode) < 0.005f);
         }
-        check(ok, "decode_log matches Resolve on the nine independently-measurable cameras");
+        check(ok, "decode_log matches Resolve on the ten independently-measurable cameras");
     }
     {
         // Rec.2100 PQ is our deliberate "smooth decode": the same curve as Resolve's, scaled

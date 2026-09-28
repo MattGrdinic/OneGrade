@@ -41,6 +41,7 @@ Exposure acts, which is why it matches that control nearly exactly.
 | 9 | Panasonic V-Log | V-Log | V-Gamut |
 | 10 | Rec.2100 HLG | HLG inverse OETF | Rec.2020 |
 | 11 | **Rec.2100 PQ - Smooth Decode** — default | PQ inverse EOTF | Rec.2020 |
+| 12 | GoPro GP-Log2 | GP-Log2 (measured from Resolve) | Rec.2020 stand-in |
 
 Notes:
 
@@ -61,6 +62,21 @@ Notes:
   shape and the toe were already right. Both now sit at 0.00006 EV. **Grades saved on
   cameras 5 or 7 before this will render differently — deliberately, since they were
   rendering wrong.**
+- **GP-Log2 (12) is appended, not slotted in beside the other cameras.** Choice params save
+  by index, so inserting it would repoint every saved grade — the same reason index 11 was
+  renamed rather than moved. It reads oddly after a creative option; a wrong camera on
+  reload would read worse.
+- **GP-Log2 is a very small curve**, and that is the point of it: mid-gray at code **0.54169**
+  with only **+4.27 EV** above it, against +7.87 for D-Log and +8.26 for LogC3. Every other
+  decode assumes mid-gray near 0.28–0.43, so reading GoPro footage with one of them overstates
+  exposure by about **2.3 stops at the median and 3.6 at p99**. Measured on Mission 1 stills,
+  switching from the PQ default to this entry took `%blown` from 23.3%/24.7%/2.9% to
+  **0.96%/0.62%/0.02%** and brought Gain off its 0.30 floor.
+  It has **no knee and no toe** — the fit crosses zero at code 0.000005, so one expression
+  covers the range. That is what the curve does, not a simplification.
+- **There is no GoPro gamut anywhere**, including in Resolve, where GP-Log2 is a gamma-only
+  entry. So the Rec.2020 stand-in is not a compromise we chose over a better option; a Resolve
+  user pairing GP-Log2 with a CST faces the same choice.
 - **Stand-ins:** Canon, DJI, and Fuji currently use the Rec.2020 matrix as a
   reasonable wide-gamut approximation of their native gamuts; matrices other than
   Blackmagic's are published/approximate values pending on-footage validation. Note the

@@ -441,6 +441,32 @@ Carried from `CLAUDE.md`, kept here so there is one place to look:
   approximate values, flagged for on-footage checking.
 - **HDR tone-map** — HLG/PQ input is currently a normalize, not a tone-map, so highlights
   can clip. A real shoulder is future work.
+- **DJI D-Log M has no camera entry, because it cannot honestly be derived yet** (2026-09-28).
+  The Mini 4 Pro records D-Log M and **Resolve 21.1 does not implement it** — only `DJI D-Log`
+  and `DJI D-Log2` — so the ramp harness in `experiments/logcurves/` cannot reach it. Two
+  routes were tried from DJI's own `D-Log M to Rec.709` LUT and **both failed, in ways that
+  disagree with each other**:
+  - **A, code matching.** DJI ships "to Rec.709" LUTs for both D-Log M and D-Log, so a
+    D-Log M code and a D-Log code giving the same Rec.709 output should describe the same
+    scene light — map between them and reuse our measured D-Log. Mid-gray came out at
+    **0.41675**. But fitting a log form to the result leaves a **0.21 EV median / 1.59 EV max**
+    residual (GP-Log2 fits the same form to 0.000064 EV), and the code-to-code slope dips
+    non-monotonically around 0.45. A real log-to-log relation does neither. The derived curve
+    is carrying the difference between a 2017 X7 rendering and a 2023 Mini 4 Pro one, so the
+    shared-intent assumption is simply false.
+  - **B, invert the display encode.** Push the LUT output back through the Rec.709 2.4 EOTF.
+    Mid-gray **0.50200** — 0.8 EV away from route A. Contaminated by DJI's baked-in tone curve
+    by construction, so it is wrong in the toe and shoulder whatever else is true.
+
+  Shipping either would be a guess dressed as a measurement, and a wrong transfer function is
+  the exact failure this whole audit exists to prevent. **What would settle it: an exposure
+  bracket.** Lock the Mini 4 Pro on a static scene and shoot the EV compensation range in
+  known steps. Each stop is a factor of two in scene linear, so reading one patch's code at
+  each exposure traces the curve directly, with no LUT and no rendering intent in the way —
+  a handful of 16-bit stills from Deliver and the fit is a few minutes' work. That is the
+  standard way to characterise an undocumented log curve and it needs no vendor cooperation.
+  Until then D-Log M footage is best served by `DJI D-Log` (now correct, and about a stop off
+  in the other direction) rather than by the PQ default.
 - **The tone map is inert on the entire Magic Grade path** (measured 2026-09-28).
   `og::process()` gates the shoulder `enc <= 2`; Creative and Magic force **Cineon (enc 3)** for
   the print LUT, so **no Magic Grade result has ever had a shoulder**. Measured on a blown drone

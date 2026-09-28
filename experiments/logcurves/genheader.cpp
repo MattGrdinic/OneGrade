@@ -22,7 +22,7 @@ int main(int argc,char** argv){
         {"VLOG","Panasonic V-Log","cam09",9},
         {"HLG","Rec.2100 HLG","cam10",10},
         {"PQ","Rec.2100 ST2084","cam11",11},
-        {"GPLOG2","GoPro GP-Log2","gplog2",-1}};
+        {"GPLOG2","GoPro GP-Log2","gplog2",12}};
     FILE* f=fopen(out.c_str(),"w");
     fprintf(f,
 "// Ground-truth log transfer functions, measured from DaVinci Resolve 21.1.\n"

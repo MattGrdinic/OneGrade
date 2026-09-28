@@ -603,7 +603,7 @@ static const LogCurve kCurves[] = {
     { "VLOG", "Panasonic V-Log", 9, 0.423315f, (int)(sizeof(kVLOG_code)/sizeof(float)), kVLOG_code, kVLOG_lin },
     { "HLG", "Rec.2100 HLG", 10, 0.324778f, (int)(sizeof(kHLG_code)/sizeof(float)), kHLG_code, kHLG_lin },
     { "PQ", "Rec.2100 ST2084", 11, 0.347967f, (int)(sizeof(kPQ_code)/sizeof(float)), kPQ_code, kPQ_lin },
-    { "GPLOG2", "GoPro GP-Log2", -1, 0.541694f, (int)(sizeof(kGPLOG2_code)/sizeof(float)), kGPLOG2_code, kGPLOG2_lin },
+    { "GPLOG2", "GoPro GP-Log2", 12, 0.541694f, (int)(sizeof(kGPLOG2_code)/sizeof(float)), kGPLOG2_code, kGPLOG2_lin },
 };
 static const int kCurveN = (int)(sizeof(kCurves)/sizeof(kCurves[0]));
 

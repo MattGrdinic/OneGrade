@@ -3431,7 +3431,8 @@ void OneGrade::exportCube(double p_Time)
     static const char* kCamNames[] = {
         "Blackmagic Gen 5 Film", "DaVinci Wide Gamut / Intermediate", "Sony S-Log3",
         "ARRI LogC3", "ARRI LogC4", "Canon Log3", "RED Log3G10", "DJI D-Log",
-        "Fuji F-Log2", "Panasonic V-Log", "Rec.2100 HLG", "Rec.2100 PQ - Smooth Decode" };
+        "Fuji F-Log2", "Panasonic V-Log", "Rec.2100 HLG", "Rec.2100 PQ - Smooth Decode",
+        "GoPro GP-Log2" };
     static const char* kEncNames[] = {
         "Rec.709 (Scene)", "Rec.709 (Gamma 2.2)", "Rec.709 (Gamma 2.4)",
         "Cineon Log", "DaVinci Wide Gamut / Intermediate", "Linear" };
@@ -4262,6 +4263,11 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
     // a forum reader called that out and they were right (2026-08-03). Renamed, NOT moved:
     // choice params save by index, so reordering would silently repoint every saved grade.
     cam->appendOption("Rec.2100 PQ - Smooth Decode");
+    // APPENDED, not slotted in beside the other cameras, for the same reason index 11
+    // was renamed rather than moved: choice params save by index, so inserting here
+    // would silently repoint every saved grade. It reads oddly next to a creative
+    // option; a wrong camera on reload would read worse.
+    cam->appendOption("GoPro GP-Log2");
     cam->setDefault(11);    // the creative "smooth decode" default (see hint)
     cam->setParent(*gInput);
     page->addChild(*cam);

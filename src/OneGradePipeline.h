@@ -80,6 +80,23 @@ static inline float decode_log(int cam, float x)
         const float a=0.17883277f,b=0.28466892f,c=0.55991073f;
         float e = (x <= 0.5f) ? (x*x/3.0f) : ((expf((x-c)/a)+b)/12.0f);
         return e * 3.774f;   // 75% HLG ref white -> ~1.0
+    } else if (cam == 12) { // GoPro GP-Log2
+        // Measured from Resolve's own GP-Log2, not a spec sheet -- see
+        // test/reference/resolve_log_curves.h. Residual 0.000064 EV median.
+        //
+        // NO KNEE AND NO TOE: the fit crosses zero at code 0.000005, so a single expression
+        // covers the whole range and there is no junction to go discontinuous at. That is not
+        // a simplification, it is what the curve does -- adding a linear toe would invent a
+        // seam the camera does not have.
+        //
+        // A STRIKINGLY SMALL CURVE: mid-gray sits at code 0.54169 with only +4.27 EV above it,
+        // against +7.87 for D-Log and +8.26 for LogC3. Every other decode we own assumes
+        // mid-gray near 0.28-0.43, so reading GP-Log2 with one of them overstates exposure by
+        // about 2.3 stops at the median and 3.6 stops at p99. That is the whole reason this
+        // entry exists.
+        //
+        // It sits here rather than after cam 11 because the final else IS cam 11's branch.
+        return safe_pow(10.0f,(x - 0.804798f)/0.359954f) - 0.005810f;
     } else { // Rec.2100 PQ / ST.2084 (inverse EOTF, reference-white normalised)
         const float m1=0.1593017578125f,m2=78.84375f,c1=0.8359375f,c2=18.8515625f,c3=18.6875f;
         float p = safe_pow(x, 1.0f/m2);
@@ -107,7 +124,12 @@ static inline void to_XYZ(int cam, const float v[3], float o[3])
     else if (cam == 4) { float t[9]={0.7048583f,0.1297602f,0.1158373f, 0.2545241f,0.7814843f,-0.0360084f, 0.0f,0.0f,1.0890577f}; for(int i=0;i<9;i++)m[i]=t[i]; }
     else if (cam == 6) { float t[9]={0.7352750f,0.0686090f,0.1465710f, 0.2866940f,0.8429790f,-0.1296730f, -0.0796810f,-0.3473430f,1.5164950f}; for(int i=0;i<9;i++)m[i]=t[i]; }
     else if (cam == 9) { float t[9]={0.6796440f,0.1522110f,0.1186000f, 0.2606860f,0.7748940f,-0.0355800f, -0.0093100f,-0.0046120f,1.1029800f}; for(int i=0;i<9;i++)m[i]=t[i]; } // Panasonic V-Gamut
-    else { float t[9]={0.6369580f,0.1446169f,0.1688810f, 0.2627002f,0.6779981f,0.0593017f, 0.0f,0.0280727f,1.0609851f}; for(int i=0;i<9;i++)m[i]=t[i]; } // 5,7,8 -> Rec2020 stand-in
+    // 5,7,8,10,11,12 -> Rec.2020. A stand-in for Canon/DJI/Fuji; correct for the Rec.2100
+    // entries. For GoPro (12) it is not a compromise we chose: Resolve has no GoPro gamut
+    // either -- GP-Log2 is a gamma-only entry there -- so a Resolve user pairing it with a
+    // CST faces the same choice. Transfer function first: that error was ~2.3 stops, where a
+    // gamut stand-in is a hue shift.
+    else { float t[9]={0.6369580f,0.1446169f,0.1688810f, 0.2627002f,0.6779981f,0.0593017f, 0.0f,0.0280727f,1.0609851f}; for(int i=0;i<9;i++)m[i]=t[i]; }
     mul33(m, v, o);
 }
 

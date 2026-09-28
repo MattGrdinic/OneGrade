@@ -24,6 +24,7 @@ __device__ float og_decode(int cam, float x){
         return (x>=cut)?((og_pow(10.0f,(x-d)/c)-b)/a):((x-f)/e); }
     else if(cam==9){ return (x<0.181f)?((x-0.125f)/5.6f):(og_pow(10.0f,(x-0.598206f)/0.241514f)-0.00873f); } // Panasonic V-Log
     else if(cam==10){ float a=0.17883277f,b=0.28466892f,c=0.55991073f; float e=(x<=0.5f)?(x*x/3.0f):((expf((x-c)/a)+b)/12.0f); return e*3.774f; } // Rec.2100 HLG
+    else if(cam==12){ return og_pow(10.0f,(x-0.804798f)/0.359954f)-0.005810f; } // GoPro GP-Log2 (measured from Resolve; no knee, crosses zero at code 0)
     else { float m1=0.1593017578125f,m2=78.84375f,c1=0.8359375f,c2=18.8515625f,c3=18.6875f; float p=og_pow(x,1.0f/m2); float num=fmaxf(p-c1,0.0f); float e=og_pow(num/(c2-c3*p),1.0f/m1); return e*49.26f; } // Rec.2100 PQ
 }
 

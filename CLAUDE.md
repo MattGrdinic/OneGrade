@@ -149,6 +149,30 @@ normalisation — the test asserts constancy so a shape change can't hide behind
 ratio spans **0.377..2.475**, so part is shape. The test *prints* it every run instead of
 asserting. `docs/ROADMAP.md` 8; first suspect is the HLG system gamma (OOTF), which we omit.
 
+**Camera 12 GoPro GP-Log2 (v1.6.0)** came straight out of that harness: mid-gray at code
+**0.54169** with only **+4.27 EV** of headroom, roughly half a cinema log's. Our other decodes
+assume 0.28-0.43, so GoPro footage read **2.3 stops hot at the median, 3.6 at p99**. On Mission 1
+stills, switching the PQ default to it took `%blown` from 23.3/24.7/2.9% to **0.96/0.62/0.02%**
+and lifted Gain off its 0.30 floor. One expression, **no knee and no toe** (crosses zero at code
+0.000005). APPENDED at 12, never inserted - choice params save by index. No GoPro gamut exists
+anywhere, Resolve included, so the Rec.2020 stand-in is forced rather than chosen.
+
+**D-Log M is deliberately NOT shipped.** Resolve has no such curve, and both routes from DJI's
+own LUT failed *and disagreed with each other*: code-matching against the X7 D-Log LUT gives
+mid-gray 0.41675 but leaves a **0.21 EV median fit residual** (GP-Log2's is 0.000064) with a
+non-monotonic code-to-code slope, and inverting the display encode gives 0.50200 — 0.8 EV apart.
+The derivation is picking up the gap between a 2017 X7 rendering and a 2023 one, not a curve.
+**The fix is an exposure bracket off the drone**, not more arithmetic — `docs/ROADMAP.md` 8.
+Until then D-Log M footage is best served by `DJI D-Log`, now correct and about a stop off the
+other way, rather than by the PQ default.
+
+**Two stale-binary traps bit in one session**, both of the shape "the rule ran, it just did not
+think it had to": `experiments/bench/Makefile` listed three plugin headers and not
+`OneGradePipeline.h`, so adding a camera appeared to change nothing at all — which reads exactly
+like the flag being ignored; and the bench took its tone-map params from `neutral_params()`
+(shoulder OFF) while the node ships ON. Bench deps are now a wildcard over `src/*.h`.
+**When a change measures as having no effect, check the build before you re-check the logic.**
+
 ## Node Role — splitting across Resolve's group grading levels (2026-08-02)
 `nodeRole` choice param (group "0 Role / Preset"): 0 **Full Grade** (default, the original
 one-node behavior) · 1 **Input Transform (Group Pre-Clip)** · 2 **Output Transform (Group
