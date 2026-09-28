@@ -441,6 +441,20 @@ Carried from `CLAUDE.md`, kept here so there is one place to look:
   approximate values, flagged for on-footage checking.
 - **HDR tone-map** — HLG/PQ input is currently a normalize, not a tone-map, so highlights
   can clip. A real shoulder is future work.
+- **Rec.2100 HLG disagrees with Resolve by more than its normalization** (measured
+  2026-09-28, `experiments/logcurves/`). PQ differs from Resolve's implementation by a
+  **dead-constant ×0.4926**, which is exactly our deliberate 203-nit reference-white
+  normalization — the test asserts that it is constant, so a shape change there cannot hide
+  behind the offset. HLG does **not** behave that way: its ratio against Resolve spans
+  **0.377…2.475**, median 0.718 EV, so some of the difference is curve shape and not scale.
+  Our HLG is scaled by 3.774 for 75% signal → 1.0; Resolve's reference white sits elsewhere,
+  but a pure reference-white difference would be constant like PQ's, and this is not.
+  Not chased yet because no HLG footage is in the corpus and nobody has reported it — but it
+  is a real disagreement with the host, not a convention difference. The test **prints** the
+  span every run rather than asserting it, so it stays visible instead of quietly becoming
+  accepted. Start by checking whether Resolve applies the HLG system gamma (the OOTF), which
+  we do not: that is a power law, which would show up as exactly this kind of shape-not-scale
+  divergence.
 
 ---
 

@@ -5,12 +5,14 @@
 #include "../src/OneGradePipeline.h"
 #include "../src/OneGradeAnalysis.h"
 #include "../src/OneGradeCreative.h"
+#include "reference/resolve_log_curves.h"
 #include <cstdio>
 #include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
 #include <array>
+#include <algorithm>
 
 static int g_fail = 0;
 static void check(bool ok, const std::string& name) {
@@ -1498,6 +1500,110 @@ int main() {
         ok &= (lumaOf(pk.iBotY) < lumaOf(pk.iMinP));
 
         check(ok, "the frame floor guard counts crushed pixels instead of finding one dark one");
+    }
+
+    // ---- decode_log against Resolve's own implementation of the same transfer functions ----
+    // Every camera here was checked against a ramp rendered through Resolve's RCM; see the
+    // header for the method and for what the measurement can and cannot see. This found two
+    // real bugs that had shipped: Canon Log 3 was 1.33 EV off (a missing input remap, so our
+    // mid-gray sat at code 0.434 where Canon's own spec and Resolve both say 0.331), and
+    // DJI D-Log was 2.00 EV off with a 47x STEP across its own knee, from constants that had
+    // been transcribed wrong. Neither was visible without a second implementation to diff
+    // against -- the same lesson the Magic Grade paraphrase bugs taught.
+    {
+        bool ok = true;
+        for (int i = 0; i < ogref::kCurveN; ++i) {
+            const ogref::LogCurve& C = ogref::kCurves[i];
+            if (C.cam < 0) continue;                  // measured, but no decode of ours yet
+            if (C.cam == 10 || C.cam == 11) continue; // normalised on purpose -- checked below
+            // cam 1 is the MEASURING INSTRUMENT: the reference was read back through a
+            // DaVinci Intermediate encode and inverted with og::decode_log(1,.), so asserting
+            // cam 1 against it would compare our DI inverse with itself and pass for free.
+            // What actually vouches for it is that the nine curves measured THROUGH it agree
+            // with Resolve to a median of 0.000 EV -- a wrong DI inverse would bend all nine
+            // by the same amount, and none of them are bent.
+            if (C.cam == 1) continue;
+
+            std::vector<float> e;
+            for (int k = 0; k < C.n; ++k) {
+                // A reference value of 0 is the PNG clipping a negative, not a measurement.
+                if (C.linear[k] < 1e-4f) continue;
+                float ours = og::decode_log(C.cam, C.code[k]);
+                if (ours < 1e-9f) continue;
+                e.push_back(std::fabs(std::log2(ours / C.linear[k])));
+            }
+            std::sort(e.begin(), e.end());
+            const float med = e.empty() ? 99.f : e[e.size()/2];
+            const bool pass = !e.empty() && med < 0.01f;
+            if (!pass) printf("       %s (cam %d): median %.4f EV off Resolve\n",
+                              C.resolveName, C.cam, med);
+            ok &= pass;
+
+            // and the curve must reach mid-gray where Resolve does
+            float mg = -1.f;
+            for (int s = 1; s <= 4096; ++s) {
+                float x = (float)s / 4096.f;
+                if (og::decode_log(C.cam, x) >= 0.18f) { mg = x; break; }
+            }
+            ok &= (mg > 0.f && std::fabs(mg - C.midGrayCode) < 0.005f);
+        }
+        check(ok, "decode_log matches Resolve on the nine independently-measurable cameras");
+    }
+    {
+        // Rec.2100 PQ is our deliberate "smooth decode": the same curve as Resolve's, scaled
+        // so 203-nit reference white lands at 1.0. So it must differ by a CONSTANT and only a
+        // constant -- a shape difference here would be a real bug hiding behind the offset.
+        bool ok = true;
+        const ogref::LogCurve* C = nullptr;
+        for (int i = 0; i < ogref::kCurveN; ++i) if (ogref::kCurves[i].cam == 11) C = &ogref::kCurves[i];
+        ok &= (C != nullptr);
+        if (C) {
+            // Floor at 1e-3, not 1e-4: the reference came back through a DaVinci Intermediate
+            // encode, which is near-linear down there, so below ~1e-3 a 16-bit code step is
+            // worth 0.15% of the value and the ratio wobbles on quantisation rather than on
+            // anything either implementation did. Measured: the spread is 0.00424 at 1e-4 and
+            // 0.00036 at 1e-3, and stops improving past 5e-3. 121 of 129 samples still count.
+            float lo = 1e9f, hi = -1e9f; int n = 0;
+            for (int k = 0; k < C->n; ++k) {
+                if (C->linear[k] < 1e-3f) continue;
+                float r = og::decode_log(11, C->code[k]) / C->linear[k];
+                lo = std::min(lo, r); hi = std::max(hi, r); ++n;
+            }
+            ok &= (n > 100);
+            ok &= (hi - lo < 0.001f);                    // constant to 0.1%
+            ok &= close(0.5f*(lo+hi), 0.4926f, 0.002f);  // and it is the 203-nit normalisation
+        }
+        check(ok, "Rec.2100 PQ differs from Resolve by a constant scale only (by design)");
+    }
+    {
+        // The D-Log knee. The old constants put a 47x step here, which is a visible shadow
+        // artefact on any DJI footage, not just a numeric error. Flip the constants back to
+        // (x-0.5595f)/0.9892f and this fails -- verified.
+        const float below = og::decode_log(7, 0.1399f);
+        const float above = og::decode_log(7, 0.1401f);
+        check(std::fabs(above - below) < 1e-3f, "DJI D-Log is continuous across its knee");
+    }
+    {
+        // Out-of-gamut negatives must survive the decode; the project clamps nothing here,
+        // and the group-split hand-off depends on it (see the negative-clip fix).
+        bool ok = og::decode_log(5, 0.0f) < 0.f && og::decode_log(7, 0.0f) < 0.f;
+        check(ok, "Canon Log 3 and DJI D-Log still pass negatives through");
+    }
+    {
+        // Rec.2100 HLG is NOT asserted: it sits 0.718 EV off Resolve and, unlike PQ, the
+        // offset is not constant (max 1.41 EV), so part of it is shape and not our reference-
+        // white normalisation. Recorded in docs/ROADMAP.md, printed here so it stays visible.
+        const ogref::LogCurve* C = nullptr;
+        for (int i = 0; i < ogref::kCurveN; ++i) if (ogref::kCurves[i].cam == 10) C = &ogref::kCurves[i];
+        if (C) {
+            float lo = 1e9f, hi = -1e9f;
+            for (int k = 0; k < C->n; ++k) {
+                if (C->linear[k] < 1e-4f) continue;
+                float r = og::decode_log(10, C->code[k]) / C->linear[k];
+                lo = std::min(lo, r); hi = std::max(hi, r);
+            }
+            printf("  [note] Rec.2100 HLG vs Resolve: ratio spans %.3f..%.3f (open, see ROADMAP)\n", lo, hi);
+        }
     }
 
     printf("%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED", g_fail, g_fail==1?"":"s");

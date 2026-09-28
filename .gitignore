@@ -85,3 +85,7 @@ training-data/**
 !training-data/labeling/preferences*.json
 !training-data/labeling2/
 !training-data/labeling2/preferences*.json
+
+# experiments/logcurves build products
+experiments/logcurves/makeramp
+experiments/logcurves/genheader

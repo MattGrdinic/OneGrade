@@ -44,9 +44,28 @@ Exposure acts, which is why it matches that control nearly exactly.
 
 Notes:
 
+- **Every curve here is checked against Resolve's own, by a test.** A neutral ramp is
+  rendered through Resolve's RCM and compared with `og::decode_log`; the reference lives in
+  `test/reference/resolve_log_curves.h` and the extractor in `experiments/logcurves/`.
+  Nine cameras agree to a **median of 0.000 EV**. This is the right reference because it is
+  also what a user's CST node does, so "does it match a CST" and "does it match the test"
+  are the same question.
+- **Two curves were wrong until 2026-09-28**, and both had shipped since the list was
+  written. **Canon Log 3** was missing Resolve's input remap (`v = 1.167815·x + 0.047273`),
+  putting mid-gray at code 0.434 where Canon's own published 32.8 IRE — and Resolve —
+  say 0.331: a **1.33 EV** error. **DJI D-Log** had its constants transcribed wrong
+  (`(x-0.5595)/0.9892` inside the exponent, where the published form divides the whole
+  bracket by 0.9892), giving a **2.00 EV** error *and* a **47× step across its own knee**
+  — `f(0.1399)=0.0078` against `f(0.1401)=0.3659`, a visible shadow artefact rather than
+  just a numeric one. Fixing D-Log needed only `a: 0.601209 → 0.584555`; the published
+  shape and the toe were already right. Both now sit at 0.00006 EV. **Grades saved on
+  cameras 5 or 7 before this will render differently — deliberately, since they were
+  rendering wrong.**
 - **Stand-ins:** Canon, DJI, and Fuji currently use the Rec.2020 matrix as a
   reasonable wide-gamut approximation of their native gamuts; matrices other than
-  Blackmagic's are published/approximate values pending on-footage validation.
+  Blackmagic's are published/approximate values pending on-footage validation. Note the
+  audit above covers **transfer functions only** — the ramp is neutral, so it says nothing
+  about any of these matrices.
 - **Blackmagic footage:** Pocket/URSA/Pyxis clips in a DaVinci YRGB project are
   **Gen 5 Film** (index 0) — that's the colorimetric match. DWG/DI (index 1) is only
   correct for material already rendered into DaVinci Wide Gamut / Intermediate.

@@ -98,6 +98,57 @@ Linear keep DWG primaries. Film Look LUT auto-sets enc=3 (Cineon); Custom Look s
 Explainers: `docs/GAMMA.md` (encodes/grade curve) · `docs/CAMERAS.md` (camera list, PQ
 smooth decode, stand-in gamuts).
 
+## The decode audit — measure the host, don't retype the spec (2026-09-28, v1.6.0)
+**Two camera curves had been wrong since the list was written, and reading the code could
+never have found either.** They were found by diffing against a second implementation of
+the same transform — the only technique that has ever worked here (cf. the four Magic Grade
+paraphrase bugs). The second implementation is **Resolve itself**, which is also what the
+user A/Bs against with a CST node, so "matches the test" and "matches a CST" are one question.
+
+`experiments/logcurves/` renders a 4096-wide neutral 16-bit ramp through Resolve's RCM with
+the **input gamut pinned equal to the timeline and output gamut** (so the 3x3 is identity and
+only the transfer function acts), out to **DaVinci Intermediate** (~9 stops over mid-gray
+inside [0,1], and we own its exact inverse as cam 1). Reference: `test/reference/
+resolve_log_curves.h`, regenerable and byte-identical from the committed tool.
+
+**RUN THE IDENTITY PASS FIRST** — DI in, DI out, ramp must return unchanged. It measured
+**0.498 of a 16-bit LSB**. Prove the instrument before trusting the reading; same rule as
+"verify a test bites".
+
+What it found — **9 of 12 agree to a median of 0.000 EV**, which is what makes the two
+failures credible (the method isn't biased toward finding problems):
+- **Canon Log 3: 1.33 EV off.** Missing Resolve's input remap `v = 1.167815*x + 0.047273`.
+  Our mid-gray sat at code 0.434; Canon's own published figure is **32.8 IRE** and Resolve
+  measures 0.331. Not a matter of convention — we were wrong.
+- **DJI D-Log: 2.00 EV off, with a 47x STEP across its own knee** (`f(0.1399)=0.0078` vs
+  `f(0.1401)=0.3659`) — a visible shadow artefact, not just a number. Constants had been
+  transcribed wrong; the fix was `a: 0.601209 -> 0.584555` on the published shape, and the
+  toe was already right and already continuous. **Sixth discontinuity in this project**, and
+  the first that is plain arithmetic rather than a design edge.
+- Both now **0.00006 EV**. Saved grades on cam 5 / cam 7 change — deliberately (user's call);
+  both were too wrong for a working grade to exist on them.
+
+**cam 1 is excluded from the assertion and must stay excluded**: the reference is read back
+*through* `decode_log(1,.)`, so testing it against that would compare it with itself and pass
+for free. What vouches for it is that the nine curves measured through it match Resolve
+exactly — a wrong DI inverse would bend all nine identically, and none are bent.
+
+**What the harness cannot see:** 16-bit PNG clamps negatives, so every toe reads a flat 0.0 —
+fit the log branch to the data, take the toe from the published form, and check continuity at
+the knee. DI clips at linear 100, so the widest curves are flat at +9.12 EV (nine stops over
+mid-gray; irrelevant). And the ramp is neutral, so this says **nothing about the gamut
+matrices** — the Rec.2020 stand-ins for Canon/DJI/Fuji are still unvalidated.
+
+**Enumerate Resolve's colour spaces with `SetSetting`**, which returns false for a name it
+does not know. `GoPro GP-Log2` exists; **`DJI D-Log M` does not** (only D-Log and D-Log2), so
+D-Log M has to come from DJI's own LUT, which is display-referred with a tone curve baked in
+and is therefore a weaker reference than anything measured here.
+
+Open: **Rec.2100 HLG**. PQ differs from Resolve by a dead-constant x0.4926 (our 203-nit
+normalisation — the test asserts constancy so a shape change can't hide behind it). HLG's
+ratio spans **0.377..2.475**, so part is shape. The test *prints* it every run instead of
+asserting. `docs/ROADMAP.md` 8; first suspect is the HLG system gamma (OOTF), which we omit.
+
 ## Node Role — splitting across Resolve's group grading levels (2026-08-02)
 `nodeRole` choice param (group "0 Role / Preset"): 0 **Full Grade** (default, the original
 one-node behavior) · 1 **Input Transform (Group Pre-Clip)** · 2 **Output Transform (Group

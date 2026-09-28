@@ -22,10 +22,10 @@ inline float og_decode(int cam, float x){
     else if(cam==4){ float a=(exp2(18.0f)-16.0f)/117.45f,b=(1023.0f-95.0f)/1023.0f,c=95.0f/1023.0f;
         float s=(7.0f*log(2.0f)*exp2(7.0f-14.0f*c/b))/(a*b); float t=(exp2(14.0f*(-c/b)+6.0f)-64.0f)/a;
         float p=(x-c)/b; float hi=(exp2(14.0f*p+6.0f)-64.0f)/a; return (hi>t)?hi:(x*s); }
-    else if(cam==5){ float v=x; if(v<0.09755646f) return -(og_pow(10.0f,(0.07623209f-v)/0.42889912f)-1.0f)/14.98325f;
+    else if(cam==5){ float v=1.167815f*x+0.047273f; if(v<0.09755646f) return -(og_pow(10.0f,(0.07623209f-v)/0.42889912f)-1.0f)/14.98325f;
         if(v<=0.15277891f) return (v-0.12512219f)/1.9754798f; return (og_pow(10.0f,(v-0.19022340f)/0.42889912f)-1.0f)/14.98325f; }
     else if(cam==6){ return (og_pow(10.0f,x/0.224282f)-1.0f)/155.975327f-0.01f; }
-    else if(cam==7){ return (x<=0.14f)?((x-0.0929f)/6.025f):(og_pow(10.0f,(x-0.5595f)/0.9892f)-0.0108f); }
+    else if(cam==7){ return (x<=0.14f)?((x-0.0929f)/6.025f):((og_pow(10.0f,(x-0.584555f)/0.256663f)-0.0108f)/0.9892f); }
     else if(cam==8){ float a=5.555556f,b=0.064829f,c=0.245281f,d=0.384316f,e=8.799461f,f=0.092864f,cut=0.100686685f;
         return (x>=cut)?((og_pow(10.0f,(x-d)/c)-b)/a):((x-f)/e); }
     else if(cam==9){ return (x<0.181f)?((x-0.125f)/5.6f):(og_pow(10.0f,(x-0.598206f)/0.241514f)-0.00873f); } // Panasonic V-Log
