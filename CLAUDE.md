@@ -1005,15 +1005,31 @@ Those three are the entire toolkit for a dynamic panel here.
 
 **Hence the Mode selector hides sections rather than collapsing them** — which is the better answer
 anyway: a Simple panel with four sections beats one with twelve collapsed. `uiMode` is a choice
-param (Simple / Advanced / Color Correction), default **Simple**,
-and `kModeGroups` in `OneGrade.cpp` is the table of which sections each mode shows. **Simple is
-the default** (user's call): the busy panel is the problem the feature exists to solve, so
-defaulting to Advanced would have solved it only for people who found the dropdown.
+param (Simple / Advanced / Color Correction) and `kModeGroups` in `OneGrade.cpp` is the table of
+which sections each mode shows.
+
+**DEFAULT IS ADVANCED since 2026-09-29 — reversing the Simple default of 2026-08-25**, both the
+user's call. Simple was chosen on the argument that the busy panel is the problem the feature
+exists to solve; in use it withheld controls reached for on ordinary shots ("I find I need those
+controls more than the simple mode shows"). One click either way, so the default belongs on the
+mode that cannot hide something you wanted. `uiMode` is an ordinary saved param, so only NEW
+nodes move. (The hint had claimed Advanced was the default since the day it was written, and was
+wrong the whole time — it is now true.)
 
 **A SECTION THAT IS DOING SOMETHING IS NEVER HIDDEN**, whatever the mode says — `groupIsActive()`
-forces Range Balance off its latch, a non-default tone-map curve, an active LUT or a non-default
-camera to stay visible, and the note says how many were kept. Hiding a stage that is changing the
-picture is the silent-override bug this project has already fixed three times.
+forces Range Balance off its latch, a non-default tone-map curve or an active LUT to stay
+visible, and the note says how many were kept. Hiding a stage that is changing the picture is the
+silent-override bug this project has already fixed three times.
+
+**INPUT TRANSFORM IS SHOWN IN ALL THREE MODES, and the test that used to reveal it was circular**
+(2026-09-29). Simple hid `gInput` and `groupIsActive(3)` brought it back on "camera != 11" — so
+the only thing that revealed the control was having already used it, and a GoPro or DJI shooter
+on the shipped default had no route to the setting that fixes their picture. The case is also
+wrong on its own terms: every other entry in `groupIsActive()` has a genuine OFF state (latch 0,
+LUT None, the default tone curve) and **a camera decode has none** — there is no setting of it
+that is not changing the picture, least of all index 11. Case 3 is deleted, not just bypassed.
+Cost of showing it: exactly one dropdown, since `gInput` is just Camera (Scene Exposure and Scene
+WB live in `gExposure`).
 
 **Section numbers were removed (2026-08-25)** — they implied a working order that stopped being
 true once the panel was reorganised around the button. Don't reintroduce them; name sections in

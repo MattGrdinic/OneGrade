@@ -941,8 +941,19 @@ void OneGrade::probeSetup(double p_Time)
                                       : std::string();
         if (style.empty()) style = "(absent)";
         if (cs.empty())    cs    = "(absent)";
+
+        // CLIP FIRST, AND THE STYLE ABBREVIATED. The panel truncates around 45 characters and
+        // every legal style value starts with the same 30-character prefix -- so
+        // "CM style OfxImageEffectColourManagementNone / clip ..." spent the entire visible
+        // budget saying nothing, and cut off before the one value worth reading (2026-09-29,
+        // seen on GoPro/DJI clips). The clip's colourspace is what could tell us the camera;
+        // the style is context for it, so it goes second and loses its prefix.
+        {
+            const std::string pfx = "OfxImageEffectColourManagement";
+            if (style.rfind(pfx, 0) == 0) style = style.substr(pfx.size());
+        }
         char m[160];
-        snprintf(m, sizeof m, "CM style %s / clip %s", style.c_str(), cs.c_str());
+        snprintf(m, sizeof m, "clip %s / CM %s", cs.c_str(), style.c_str());
         m_SetupHost->setValue(m);
     }
 
@@ -2661,8 +2672,19 @@ void OneGrade::syncGradeMirrors()
 //   0 gPreset 1 gMagic 2 gAuto 3 gInput 4 gBalance 5 gExposure
 //   6 gRange  7 gTone  8 gLut  9 gTrim 10 gOutput 11 gHelp
 static const bool kModeGroups[3][12] = {
-    // Simple: press the button, adjust the result, deliver. No transforms, no qualifier, no LUTs.
-    { true,  true,  false, false, false, true,  false, false, false, false, true,  true  },
+    // Simple: press the button, adjust the result, deliver. No qualifier, no LUTs.
+    //
+    // INPUT TRANSFORM IS IN, and it was the one section that could not be left out (2026-09-29).
+    // It used to be hidden here and revealed only by groupIsActive(3), "the camera is not the
+    // default" -- which is a circular test: the only way to reveal the control is to have already
+    // used it. A GoPro or DJI shooter in Simple mode, on the shipped default, therefore had no
+    // route to the setting that fixes their picture short of finding the Mode dropdown first.
+    // Found on GP-Log2 footage, where the default PQ decode reads the frame ~2.3 stops hot.
+    //
+    // It also costs exactly one control. gInput is JUST the camera -- Scene Exposure and Scene
+    // White Balance moved to gExposure -- so Simple gains a single dropdown, and that dropdown is
+    // the one setting that invalidates every other one when it is wrong.
+    { true,  true,  false, true,  false, true,  false, false, false, false, true,  true  },
     // Advanced: everything. The default, so a project made before this feature is unchanged.
     { true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true  },
     // Color Correction: the manual path. No Magic/Auto, no Range Balance, no tone map.
@@ -2689,9 +2711,13 @@ bool OneGrade::groupIsActive(int idx)
         case 8: {   // Look / Film LUT
             int m = 0; m_LutMode->getValue(m); return m != 0;
         }
-        case 3: {   // Input Transform -- a non-default camera is load-bearing
-            int c = 0; m_Camera->getValue(c); return c != 11;
-        }
+        // NO CASE FOR 3 (Input Transform), deliberately. It used to return "camera != 11", which
+        // was both circular as a discoverability rule (see kModeGroups) and wrong on its own
+        // terms: every other case here has a genuine OFF state -- latch 0, LUT None, the default
+        // tone curve -- and the camera decode has none. There is no setting of it that is not
+        // changing the picture, least of all index 11, which is the most opinionated entry in the
+        // list. The section is now shown in all three modes, so this test had no reader left; per
+        // the project's own rule, an inert branch gets removed rather than left to wake up later.
         default: return false;
     }
 }
@@ -3825,15 +3851,22 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         um->appendOption("Simple");
         um->appendOption("Advanced");
         um->appendOption("Color Correction");
-        // SIMPLE BY DEFAULT (user's call, 2026-08-25). The busy panel was the problem this feature
-        // exists to solve, so defaulting to Advanced would have solved it only for people who
-        // found the dropdown.
+        // ADVANCED BY DEFAULT (user's call, 2026-09-29, reversing the Simple default of
+        // 2026-08-25). Simple was chosen on the argument that a busy panel is the problem this
+        // feature exists to solve; in use it turned out to withhold controls that get reached for
+        // on ordinary shots -- "I find I need those controls more than the simple mode shows".
+        // The dropdown is the right place for that choice and it is one click either way, so the
+        // default belongs on the mode that cannot hide something you wanted.
         //
-        // Safe for older projects because of groupIsActive(): a section that is changing the
-        // picture is shown whatever the mode says, so a grade saved with Range Balance or a LUT in
-        // use still displays the controls that produced it. Mode hides idle sections, never
-        // working ones.
-        um->setDefault(0);
+        // The consumer-log work is the sharp end of the same lesson: on the shipped Camera default
+        // a GoPro frame reads about 2.3 stops hot, and Simple used to hide the one control that
+        // fixes it. That is now fixed in kModeGroups independently, so Simple is honest again --
+        // this change is about which mode a new node should START in, not about a gap in Simple.
+        //
+        // Costs nothing to existing work: uiMode is an ordinary saved param, so a project that
+        // chose a mode keeps it, and only new nodes land here. The hint above already claimed
+        // Advanced was the default and had been wrong since it was written.
+        um->setDefault(1);
         page->addChild(*um);
 
         StringParamDescriptor* mn = p_Desc.defineStringParam("modeNote");
@@ -4772,7 +4805,7 @@ void OneGradeFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, OFX:
         };
         srow("setupStatus", "Input", "The verdict. 'OK' means the frame has the lifted floor and rolled-off top that camera log has. 'WARNING' means it uses the full 0-1 range the way display-referred material does, which usually means something transformed it before this node. 'Inconclusive' means it sits between the two and you should read the numbers yourself.");
         srow("setupStats",  "Levels", "1st, 50th and 99th percentile of the incoming code values. Camera log sits well inside 0-1 - Blackmagic log peaks around 0.75 on real footage. A p1 near 0.00 together with a p99 near 1.00 is the signature of an already-transformed image.");
-        srow("setupHost",   "Host", "What Resolve reports through the OFX 1.5 color management API. '(absent)' means the host does not provide it, which is expected and harmless - the pixel check above is the one that matters. Read-only: OneGrade does not declare a color management style, because doing so is what would let the host start converting the input and override the plugin's own camera transform.");
+        srow("setupHost",   "Host", "What Resolve reports through the OFX 1.5 color management API: the incoming clip's color space, then the host's color management style. Informational only - the pixel check above is the one that decides anything. Measured in Resolve 21.1, this reads 'clip Raw / CM None' and does not move: 'Raw' is the OFX utility color space meaning 'uninterpreted data', reported identically for every camera and even with a Color Space Transform in front of this node, so it cannot name your camera or detect a transformed input. 'None' is this plugin's own position reported back - OneGrade deliberately does not declare a color management style, because doing so is what would let the host start converting the input and override the plugin's own camera transform.");
     }
 
     helpLine("help8", "Monitor", "Calibrate; check on a second screen",

@@ -182,17 +182,49 @@ deliberate release of its own, not something to smuggle in behind an export butt
 
 ## 4. Declaring OFX 1.5 color management
 
-**Status:** read-only probe shipped in v1.3.0; declaring support deliberately not done.
+**Status:** read-only probe shipped in v1.3.0, **measured 2026-09-29**; declaring support still
+deliberately not done.
 
 `Check Input` reports `kOfxImageEffectPropColourManagementStyle` and
-`kOfxImageClipPropColourspace` **without** declaring a color management style. If Resolve
-populates them anyway, that is free information.
+`kOfxImageClipPropColourspace` **without** declaring a color management style, on the theory
+that if Resolve populates them anyway it is free information.
 
-If they report `(absent)`, the next experiment is to declare
-`kOfxImageEffectColourManagementBasic` and retest — as a **separate, deliberate step**.
-The risk is specific: declaring support is what could let the host begin converting our
-input, which would override the plugin's own camera transform. That is the one thing that
-breaks the whole design, so it does not get switched on speculatively.
+**MEASURED, on GoPro and DJI clips in a DaVinci YRGB project: `clip Raw / CM None`.**
+
+Two halves, and only one of them is news:
+
+- **`CM None` is our own position echoed back.** We declare no style, so the host reports none.
+  It was never going to say anything else and is not evidence about Resolve.
+- **The clip property IS populated — it is not `(absent)`** — which is better than this section
+  assumed. But the value is `Raw`, the spec's *utility* colourspace, defined in
+  `ofx-native-v1.5_aces-v1.3_ocio-v2.3.h` by `IsData = true`: the one legal value that means
+  "this is uninterpreted data, do not colour-manage it". **So it carries no camera identity by
+  construction**, and cannot be what picks the Camera index.
+
+**It is a DEAD CONSTANT — tested the same day, and the answer is no.** `Raw` is the correct
+answer for untransformed camera data, which is exactly the state `Check Input` exists to verify,
+so the hope was that it would change when something DOES transform the input — making it a
+definitive setup check, strictly better than the p1/p99 pixel heuristic that has to return
+"Inconclusive" on a lot of real footage. **With a Color Space Transform node placed in front of
+OneGrade, the value does not move.** It reads `Raw` for every camera and in every configuration
+tried. So the property is populated but inert: it says neither what the footage is nor whether
+anything has already touched it. **The pixel check remains the only detector we have**, which is
+the same conclusion the decode audit reached by a different road — measure the picture, not the
+metadata.
+
+**The reason to declare `kOfxImageEffectColourManagementBasic` is no stronger than before.**
+Under Basic the host might name a real colourspace — but that is precisely the mode in which it
+could also begin converting our input, which would override the plugin's own camera transform
+and break the whole design. The upside remains speculative and the downside remains specific, so
+it still does not get switched on. A separate, deliberate step if ever.
+
+**What this does NOT rescue: picking the camera automatically.** See the consumer-log work of
+2026-09-28/29 — GoPro GP-Log2 has roughly half a cinema log's headroom, so the shipped PQ default
+reads it about 2.3 stops hot, and there is no metadata route to noticing that. Identifying a log
+curve from pixels is a guess of the kind this project has already ruled out. What shipped instead
+is the Input Transform section being visible in every UI mode; the honest automatic version is to
+detect the **symptom** rather than the camera — Gain landing on its 0.30 floor is a measurement,
+and saying so is the same idiom as `encodeNote` and `biasNote`.
 
 ---
 
